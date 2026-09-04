@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "small-agent-qlora"
+version = "0.1.0"
+description = "Local Qwen3.5-4B tool agent with verified policy-trajectory QLoRA and controlled GAIA evaluation"
+requires-python = ">=3.11"
+dependencies = ["requests>=2.32"]
+
+[project.optional-dependencies]
+search = ["ddgs>=9"]
+files = ["pypdf>=5", "openpyxl>=3.1", "pandas>=2.2"]
+eval = ["datasets>=4", "huggingface-hub>=0.34"]
+train = ["transformers>=5.15,<6", "peft>=0.20,<1", "trl>=1.10,<2", "bitsandbytes>=0.50.1,<1", "accelerate>=1.10,<2", "datasets>=4", "torchvision>=0.20", "pillow>=10"]
+all = ["ddgs>=9", "pypdf>=5", "openpyxl>=3.1", "pandas>=2.2", "datasets>=4", "huggingface-hub>=0.34", "transformers>=5.15,<6", "peft>=0.20,<1", "trl>=1.10,<2", "bitsandbytes>=0.50.1,<1", "accelerate>=1.10,<2", "torchvision>=0.20", "pillow>=10"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+small-agent = "gaia_small_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

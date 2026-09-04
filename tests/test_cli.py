@@ -1,0 +1,183 @@
+import json
+from pathlib import Path
+
+from gaia_small_agent.agent.types import AgentResult, RunMetrics, TraceEvent
+from gaia_small_agent.cli import build_parser, make_runtime
+
+
+def test_run_parser_supports_transformers_adapter():
+    args = build_parser().parse_args(["run", "hello", "--backend", "transformers", "--adapter", "adapters/demo"])
+    assert args.backend == "transformers"
+    assert args.adapter == "adapters/demo"
+    assert args.hf_model == "Qwen/Qwen3.5-4B"
+    assert args.cache_implementation == "default"
+
+
+def test_make_runtime_can_use_transformers_default_cache(monkeypatch):
+    import gaia_small_agent.cli as cli
+
+    captured = {}
+
+    class FakeModel:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "TransformersQwenModel", FakeModel)
+    args = build_parser().parse_args([
+        "run", "hello", "--backend", "transformers", "--cache-implementation", "default",
+    ])
+
+    make_runtime(args)
+
+    assert captured["cache_implementation"] is None
+
+
+def test_collect_parser_exposes_verified_trajectory_pipeline():
+    args = build_parser().parse_args([
+        "collect-trajectories",
+        "--tasks", "data/tasks.jsonl",
+        "--output", "data/verified.jsonl",
+    ])
+    assert args.tasks == "data/tasks.jsonl"
+    assert args.output == "data/verified.jsonl"
+    assert args.backend == "ollama"
+
+
+def test_make_runtime_forwards_max_new_tokens_to_ollama():
+    args = build_parser().parse_args([
+        "run", "hello", "--backend", "ollama", "--max-new-tokens", "128",
+    ])
+
+    runtime = make_runtime(args)
+
+    assert runtime.model.max_new_tokens == 128
+
+
+def test_make_runtime_forwards_thinking_to_ollama():
+    default_args = build_parser().parse_args(["run", "hello", "--backend", "ollama"])
+    thinking_args = build_parser().parse_args(["run", "hello", "--backend", "ollama", "--thinking"])
+
+    assert make_runtime(default_args).model.enable_thinking is False
+    assert make_runtime(thinking_args).model.enable_thinking is True
+
+
+def _result():
+    observation = "full observation " + ("x" * 220)
+    return AgentResult(
+        answer="done",
+        completed=True,
+        stop_reason="final",
+        trace=[TraceEvent("tool_result", 1, {"name": "demo", "ok": True, "content": observation})],
+        metrics=RunMetrics(steps=1),
+    )
+
+
+def test_run_output_persists_full_result_json_and_preserves_console(monkeypatch, tmp_path, capsys):
+    class FakeRuntime:
+        def run(self, question, workspace):
+            return _result()
+
+    monkeypatch.setattr("gaia_small_agent.cli.make_runtime", lambda args: FakeRuntime())
+    output = tmp_path / "nested" / "result.json"
+    args = build_parser().parse_args(["run", "hello", "--output", str(output)])
+
+    assert args.func(args) == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload == {
+        "answer": "done",
+        "completed": True,
+        "stop_reason": "final",
+        "metrics": {"steps": 1, "tool_calls": 0, "tool_successes": 0, "tool_errors": 0, "duplicate_calls_blocked": 0},
+        "trace": [{"kind": "tool_result", "step": 1, "data": {"name": "demo", "ok": True, "content": "full observation " + ("x" * 220)}}],
+    }
+    assert "x" * 180 not in capsys.readouterr().out
+
+
+def test_run_output_defaults_to_none():
+    args = build_parser().parse_args(["run", "hello"])
+    assert args.output is None
+    assert args.workspace == "runs/task"
+
+
+def test_gaia_command_passes_effective_run_config(monkeypatch, tmp_path):
+    from gaia_small_agent.cli import gaia_command
+
+    captured = {}
+    monkeypatch.setattr("gaia_small_agent.cli.load_validation", lambda *args, **kwargs: [])
+    monkeypatch.setattr("gaia_small_agent.cli.preflight_default_tools", lambda workspace: {"tool_names": ["search", "read", "inspect", "python"]})
+
+    def fake_run_gaia100(dataset, factory, work_root, **kwargs):
+        captured.update(kwargs)
+        captured["work_root"] = work_root
+        return {"total": 0}
+
+    monkeypatch.setattr("gaia_small_agent.cli.run_gaia100", fake_run_gaia100)
+    adapter = tmp_path / "adapter"
+    args = build_parser().parse_args([
+        "gaia100",
+        "--backend", "transformers",
+        "--hf-model", "synthetic/hf-model",
+        "--adapter", str(adapter),
+        "--no-4bit",
+        "--thinking",
+        "--max-steps", "7",
+        "--max-new-tokens", "321",
+        "--seed", "synthetic-seed",
+        "--gaia-revision", "synthetic-revision",
+        "--work-root", str(tmp_path / "run"),
+        "--protected-questions", str(tmp_path / "protected.json"),
+    ])
+
+    assert gaia_command(args) == 0
+    assert captured["run_config"] == {
+        "backend": "transformers",
+        "model": "synthetic/hf-model",
+        "adapter": str(adapter.resolve()),
+        "max_steps": 7,
+        "max_new_tokens": 321,
+        "thinking": True,
+        "quantize_4bit": False,
+        "seed": "synthetic-seed",
+        "dataset_revision": "synthetic-revision",
+        "tool_observation_max_chars": 2000,
+        "partition": "diagnostic",
+        "cache_implementation": "default",
+        "tool_names": ["search", "read", "inspect", "python"],
+    }
+
+
+def test_local_gaia_eval_parser_exposes_partition_and_protection_paths():
+    args = build_parser().parse_args([
+        "gaia-eval",
+        "--partition", "diagnostic",
+        "--work-root", "runs/diag",
+    ])
+    assert args.partition == "diagnostic"
+    assert args.protected_questions == "runs/gaia-protected-question-hashes.json"
+
+
+def test_compare_eval_parser():
+    args = build_parser().parse_args([
+        "compare-evals",
+        "--base", "runs/base",
+        "--adapter-run", "runs/tuned",
+        "--output", "runs/comparison.json",
+    ])
+    assert args.base == "runs/base"
+    assert args.adapter_run == "runs/tuned"
+    assert args.output == "runs/comparison.json"
+
+
+def test_cli_does_not_expose_demo_command():
+    import pytest
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["demo", "file"])
+
+
+def test_generate_policy_tasks_parser():
+    args = build_parser().parse_args([
+        "generate-policy-tasks", "--output", "runs/policy/tasks.jsonl", "--count", "64", "--seed", "fixed",
+    ])
+    assert args.output == "runs/policy/tasks.jsonl"
+    assert args.count == 64
+    assert args.seed == "fixed"

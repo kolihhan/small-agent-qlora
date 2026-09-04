@@ -1,0 +1,227 @@
+from __future__ import annotations
+
+import argparse
+import json
+import tempfile
+from pathlib import Path
+
+from .agent.loop import AgentRuntime, MAX_TOOL_OBSERVATION_CHARS
+from .benchmark.gaia100 import GAIA_REVISION, LOCAL_PROTOCOL_SEED, load_validation
+from .benchmark.runner import run_gaia100
+from .benchmark.compare import compare_runs
+from .model.ollama import OllamaModel
+from .model.transformers_qwen import TransformersQwenModel
+from .tools import default_tools, preflight_default_tools
+from .training.qlora import train_qlora
+from .training.trajectories import collect_verified_trajectories
+from .training.protection import build_protected_question_hashes
+from .training.policy_tasks import generate_policy_tasks
+
+
+def make_runtime(args) -> AgentRuntime:
+    if args.backend == "transformers":
+        model = TransformersQwenModel(
+            model_name=args.hf_model,
+            quantize_4bit=not args.no_4bit,
+            adapter=args.adapter,
+            enable_thinking=args.thinking,
+            max_new_tokens=args.max_new_tokens,
+            cache_implementation=None if args.cache_implementation == "default" else args.cache_implementation,
+        )
+    else:
+        if args.adapter:
+            raise ValueError("--adapter requires --backend transformers; Ollama adapters must be exported separately")
+        model = OllamaModel(model=args.model, base_url=args.ollama_url, max_new_tokens=args.max_new_tokens, enable_thinking=args.thinking)
+    return AgentRuntime(model, default_tools(), max_steps=args.max_steps)
+
+
+def print_trace(result) -> None:
+    for event in result.trace:
+        if event.kind == "tool_call":
+            print(f"[{event.step}] -> {event.data['name']}({json.dumps(event.data['arguments'], ensure_ascii=False)})")
+        elif event.kind == "tool_result":
+            status = "ok" if event.data["ok"] else f"error:{event.data.get('error_code')}"
+            preview = str(event.data.get("content", "")).replace("\n", " ")[:180]
+            print(f"[{event.step}] <- {event.data['name']} [{status}] {preview}")
+        elif event.kind == "final":
+            print(f"[{event.step}] => final")
+
+
+def write_run_output(result, output_path: str | Path) -> None:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=output_path.parent,
+            prefix=f".{output_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            json.dump(result.to_dict(), temp_file, ensure_ascii=False)
+            temp_file.flush()
+        temp_path.replace(output_path)
+    finally:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+
+
+def run_command(args) -> int:
+    result = make_runtime(args).run(args.question, args.workspace)
+    print_trace(result)
+    print("\nAnswer:\n" + (result.answer or f"<stopped: {result.stop_reason}>"))
+    if args.output is not None:
+        write_run_output(result, args.output)
+    return 0 if result.completed else 2
+
+
+def gaia_command(args) -> int:
+    with tempfile.TemporaryDirectory(prefix="small-agent-preflight-") as workspace:
+        tool_preflight = preflight_default_tools(workspace)
+    dataset = load_validation(args.source, token=args.hf_token, revision=args.gaia_revision)
+    build_protected_question_hashes(dataset, args.protected_questions)
+    def factory():
+        return make_runtime(args)
+    run_config = {
+        "backend": args.backend,
+        "model": args.hf_model if args.backend == "transformers" else args.model,
+        "adapter": str(Path(args.adapter).resolve()) if args.adapter else None,
+        "max_steps": args.max_steps,
+        "max_new_tokens": args.max_new_tokens,
+        "thinking": args.thinking,
+        "quantize_4bit": (not args.no_4bit) if args.backend == "transformers" else None,
+        "seed": args.seed,
+        "dataset_revision": args.gaia_revision,
+        "tool_observation_max_chars": MAX_TOOL_OBSERVATION_CHARS,
+        "partition": args.partition,
+        "cache_implementation": args.cache_implementation if args.backend == "transformers" else None,
+        "tool_names": tool_preflight["tool_names"],
+    }
+    manifest = args.manifest or str(Path(args.work_root) / "manifest.json")
+    summary = run_gaia100(dataset, factory, args.work_root, seed=args.seed, manifest_path=manifest, limit=args.limit, dataset_revision=args.gaia_revision, run_config=run_config, partition=args.partition)
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def collect_command(args) -> int:
+    runtime = make_runtime(args)
+    summary = collect_verified_trajectories(
+        args.tasks,
+        args.output,
+        runtime_factory=lambda: runtime,
+        work_root=args.work_root,
+        protected_questions_path=args.protected_questions,
+    )
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def train_command(args) -> int:
+    train_qlora(
+        args.data,
+        args.output,
+        model_name=args.hf_model,
+        max_length=args.max_length,
+        epochs=args.epochs,
+        protected_questions_path=args.protected_questions,
+    )
+    return 0
+
+
+def generate_policy_tasks_command(args) -> int:
+    path = generate_policy_tasks(args.output, count=args.count, seed=args.seed)
+    print(json.dumps({"output": str(path), "count": args.count, "seed": args.seed}, indent=2))
+    return 0
+
+
+def compare_command(args) -> int:
+    result = compare_runs(args.base, args.adapter_run)
+    text = json.dumps(result, indent=2)
+    print(text)
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text + "\n", encoding="utf-8")
+    return 0
+
+
+def add_runtime_args(p):
+    p.add_argument("--backend", choices=["ollama", "transformers"], default="ollama")
+    p.add_argument("--model", default="qwen3.5:4b", help="Ollama model name")
+    p.add_argument("--ollama-url", default="http://localhost:11434")
+    p.add_argument("--hf-model", default="Qwen/Qwen3.5-4B", help="Transformers model id/path")
+    p.add_argument("--adapter", default=None, help="LoRA adapter path; Transformers backend only")
+    p.add_argument("--no-4bit", action="store_true", help="Disable 4-bit loading for Transformers backend")
+    p.add_argument("--thinking", action="store_true", help="Enable Qwen thinking mode")
+    p.add_argument("--max-new-tokens", type=int, default=512)
+    p.add_argument("--max-steps", type=int, default=12)
+    p.add_argument("--cache-implementation", choices=["offloaded", "default"], default="default", help="Transformers KV-cache placement")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="small-agent")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    run = sub.add_parser("run", help="Run one autonomous agent task")
+    run.add_argument("question")
+    run.add_argument("--workspace", default="runs/task")
+    run.add_argument("--output", default=None, help="Persist the complete run result as JSON")
+    add_runtime_args(run)
+    run.set_defaults(func=run_command)
+
+
+
+    gaia = sub.add_parser("gaia-eval", aliases=["gaia100"], help="Run the local GAIA diagnostic or frozen evaluation partition")
+    gaia.add_argument("--source", default="gaia-benchmark/GAIA", help="HF dataset repo or local snapshot path")
+    gaia.add_argument("--hf-token", default=None)
+    gaia.add_argument("--partition", choices=["diagnostic", "evaluation"], default="diagnostic")
+    gaia.add_argument("--seed", default=LOCAL_PROTOCOL_SEED)
+    gaia.add_argument("--gaia-revision", default=GAIA_REVISION, help="Pinned GAIA dataset revision")
+    gaia.add_argument("--manifest", default=None, help="Defaults to <work-root>/manifest.json")
+    gaia.add_argument("--protected-questions", default="runs/gaia-protected-question-hashes.json")
+    gaia.add_argument("--work-root", default="runs/gaia-diagnostic")
+    gaia.add_argument("--limit", type=int, default=None, help="Debug only; omit for the full selected partition")
+    add_runtime_args(gaia)
+    gaia.set_defaults(func=gaia_command)
+
+    collect = sub.add_parser("collect-trajectories", help="Run non-GAIA oracle tasks and save only verified tool-use trajectories")
+    collect.add_argument("--tasks", required=True, help="JSONL with id/source/question/expected_answer")
+    collect.add_argument("--output", required=True, help="Verified trajectory JSONL")
+    collect.add_argument("--work-root", default="runs/trajectory-collection")
+    collect.add_argument("--protected-questions", default="runs/gaia-protected-question-hashes.json")
+    add_runtime_args(collect)
+    collect.set_defaults(func=collect_command)
+
+    train = sub.add_parser("train-qlora", help="Train a LoRA adapter from verified non-GAIA trajectories")
+    train.add_argument("--data", required=True)
+    train.add_argument("--output", required=True)
+    train.add_argument("--hf-model", default="Qwen/Qwen3.5-4B")
+    train.add_argument("--max-length", type=int, default=1536)
+    train.add_argument("--epochs", type=float, default=2.0)
+    train.add_argument("--protected-questions", default="runs/gaia-protected-question-hashes.json")
+    train.set_defaults(func=train_command)
+
+    policy = sub.add_parser("generate-policy-tasks", help="Generate the deterministic independent policy curriculum")
+    policy.add_argument("--output", required=True)
+    policy.add_argument("--count", type=int, default=64)
+    policy.add_argument("--seed", default="p4-policy-v1")
+    policy.set_defaults(func=generate_policy_tasks_command)
+
+    compare = sub.add_parser("compare-evals", help="Compare frozen Base and +LoRA local evaluation runs")
+    compare.add_argument("--base", required=True)
+    compare.add_argument("--adapter-run", required=True)
+    compare.add_argument("--output", default=None)
+    compare.set_defaults(func=compare_command)
+    return p
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    return int(args.func(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
