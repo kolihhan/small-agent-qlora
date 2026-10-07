@@ -17,7 +17,10 @@ Unit tests cover:
 
 The package exposes `small-agent run`, `gaia-eval` (`gaia100` alias), `collect-trajectories`, `train-qlora`, and `compare-evals`.
 
-Final frozen verification on 2026-08-29 is `89 passed`; `compileall` exits 0.
+The frozen P4 experiment verification recorded on 2026-08-29 is `89 passed`; `compileall` exited 0. That number belongs to the preserved experiment artifact and is not the current repository test count.
+
+Current repository CI has since expanded the test suite. The latest successful `main` run before this remediation passed `110` tests; subsequent changes should use GitHub Actions as the current verification source rather than rewriting the historical P4 record.
+
 The independent artifact audit also checks the exact frozen 25-ID ordering,
 unique ordered result prefix, evaluator-only gold, a deterministic score
 recomputation, run-config equality, implementation hashes, model/dataset

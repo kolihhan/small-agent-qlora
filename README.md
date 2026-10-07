@@ -130,14 +130,16 @@ Unused:           40
 
 The contract is:
 
-1. Use the 25 diagnostic tasks to identify agent-policy failure modes.
-2. Build training data separately — **do not copy GAIA questions or answers**.
+1. Use the 25 diagnostic tasks to observe and classify agent-policy failure modes.
+2. Build training data from a **separate, deterministic non-GAIA curriculum**. The current curriculum is pre-registered independently and does not consume Diagnostic25 outputs or copy GAIA questions/answers.
 3. Keep only verified tool-use trajectories that pass the collection checks.
 4. Train one QLoRA adapter.
 5. Run Base and +LoRA on the same frozen 100-task evaluation partition.
 6. Compare task-by-task transitions, not just one aggregate score.
 
 This is an **internal controlled evaluation setup**, not an official GAIA leaderboard submission.
+
+The current synthetic curriculum is intentionally narrow. It provides controlled `read`, `inspect`, and `python` policy examples, but by itself does not establish broad autonomous tool-selection coverage across every tool or task type.
 
 ## Training-data guard
 
@@ -152,6 +154,20 @@ Install the pieces you need:
 ```powershell
 python -m pip install -e ".[eval,search,files,train]"
 ```
+
+### Canonical controlled experiment
+
+The sealed, resource-aware pipeline is the canonical experiment path. It pins the local model/dataset snapshots, runs the diagnostic and training gates, requires complete 100-task Base and +LoRA evaluation arms, and only then creates the paired comparison.
+
+```powershell
+.\scripts\run_p4_full_pipeline.ps1 -RunRoot runs\p4-controlled
+```
+
+The script expects the frozen local model and GAIA snapshots described in the protocol. It is intentionally allowed to stop and preserve incomplete artifacts when a resource or evidence gate fails.
+
+### Development commands
+
+The individual commands below are useful for inspecting or debugging one stage; they are **not a substitute for the canonical end-to-end protocol**.
 
 Run one question:
 
@@ -187,7 +203,7 @@ small-agent train-qlora `
   --protected-questions runs/gaia-protected-question-hashes.json
 ```
 
-Then run Base and +LoRA on the frozen evaluation partition and compare them with `small-agent compare-evals`.
+`small-agent compare-evals` is a lower-level comparator for complete frozen Evaluation100 arms. It rejects partial runs and configuration drift other than the adapter treatment.
 
 ## What gets recorded
 
@@ -199,7 +215,7 @@ For each task the runner keeps:
 - duplicate-call blocks
 - visible action trace
 
-It also separates tasks that the current tools can reasonably handle from tasks that need semantic image / audio / video understanding.
+It also flags cases with known unsupported semantic image / audio / video attachments. That flag describes the current tool surface; it is not a proof that the attachment was semantically necessary to answer the task.
 
 The current `inspect` tool reads document and tabular structure; it is **not** a general vision or audio model.
 
@@ -223,6 +239,7 @@ small-agent-qlora/
 - `inspect` does not provide semantic image / audio / video understanding.
 - Search uses the live web, so exact results can change.
 - Exact hash checks do not catch paraphrased benchmark leakage.
+- The current independent synthetic curriculum is deliberately small and does not cover every autonomous tool-selection pattern.
 - The Transformers / QLoRA path needs a compatible local CUDA / PyTorch / bitsandbytes setup.
 - No final Base-vs-LoRA claim should be made until a valid paired run completes.
 
