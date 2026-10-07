@@ -11,10 +11,10 @@ def _base_row(*, task_id: str, category: str, question: str, expected: str, requ
     return {
         "id": task_id,
         "category": category,
-        "source": "synthetic-policy-v1",
+        "source": "synthetic-policy-v2",
         "license": "CC0-1.0",
         "generator": "p4-policy-tasks",
-        "generator_version": "1",
+        "generator_version": "2",
         "oracle_type": "exact",
         "oracle_version": "1",
         "question": question,
@@ -25,11 +25,12 @@ def _base_row(*, task_id: str, category: str, question: str, expected: str, requ
 
 
 def generate_policy_tasks(output_path: str | Path, *, count: int = 64, seed: str = "p4-policy-v1") -> Path:
-    """Generate a small deterministic, non-GAIA policy curriculum.
+    """Generate a deterministic, non-GAIA local-tool policy curriculum.
 
-    The tasks exercise only generic local capabilities and carry their own exact
-    oracle and provenance. They are intentionally independent of GAIA question
-    text and are frozen before the sealed evaluation partition is inspected.
+    Prompts describe the task but deliberately do not name the required tool.
+    `required_tools` is grader metadata: only trajectories where the agent chose
+    the intended local capability are eligible for training. The curriculum is
+    independent of GAIA question text and frozen before sealed evaluation.
     """
     if count < 4 or count > 128 or count % len(_CATEGORIES) != 0:
         raise ValueError("count must be a multiple of 4 between 4 and 128")
@@ -43,35 +44,43 @@ def generate_policy_tasks(output_path: str | Path, *, count: int = 64, seed: str
             value = f"VALUE_{rng.randrange(1000, 9999)}"
             filename = f"facts-{index + 1:03d}.txt"
             rows.append(_base_row(
-                task_id=task_id, category=category,
-                question=f"Read {filename}. Return only the value for {key}.",
-                expected=value, required_tools=["read"],
+                task_id=task_id,
+                category=category,
+                question=f"What value is assigned to {key} in {filename}? Return only the value.",
+                expected=value,
+                required_tools=["read"],
                 files={filename: f"ALPHA=ignore\n{key}={value}\nOMEGA=ignore\n"},
             ))
         elif category == "inspect_metadata":
             filename = f"table-{index + 1:03d}.csv"
             rows.append(_base_row(
-                task_id=task_id, category=category,
-                question=f"Inspect {filename}. Return only the number of columns.",
-                expected="3", required_tools=["inspect"],
+                task_id=task_id,
+                category=category,
+                question=f"How many columns does {filename} contain? Return only the integer count.",
+                expected="3",
+                required_tools=["inspect"],
                 files={filename: "name,score,status\na,10,ok\nb,20,ok\n"},
             ))
         elif category == "python_numeric":
-            a, b = rng.randrange(11, 80), rng.randrange(11, 80)
+            a, b = rng.randrange(10_000, 99_999), rng.randrange(10_000, 99_999)
             expected = str(a * b)
             rows.append(_base_row(
-                task_id=task_id, category=category,
-                question=f"Use the python tool to compute {a} * {b}. Return only the integer result.",
-                expected=expected, required_tools=["python"],
+                task_id=task_id,
+                category=category,
+                question=f"What is {a} * {b}? Return only the integer result.",
+                expected=expected,
+                required_tools=["python"],
             ))
         else:
-            a, b, c = rng.randrange(2, 20), rng.randrange(2, 20), rng.randrange(2, 10)
+            a, b, c = rng.randrange(1_000, 9_999), rng.randrange(1_000, 9_999), rng.randrange(20, 90)
             expected = str((a + b) * c)
             rows.append(_base_row(
-                task_id=task_id, category=category,
-                question=(f"Use the python tool to compute ({a} + {b}) * {c}. "
-                          "If an action fails, change strategy rather than repeating it. Return only the integer result."),
-                expected=expected, required_tools=["python"],
+                task_id=task_id,
+                category=category,
+                question=(f"Calculate ({a} + {b}) * {c}. If an action fails, change strategy rather than repeating it. "
+                          "Return only the integer result."),
+                expected=expected,
+                required_tools=["python"],
             ))
 
     output_path = Path(output_path)
