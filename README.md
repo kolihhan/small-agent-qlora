@@ -16,7 +16,7 @@
   <a href="#the-experiment">Experiment</a> ·
   <a href="#agent-loop">Agent loop</a> ·
   <a href="#current-evidence">Current evidence</a> ·
-  <a href="#quickstart">Quickstart</a> ·
+  <a href="#canonical-experiment-path">Canonical path</a> ·
   <a href="#evaluation-contract">Evaluation contract</a>
 </p>
 
@@ -45,7 +45,7 @@ flowchart LR
     H1 --> C[Paired comparison]
     H2 --> C
 
-    D[Separate non-eval tasks] --> R[Verified trajectories]
+    D[Pre-registered non-GAIA policy tasks] --> R[Verified trajectories]
     R --> Q[QLoRA adapter]
     Q --> L
 ```
@@ -59,7 +59,7 @@ The comparison is intentionally paired:
 - same scorer
 - only the adapter changes
 
-That makes the result easier to interpret than comparing two unrelated agents.
+Diagnostic25 is used to describe observed failure modes. It **does not generate or tune the synthetic training curriculum**; that curriculum is deterministic and independent of GAIA question text so benchmark failures are not copied into training by construction.
 
 ## Agent loop
 
@@ -130,8 +130,8 @@ Unused:           40
 
 The contract is:
 
-1. Use the 25 diagnostic tasks to identify agent-policy failure modes.
-2. Build training data separately — **do not copy GAIA questions or answers**.
+1. Use the 25 diagnostic tasks to classify observed agent-policy failure modes.
+2. Keep the deterministic non-GAIA policy curriculum independent of GAIA question text.
 3. Keep only verified tool-use trajectories that pass the collection checks.
 4. Train one QLoRA adapter.
 5. Run Base and +LoRA on the same frozen 100-task evaluation partition.
@@ -145,7 +145,20 @@ GAIA questions are hashed locally and checked against candidate training inputs.
 
 This catches exact reuse. It **does not** detect a paraphrased benchmark question, so provenance still requires manual judgment.
 
-## Quickstart
+The current synthetic policy curriculum is deterministic and local-only. Its prompts describe the task without naming the required `read`, `inspect`, or `python` tool; `required_tools` is grader metadata used to decide whether a trajectory is training-eligible. Direct `search` training is intentionally absent because live-web results would make the training set time-dependent, so generalization to web search remains an open question.
+
+## Canonical experiment path
+
+The strongest reproducibility contract is the full pipeline script:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run_p4_full_pipeline.ps1 `
+  -RunRoot runs\p4-full-v2
+```
+
+That path pins model/dataset revisions, uses the frozen protocol, monitors resources, requires a complete Diagnostic25, requires at least 32 verified non-GAIA trajectories with local-tool coverage, requires both Evaluation100 arms to finish 100/100, and only then compares Base with +LoRA.
+
+### Development / individual stages
 
 Install the pieces you need:
 
@@ -168,6 +181,14 @@ small-agent gaia-eval `
   --work-root runs/gaia-diagnostic-base
 ```
 
+Generate the deterministic independent policy curriculum:
+
+```powershell
+small-agent generate-policy-tasks `
+  --output data/policy-tasks.jsonl `
+  --count 64
+```
+
 Collect verified training trajectories:
 
 ```powershell
@@ -187,7 +208,7 @@ small-agent train-qlora `
   --protected-questions runs/gaia-protected-question-hashes.json
 ```
 
-Then run Base and +LoRA on the frozen evaluation partition and compare them with `small-agent compare-evals`.
+`small-agent compare-evals` is a low-level comparator. The canonical full pipeline is what enforces complete 100-case Base and +LoRA evaluation arms before comparison.
 
 ## What gets recorded
 
@@ -219,11 +240,13 @@ small-agent-qlora/
 
 ## Limits
 
+- No final Base-vs-LoRA improvement claim exists yet.
 - The Python tool is process-isolated and time-limited, but not a hardened hostile-code sandbox.
 - `inspect` does not provide semantic image / audio / video understanding.
-- Search uses the live web, so exact results can change.
+- Search uses the live web, so exact results can change; live search is not part of the synthetic training curriculum.
 - Exact hash checks do not catch paraphrased benchmark leakage.
 - The Transformers / QLoRA path needs a compatible local CUDA / PyTorch / bitsandbytes setup.
+- The frozen local diagnostic already showed that host-RAM limits can invalidate a run; partial prefixes are not promoted into benchmark results.
 - No final Base-vs-LoRA claim should be made until a valid paired run completes.
 
 ## References
