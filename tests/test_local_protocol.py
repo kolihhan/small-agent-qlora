@@ -104,8 +104,9 @@ def test_compare_runs_requires_adapter_as_only_treatment_and_reports_transitions
 
     base = tmp_path / "base"
     tuned = tmp_path / "tuned"
-    _write_run(base, adapter=None, answers=[("a", False, 4, 3, 1), ("b", True, 2, 1, 0)])
-    _write_run(tuned, adapter="adapter-dir", answers=[("a", True, 3, 2, 0), ("b", False, 4, 2, 1)])
+    unchanged = [(f"same-{index:03d}", False, 2, 1, 0) for index in range(98)]
+    _write_run(base, adapter=None, answers=[("a", False, 4, 3, 1), ("b", True, 2, 1, 0), *unchanged])
+    _write_run(tuned, adapter="adapter-dir", answers=[("a", True, 3, 2, 0), ("b", False, 4, 2, 1), *unchanged])
 
     result = compare_runs(base, tuned)
 
