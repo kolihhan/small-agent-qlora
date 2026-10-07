@@ -58,11 +58,15 @@ def compare_runs(base_root: str | Path, adapter_root: str | Path) -> dict:
         raise ValueError("comparison requires Base without adapter and E1 with adapter")
     if base_without_adapter != tuned_without_adapter:
         raise ValueError("run configuration mismatch: only adapter may differ")
+    if base_without_adapter.get("partition") != "evaluation":
+        raise ValueError("comparison requires the frozen evaluation partition")
 
     base_rows = _load_results(base_root)
     tuned_rows = _load_results(adapter_root)
     if set(base_rows) != set(tuned_rows):
         raise ValueError("run task IDs differ")
+    if len(base_rows) != 100:
+        raise ValueError("comparison requires complete 100-task evaluation runs")
 
     all_ids = list(base_rows)
     overall = _transition_summary(base_rows, tuned_rows, all_ids)
