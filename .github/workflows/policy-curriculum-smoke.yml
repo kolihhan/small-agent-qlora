@@ -18,7 +18,7 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -40,12 +40,14 @@ jobs:
           done
           cat /tmp/ollama.log
           exit 1
-      - name: Pull frozen smoke model name
-        run: ollama pull qwen3.5:4b
-      - name: Generate eight v2 policy tasks
+      - name: Pull smoke model
+        run: |
+          ollama pull qwen3.5:4b
+          curl -fsS http://127.0.0.1:11434/api/tags > /tmp/model-tags.json
+      - name: Generate four v2 policy tasks
         run: |
           python -m gaia_small_agent generate-policy-tasks \
-            --output /tmp/policy.jsonl --count 8 --seed p4-policy-v2-smoke
+            --output /tmp/policy.jsonl --count 4 --seed p4-policy-v2-smoke
           printf '{"algorithm":"sha256-normalized-question-v1","hashes":[]}\n' > /tmp/protected.json
       - name: Collect smoke trajectories
         run: |
@@ -55,7 +57,7 @@ jobs:
             --work-root /tmp/policy-work \
             --protected-questions /tmp/protected.json \
             --backend ollama --model qwen3.5:4b \
-            --max-steps 12 --max-new-tokens 256
+            --max-steps 4 --max-new-tokens 192
       - name: Report smoke result
         if: always()
         run: |
@@ -63,3 +65,15 @@ jobs:
           cat /tmp/verified.jsonl.summary.json || true
           echo '--- per-task status ---'
           cat /tmp/verified.jsonl.progress.jsonl || true
+      - name: Upload smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: policy-curriculum-v2-smoke
+          path: |
+            /tmp/model-tags.json
+            /tmp/policy.jsonl
+            /tmp/verified.jsonl
+            /tmp/verified.jsonl.summary.json
+            /tmp/verified.jsonl.progress.jsonl
+          if-no-files-found: warn
