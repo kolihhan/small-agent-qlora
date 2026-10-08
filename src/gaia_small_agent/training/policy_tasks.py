@@ -4,17 +4,17 @@ import json
 import random
 from pathlib import Path
 
-_CATEGORIES = ("read_fact", "inspect_metadata", "python_numeric", "format_recovery")
+_CATEGORIES = ("read_fact", "inspect_metadata", "python_numeric", "read_then_python")
 
 
 def _base_row(*, task_id: str, category: str, question: str, expected: str, required_tools: list[str], files: dict[str, str] | None = None) -> dict:
     return {
         "id": task_id,
         "category": category,
-        "source": "synthetic-policy-v1",
+        "source": "synthetic-policy-v2",
         "license": "CC0-1.0",
         "generator": "p4-policy-tasks",
-        "generator_version": "1",
+        "generator_version": "2",
         "oracle_type": "exact",
         "oracle_version": "1",
         "question": question,
@@ -25,12 +25,7 @@ def _base_row(*, task_id: str, category: str, question: str, expected: str, requ
 
 
 def generate_policy_tasks(output_path: str | Path, *, count: int = 64, seed: str = "p4-policy-v1") -> Path:
-    """Generate a small deterministic, non-GAIA policy curriculum.
-
-    The tasks exercise only generic local capabilities and carry their own exact
-    oracle and provenance. They are intentionally independent of GAIA question
-    text and are frozen before the sealed evaluation partition is inspected.
-    """
+    """Generate deterministic non-GAIA tasks that require autonomous local tool choice."""
     if count < 4 or count > 128 or count % len(_CATEGORIES) != 0:
         raise ValueError("count must be a multiple of 4 between 4 and 128")
     rng = random.Random(seed)
@@ -44,7 +39,7 @@ def generate_policy_tasks(output_path: str | Path, *, count: int = 64, seed: str
             filename = f"facts-{index + 1:03d}.txt"
             rows.append(_base_row(
                 task_id=task_id, category=category,
-                question=f"Read {filename}. Return only the value for {key}.",
+                question=f"What value is stored for {key} in {filename}? Return only the value.",
                 expected=value, required_tools=["read"],
                 files={filename: f"ALPHA=ignore\n{key}={value}\nOMEGA=ignore\n"},
             ))
@@ -52,26 +47,28 @@ def generate_policy_tasks(output_path: str | Path, *, count: int = 64, seed: str
             filename = f"table-{index + 1:03d}.csv"
             rows.append(_base_row(
                 task_id=task_id, category=category,
-                question=f"Inspect {filename}. Return only the number of columns.",
+                question=f"How many columns does {filename} contain? Return only the integer.",
                 expected="3", required_tools=["inspect"],
                 files={filename: "name,score,status\na,10,ok\nb,20,ok\n"},
             ))
         elif category == "python_numeric":
             a, b = rng.randrange(11, 80), rng.randrange(11, 80)
-            expected = str(a * b)
             rows.append(_base_row(
                 task_id=task_id, category=category,
-                question=f"Use the python tool to compute {a} * {b}. Return only the integer result.",
-                expected=expected, required_tools=["python"],
+                question=f"Compute {a} * {b}. Return only the integer result.",
+                expected=str(a * b), required_tools=["python"],
             ))
         else:
-            a, b, c = rng.randrange(2, 20), rng.randrange(2, 20), rng.randrange(2, 10)
-            expected = str((a + b) * c)
+            a, b = rng.randrange(11, 80), rng.randrange(11, 80)
+            filename = f"numbers-{index + 1:03d}.txt"
             rows.append(_base_row(
                 task_id=task_id, category=category,
-                question=(f"Use the python tool to compute ({a} + {b}) * {c}. "
-                          "If an action fails, change strategy rather than repeating it. Return only the integer result."),
-                expected=expected, required_tools=["python"],
+                question=(
+                    f"What is the product of A and B stored in {filename}? "
+                    "Return only the integer result."
+                ),
+                expected=str(a * b), required_tools=["read", "python"],
+                files={filename: f"A={a}\nB={b}\n"},
             ))
 
     output_path = Path(output_path)
