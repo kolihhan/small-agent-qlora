@@ -5,7 +5,7 @@ from typing import Any
 
 import requests
 
-from ..agent.types import AssistantTurn, ToolCall
+from ..agent.types import AssistantTurn, ModelRuntimeError, ToolCall
 
 
 class OllamaModel:
@@ -26,13 +26,35 @@ class OllamaModel:
             "think": self.enable_thinking,
             "options": {"temperature": 0, "num_predict": self.max_new_tokens},
         }
-        response = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=self.timeout_s)
-        response.raise_for_status()
-        data = response.json()
-        message = data.get("message") or {}
+        try:
+            response = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=self.timeout_s)
+            response.raise_for_status()
+            data = response.json()
+        except requests.Timeout as exc:
+            raise ModelRuntimeError("model_timeout", f"Ollama request timed out: {exc}") from None
+        except requests.ConnectionError as exc:
+            raise ModelRuntimeError("model_unavailable", f"Ollama is unavailable: {exc}") from None
+        except requests.RequestException as exc:
+            raise ModelRuntimeError("model_error", f"Ollama request failed: {exc}") from None
+        except ValueError as exc:
+            raise ModelRuntimeError("model_error", f"Ollama returned invalid JSON: {exc}") from None
+
+        if not isinstance(data, dict):
+            raise ModelRuntimeError("model_error", "Ollama response must be a JSON object")
+        message = data.get("message")
+        if not isinstance(message, dict):
+            raise ModelRuntimeError("model_error", "Ollama response is missing a valid message object")
+
         calls: list[ToolCall] = []
-        for raw in message.get("tool_calls") or []:
+        raw_calls = message.get("tool_calls") or []
+        if not isinstance(raw_calls, list):
+            raise ModelRuntimeError("model_error", "Ollama message tool_calls must be a list")
+        for raw in raw_calls:
+            if not isinstance(raw, dict):
+                raise ModelRuntimeError("model_error", "Ollama tool call must be an object")
             fn = raw.get("function") or {}
+            if not isinstance(fn, dict):
+                raise ModelRuntimeError("model_error", "Ollama tool call function must be an object")
             args: Any = fn.get("arguments") or {}
             if not isinstance(args, dict):
                 args = {"_raw": args}
