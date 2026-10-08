@@ -62,3 +62,18 @@ def test_inspect_supports_extensionless_xlsx_and_pdf(tmp_path):
     assert "sheets" in json.loads(x.content)
     assert p.ok and json.loads(p.content)["detected_type"] == "pdf"
     assert json.loads(p.content)["pages"] == 1
+
+
+def test_inspect_rejects_oversized_file_before_parser_work(tmp_path):
+    from gaia_small_agent.tools.inspect import InspectTool
+    from gaia_small_agent.tools.limits import MAX_WORKSPACE_FILE_BYTES
+
+    path = tmp_path / "large.csv"
+    with path.open("wb") as handle:
+        handle.seek(MAX_WORKSPACE_FILE_BYTES)
+        handle.write(b"x")
+
+    result = InspectTool().run({"path": path.name}, tmp_path)
+
+    assert result.ok is False
+    assert result.error_code == "CONTENT_TOO_LARGE"
