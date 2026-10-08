@@ -13,6 +13,7 @@ import requests
 
 from .base import Tool, ToolResult
 from .content_type import detect_content_type
+from .limits import MAX_REMOTE_BYTES, MAX_WORKSPACE_FILE_BYTES
 
 
 def _strip_html(text: str) -> str:
@@ -65,11 +66,13 @@ def _get_public_url(url: str, *, timeout: float = 20.0, max_redirects: int = 5):
                 timeout=timeout,
                 headers={"User-Agent": "small-agent-qlora/0.1"},
                 allow_redirects=False,
+                stream=True,
             )
         except Exception as exc:
             return None, f"HTTP read failed: {exc}"
         if response.is_redirect or response.is_permanent_redirect:
             location = response.headers.get("location")
+            response.close()
             if not location:
                 return None, "HTTP redirect missing Location header"
             current = urljoin(current, location)
@@ -77,9 +80,31 @@ def _get_public_url(url: str, *, timeout: float = 20.0, max_redirects: int = 5):
         try:
             response.raise_for_status()
         except Exception as exc:
+            response.close()
             return None, f"HTTP read failed: {exc}"
         return response, None
     return None, f"HTTP redirect limit exceeded ({max_redirects})"
+
+
+def _read_bounded_response(response, *, max_bytes: int = MAX_REMOTE_BYTES) -> tuple[bytes | None, str | None]:
+    raw_length = response.headers.get("content-length")
+    if raw_length:
+        try:
+            if int(raw_length) > max_bytes:
+                return None, f"Remote content exceeds {max_bytes} byte limit"
+        except ValueError:
+            pass
+
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in response.iter_content(chunk_size=64 * 1024):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > max_bytes:
+            return None, f"Remote content exceeds {max_bytes} byte limit"
+        chunks.append(chunk)
+    return b"".join(chunks), None
 
 
 class ReadTool(Tool):
@@ -106,9 +131,20 @@ class ReadTool(Tool):
             if response is None:
                 code = "PRIVATE_URL_BLOCKED" if error and "private" in error.casefold() else "HTTP_ERROR"
                 return ToolResult(False, error or "HTTP read failed", code)
-            ctype = response.headers.get("content-type", "")
-            text = response.text if "html" not in ctype else _strip_html(response.text)
-            return ToolResult(True, text[:max_chars])
+            try:
+                data, size_error = _read_bounded_response(response)
+                if size_error:
+                    return ToolResult(False, size_error, "CONTENT_TOO_LARGE")
+                encoding = getattr(response, "encoding", None) or "utf-8"
+                text = (data or b"").decode(encoding, errors="replace")
+                ctype = response.headers.get("content-type", "")
+                if "html" in ctype:
+                    text = _strip_html(text)
+                return ToolResult(True, text[:max_chars])
+            except Exception as exc:
+                return ToolResult(False, f"HTTP read failed: {exc}", "HTTP_ERROR")
+            finally:
+                response.close()
 
         path = (workspace / source).resolve() if not Path(source).is_absolute() else Path(source).resolve()
         try:
@@ -117,21 +153,44 @@ class ReadTool(Tool):
             return ToolResult(False, "File must be inside the workspace", "PATH_OUTSIDE_WORKSPACE")
         if not path.exists() or not path.is_file():
             return ToolResult(False, f"File not found: {source}", "NOT_FOUND")
-        suffix = path.suffix.lower()
+        if path.stat().st_size > MAX_WORKSPACE_FILE_BYTES:
+            return ToolResult(False, f"File exceeds {MAX_WORKSPACE_FILE_BYTES} byte limit", "CONTENT_TOO_LARGE")
         detected_type = detect_content_type(path)
         try:
             if detected_type == "pdf":
                 from pypdf import PdfReader
-                text = "\n\n".join((p.extract_text() or "") for p in PdfReader(path).pages)
+                parts: list[str] = []
+                chars = 0
+                for page in PdfReader(path).pages:
+                    part = page.extract_text() or ""
+                    parts.append(part)
+                    chars += len(part) + 2
+                    if chars >= max_chars:
+                        break
+                text = "\n\n".join(parts)
             elif detected_type == "xlsx":
                 import openpyxl
                 wb = openpyxl.load_workbook(path.open("rb"), read_only=True, data_only=True)
-                parts = []
-                for ws in wb.worksheets:
-                    parts.append(f"# Sheet: {ws.title}")
-                    for row in ws.iter_rows(values_only=True):
-                        parts.append("\t".join("" if v is None else str(v) for v in row))
-                text = "\n".join(parts)
+                try:
+                    parts = []
+                    chars = 0
+                    stop = False
+                    for ws in wb.worksheets:
+                        heading = f"# Sheet: {ws.title}"
+                        parts.append(heading)
+                        chars += len(heading) + 1
+                        for row in ws.iter_rows(values_only=True):
+                            line = "\t".join("" if v is None else str(v) for v in row)
+                            parts.append(line)
+                            chars += len(line) + 1
+                            if chars >= max_chars:
+                                stop = True
+                                break
+                        if stop:
+                            break
+                    text = "\n".join(parts)
+                finally:
+                    wb.close()
             elif detected_type == "json":
                 text = json.dumps(json.loads(path.read_text(encoding="utf-8")), ensure_ascii=False, indent=2)
             else:
