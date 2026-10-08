@@ -33,6 +33,6 @@ def test_full_pipeline_archives_attempt_logs_resources_and_comparison_before_ove
 def test_full_pipeline_requires_meaningful_clean_training_set_before_qlora():
     text = (Path(__file__).parents[1] / "scripts" / "run_p4_full_pipeline.ps1").read_text(encoding="utf-8")
     assert "$MinVerifiedTrajectories = 32" in text
-    for tool in ("read", "inspect", "python"):
+    for tool in ("read", "inspect", "python", "search"):
         assert f"'{tool}'" in text
     assert "QLoRA will not start" in text
