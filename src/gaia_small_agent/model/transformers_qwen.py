@@ -146,6 +146,8 @@ class TransformersQwenModel:
         except Exception as exc:
             if _is_capacity_error(exc, self.torch):
                 raise ModelCapacityError from None
-            raise ModelRuntimeError("model_error", f"Transformers inference failed: {type(exc).__name__}: {exc}") from None
+            if type(exc) is RuntimeError:
+                raise ModelRuntimeError("model_error", f"Transformers inference failed: {exc}") from None
+            raise
         finally:
             inputs = generated = new_ids = None
