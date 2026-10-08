@@ -36,3 +36,9 @@ def test_full_pipeline_requires_meaningful_clean_training_set_before_qlora():
     for tool in ("read", "inspect", "python"):
         assert f"'{tool}'" in text
     assert "QLoRA will not start" in text
+
+
+def test_full_pipeline_uses_curriculum_v2_and_requires_clean_multistep_example():
+    text = (Path(__file__).parents[1] / "scripts" / "run_p4_full_pipeline.ps1").read_text(encoding="utf-8")
+    assert "--seed','p4-policy-v2'" in text
+    assert "Verified trajectory set has no clean read -> python multi-step policy example" in text
