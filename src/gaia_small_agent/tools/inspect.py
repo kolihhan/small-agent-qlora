@@ -6,6 +6,7 @@ from typing import Any
 
 from .base import Tool, ToolResult
 from .content_type import detect_content_type
+from .limits import MAX_WORKSPACE_FILE_BYTES
 
 
 class InspectTool(Tool):
@@ -30,13 +31,18 @@ class InspectTool(Tool):
         if not path.exists():
             return ToolResult(False, f"Not found: {raw}", "NOT_FOUND")
         stat = path.stat()
+        if path.is_file() and stat.st_size > MAX_WORKSPACE_FILE_BYTES:
+            return ToolResult(False, f"File exceeds {MAX_WORKSPACE_FILE_BYTES} byte limit", "CONTENT_TOO_LARGE")
         detected_type = detect_content_type(path) if path.is_file() else "directory"
         info: dict[str, Any] = {"name": path.name, "suffix": path.suffix.lower(), "detected_type": detected_type, "bytes": stat.st_size}
         try:
             if detected_type == "xlsx":
                 import openpyxl
                 wb = openpyxl.load_workbook(path.open("rb"), read_only=True, data_only=False)
-                info["sheets"] = [{"name": ws.title, "max_row": ws.max_row, "max_column": ws.max_column} for ws in wb.worksheets]
+                try:
+                    info["sheets"] = [{"name": ws.title, "max_row": ws.max_row, "max_column": ws.max_column} for ws in wb.worksheets]
+                finally:
+                    wb.close()
             elif detected_type == "pdf":
                 from pypdf import PdfReader
                 reader = PdfReader(path)
