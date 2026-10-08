@@ -1,0 +1,65 @@
+name: Policy curriculum smoke
+
+on:
+  push:
+    branches:
+      - experiment/implicit-policy-curriculum
+    paths:
+      - ".github/workflows/policy-curriculum-smoke.yml"
+      - "src/gaia_small_agent/training/policy_tasks.py"
+      - "src/gaia_small_agent/training/trajectories.py"
+      - "src/gaia_small_agent/agent/**"
+      - "src/gaia_small_agent/model/ollama.py"
+      - "src/gaia_small_agent/tools/**"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install project
+        run: python -m pip install -e ".[dev]"
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+      - name: Start Ollama
+        run: |
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/ollama.log
+          exit 1
+      - name: Pull frozen smoke model name
+        run: ollama pull qwen3.5:4b
+      - name: Generate eight v2 policy tasks
+        run: |
+          python -m gaia_small_agent generate-policy-tasks \
+            --output /tmp/policy.jsonl --count 8 --seed p4-policy-v2-smoke
+          printf '{"algorithm":"sha256-normalized-question-v1","hashes":[]}\n' > /tmp/protected.json
+      - name: Collect smoke trajectories
+        run: |
+          python -m gaia_small_agent collect-trajectories \
+            --tasks /tmp/policy.jsonl \
+            --output /tmp/verified.jsonl \
+            --work-root /tmp/policy-work \
+            --protected-questions /tmp/protected.json \
+            --backend ollama --model qwen3.5:4b \
+            --max-steps 12 --max-new-tokens 256
+      - name: Report smoke result
+        if: always()
+        run: |
+          echo '--- summary ---'
+          cat /tmp/verified.jsonl.summary.json || true
+          echo '--- per-task status ---'
+          cat /tmp/verified.jsonl.progress.jsonl || true
