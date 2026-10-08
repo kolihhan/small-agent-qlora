@@ -9,6 +9,7 @@ from .agent.loop import AgentRuntime, MAX_TOOL_OBSERVATION_CHARS
 from .benchmark.gaia100 import GAIA_REVISION, LOCAL_PROTOCOL_SEED, load_validation
 from .benchmark.runner import run_gaia100
 from .benchmark.compare import compare_runs
+from .doctor import run_doctor
 from .model.ollama import OllamaModel
 from .model.transformers_qwen import TransformersQwenModel
 from .tools import default_tools, preflight_default_tools
@@ -16,6 +17,13 @@ from .training.qlora import train_qlora
 from .training.trajectories import collect_verified_trajectories
 from .training.protection import build_protected_question_hashes
 from .training.policy_tasks import generate_policy_tasks
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 def make_runtime(args) -> AgentRuntime:
@@ -47,9 +55,25 @@ def print_trace(result) -> None:
             print(f"[{event.step}] => final")
 
 
-def write_run_output(result, output_path: str | Path) -> None:
+def _single_run_config(args, runtime: AgentRuntime) -> dict:
+    return {
+        "backend": args.backend,
+        "model": args.hf_model if args.backend == "transformers" else args.model,
+        "adapter": str(Path(args.adapter).resolve()) if args.adapter else None,
+        "max_steps": args.max_steps,
+        "max_new_tokens": args.max_new_tokens,
+        "thinking": args.thinking,
+        "tool_observation_max_chars": MAX_TOOL_OBSERVATION_CHARS,
+        "tool_names": list(runtime.tools),
+    }
+
+
+def write_run_output(result, output_path: str | Path, run_config: dict | None = None) -> None:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = result.to_dict()
+    payload["schema_version"] = "small-agent-run/v1"
+    payload["run_config"] = dict(run_config or {})
     temp_path = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -61,7 +85,7 @@ def write_run_output(result, output_path: str | Path) -> None:
             delete=False,
         ) as temp_file:
             temp_path = Path(temp_file.name)
-            json.dump(result.to_dict(), temp_file, ensure_ascii=False)
+            json.dump(payload, temp_file, ensure_ascii=False)
             temp_file.flush()
         temp_path.replace(output_path)
     finally:
@@ -70,12 +94,20 @@ def write_run_output(result, output_path: str | Path) -> None:
 
 
 def run_command(args) -> int:
-    result = make_runtime(args).run(args.question, args.workspace)
+    runtime = make_runtime(args)
+    result = runtime.run(args.question, args.workspace)
     print_trace(result)
     print("\nAnswer:\n" + (result.answer or f"<stopped: {result.stop_reason}>"))
     if args.output is not None:
-        write_run_output(result, args.output)
+        write_run_output(result, args.output, _single_run_config(args, runtime))
     return 0 if result.completed else 2
+
+
+def doctor_command(args) -> int:
+    model = args.hf_model if args.backend == "transformers" else args.model
+    report = run_doctor(args.backend, model, args.ollama_url, args.workspace)
+    print(json.dumps(report, indent=2))
+    return 0 if report["ready"] else 2
 
 
 def gaia_command(args) -> int:
@@ -83,8 +115,10 @@ def gaia_command(args) -> int:
         tool_preflight = preflight_default_tools(workspace)
     dataset = load_validation(args.source, token=args.hf_token, revision=args.gaia_revision)
     build_protected_question_hashes(dataset, args.protected_questions)
+
     def factory():
         return make_runtime(args)
+
     run_config = {
         "backend": args.backend,
         "model": args.hf_model if args.backend == "transformers" else args.model,
@@ -101,7 +135,17 @@ def gaia_command(args) -> int:
         "tool_names": tool_preflight["tool_names"],
     }
     manifest = args.manifest or str(Path(args.work_root) / "manifest.json")
-    summary = run_gaia100(dataset, factory, args.work_root, seed=args.seed, manifest_path=manifest, limit=args.limit, dataset_revision=args.gaia_revision, run_config=run_config, partition=args.partition)
+    summary = run_gaia100(
+        dataset,
+        factory,
+        args.work_root,
+        seed=args.seed,
+        manifest_path=manifest,
+        limit=args.limit,
+        dataset_revision=args.gaia_revision,
+        run_config=run_config,
+        partition=args.partition,
+    )
     print(json.dumps(summary, indent=2))
     return 0
 
@@ -156,8 +200,8 @@ def add_runtime_args(p):
     p.add_argument("--adapter", default=None, help="LoRA adapter path; Transformers backend only")
     p.add_argument("--no-4bit", action="store_true", help="Disable 4-bit loading for Transformers backend")
     p.add_argument("--thinking", action="store_true", help="Enable Qwen thinking mode")
-    p.add_argument("--max-new-tokens", type=int, default=512)
-    p.add_argument("--max-steps", type=int, default=12)
+    p.add_argument("--max-new-tokens", type=_positive_int, default=512)
+    p.add_argument("--max-steps", type=_positive_int, default=12)
     p.add_argument("--cache-implementation", choices=["offloaded", "default"], default="default", help="Transformers KV-cache placement")
 
 
@@ -172,7 +216,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_runtime_args(run)
     run.set_defaults(func=run_command)
 
-
+    doctor = sub.add_parser("doctor", help="Check local runtime readiness without loading model weights")
+    doctor.add_argument("--backend", choices=["ollama", "transformers"], default="ollama")
+    doctor.add_argument("--model", default="qwen3.5:4b", help="Ollama model name")
+    doctor.add_argument("--ollama-url", default="http://localhost:11434")
+    doctor.add_argument("--hf-model", default="Qwen/Qwen3.5-4B", help="Transformers model id/path")
+    doctor.add_argument("--workspace", default="runs/doctor")
+    doctor.set_defaults(func=doctor_command)
 
     gaia = sub.add_parser("gaia-eval", aliases=["gaia100"], help="Run the local GAIA diagnostic or frozen evaluation partition")
     gaia.add_argument("--source", default="gaia-benchmark/GAIA", help="HF dataset repo or local snapshot path")
