@@ -1,0 +1,116 @@
+name: CPU Pilot Smoke
+
+on:
+  push:
+    branches:
+      - experiment/cpu-pilot-smoke
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qwen-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      TOKENIZERS_PARALLELISM: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install inference dependencies
+        run: python -m pip install "torch>=2.4" "transformers>=5.15,<6" "bitsandbytes>=0.50.1,<1" "accelerate>=1.10,<2" "pillow>=10" "torchvision>=0.20"
+
+      - name: Probe CPU 4-bit Qwen3.5-0.8B
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import platform
+          import time
+
+          import torch
+          from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+          model_id = "Qwen/Qwen3.5-0.8B"
+          print(json.dumps({
+              "python": platform.python_version(),
+              "torch": torch.__version__,
+              "cuda": torch.cuda.is_available(),
+              "model": model_id,
+          }))
+
+          quant = BitsAndBytesConfig(
+              load_in_4bit=True,
+              bnb_4bit_quant_type="nf4",
+              bnb_4bit_use_double_quant=True,
+              bnb_4bit_compute_dtype=torch.float32,
+          )
+
+          started = time.perf_counter()
+          tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+          model = AutoModelForCausalLM.from_pretrained(
+              model_id,
+              quantization_config=quant,
+              device_map="cpu",
+              trust_remote_code=True,
+              low_cpu_mem_usage=True,
+          )
+          load_s = time.perf_counter() - started
+          model.eval()
+
+          tools = [{
+              "type": "function",
+              "function": {
+                  "name": "python",
+                  "description": "Execute a short Python calculation.",
+                  "parameters": {
+                      "type": "object",
+                      "properties": {"code": {"type": "string"}},
+                      "required": ["code"],
+                  },
+              },
+          }]
+          messages = [
+              {"role": "system", "content": "Use the available tool when calculation is required. Do not explain."},
+              {"role": "user", "content": "Use python to calculate 17 * 19."},
+          ]
+          inputs = tokenizer.apply_chat_template(
+              messages,
+              tools=tools,
+              add_generation_prompt=True,
+              tokenize=True,
+              return_dict=True,
+              return_tensors="pt",
+              enable_thinking=False,
+          )
+          started = time.perf_counter()
+          with torch.inference_mode():
+              output = model.generate(
+                  **inputs,
+                  max_new_tokens=64,
+                  do_sample=False,
+                  eos_token_id=tokenizer.eos_token_id,
+                  pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+              )
+          generation_s = time.perf_counter() - started
+          new_tokens = output[0][inputs["input_ids"].shape[-1]:]
+          text = tokenizer.decode(new_tokens, skip_special_tokens=False).strip()
+          print(json.dumps({
+              "load_seconds": round(load_s, 3),
+              "generation_seconds": round(generation_s, 3),
+              "generated_tokens": int(new_tokens.shape[-1]),
+              "output": text,
+          }, ensure_ascii=False))
+          if not text:
+              raise SystemExit("model produced empty output")
+          PY
