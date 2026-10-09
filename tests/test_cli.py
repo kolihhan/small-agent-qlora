@@ -181,3 +181,39 @@ def test_gaia_command_passes_effective_run_config(monkeypatch, tmp_path):
         "cache_implementation": "default",
         "tool_names": ["search", "read", "inspect", "python"],
     }
+
+
+def test_local_gaia_eval_parser_exposes_partition_and_protection_paths():
+    args = build_parser().parse_args([
+        "gaia-eval",
+        "--partition", "diagnostic",
+        "--work-root", "runs/diag",
+    ])
+    assert args.partition == "diagnostic"
+    assert args.protected_questions == "runs/gaia-protected-question-hashes.json"
+
+
+def test_compare_eval_parser():
+    args = build_parser().parse_args([
+        "compare-evals",
+        "--base", "runs/base",
+        "--adapter-run", "runs/tuned",
+        "--output", "runs/comparison.json",
+    ])
+    assert args.base == "runs/base"
+    assert args.adapter_run == "runs/tuned"
+    assert args.output == "runs/comparison.json"
+
+
+def test_cli_does_not_expose_demo_command():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["demo", "file"])
+
+
+def test_generate_policy_tasks_parser():
+    args = build_parser().parse_args([
+        "generate-policy-tasks", "--output", "runs/policy/tasks.jsonl", "--count", "64", "--seed", "fixed",
+    ])
+    assert args.output == "runs/policy/tasks.jsonl"
+    assert args.count == 64
+    assert args.seed == "fixed"
