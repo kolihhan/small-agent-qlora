@@ -19,9 +19,9 @@ def default_tools():
 def check_default_tools(workspace: str | Path, *, live_search: bool = False) -> dict:
     """Check the default tool surface without requiring model inference.
 
-    Doctor mode keeps search non-destructive: it checks the `ddgs` dependency but
-    does not make a live web query. The sealed evaluation preflight opts into the
-    live search smoke through ``preflight_default_tools``.
+    Readiness checks validate the search dependency deterministically by default.
+    A caller may opt into a live search smoke for an explicit network diagnostic,
+    but benchmark startup must not depend on a transient search result.
     """
     workspace = Path(workspace).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
@@ -92,7 +92,8 @@ def check_default_tools(workspace: str | Path, *, live_search: bool = False) -> 
 
 
 def preflight_default_tools(workspace: str | Path) -> dict:
-    report = check_default_tools(workspace, live_search=True)
+    """Validate the evaluation tool surface without a flaky live-web dependency."""
+    report = check_default_tools(workspace, live_search=False)
     names = report["tool_names"]
     if names != _DEFAULT_TOOL_NAMES:
         raise RuntimeError(f"diagnostic tool surface mismatch: {names}")
