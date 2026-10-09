@@ -1,6 +1,9 @@
 name: CPU Policy Pilot
 
 on:
+  push:
+    branches:
+      - experiment/cpu-pilot-smoke
   workflow_dispatch:
 
 permissions:
