@@ -27,13 +27,24 @@ class SearchTool(Tool):
             from ddgs import DDGS
         except ImportError:
             return ToolResult(False, "Install search support: pip install -e '.[search]'", "MISSING_DEPENDENCY")
+
         max_results = max(1, min(int(arguments.get("max_results", 5)), 10))
-        try:
-            rows = list(DDGS().text(query, max_results=max_results))
-        except Exception as exc:
-            return ToolResult(False, f"Search failed: {exc}", "SEARCH_ERROR")
+        errors: list[str] = []
+        rows = []
+        for backend in ("brave", "duckduckgo"):
+            try:
+                rows = list(DDGS().text(query, backend=backend, max_results=max_results))
+            except Exception as exc:
+                errors.append(f"{backend}: {exc}")
+                continue
+            if rows:
+                break
+            errors.append(f"{backend}: no results")
+
         if not rows:
-            return ToolResult(True, "No results.")
+            detail = "; ".join(errors) if errors else "no results"
+            return ToolResult(False, f"Search failed: {detail}", "SEARCH_ERROR")
+
         lines = []
         for i, row in enumerate(rows, 1):
             title = row.get("title", "")
