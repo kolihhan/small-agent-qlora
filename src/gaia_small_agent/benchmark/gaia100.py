@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Iterable
 
 
-
 QUOTAS = {1: 32, 2: 52, 3: 16}
 DIAGNOSTIC_QUOTAS = {1: 8, 2: 13, 3: 4}
+SHADOW_QUOTAS = {1: 8, 2: 13, 3: 4}
 LOCAL_PROTOCOL_SEED = "gaia-local-v2"
 GAIA_REVISION = "682dd723ee1e1697e00360edccf2366dc8418dd9"
 
@@ -19,31 +19,49 @@ def _rank(task_id: str, seed: str) -> str:
     return hashlib.sha256(f"{seed}:{task_id}".encode()).hexdigest()
 
 
-
-
 def select_gaia_partition(rows: Iterable[dict], partition: str, seed: str = LOCAL_PROTOCOL_SEED) -> list[dict]:
-    """Select a deterministic local diagnostic or evaluation partition.
+    """Select deterministic, disjoint diagnostic, shadow, or evaluation rows.
 
-    Diagnostic rows are allocated first within each GAIA level. Evaluation rows use
-    the next ranked rows, so the two partitions are guaranteed disjoint.
+    Existing Diagnostic25 and Evaluation100 identities are preserved. Shadow is
+    drawn only from rows left after those two partitions are reserved.
     """
-    if partition not in {"diagnostic", "evaluation"}:
-        raise ValueError("partition must be 'diagnostic' or 'evaluation'")
+    if partition not in {"diagnostic", "shadow", "evaluation"}:
+        raise ValueError("partition must be 'diagnostic', 'shadow', or 'evaluation'")
     by_level: dict[int, list[dict]] = defaultdict(list)
     for row in rows:
         by_level[int(row["Level"])].append(row)
+
     selected: list[dict] = []
+    shadow_seed = f"{seed}:shadow"
     for level in (1, 2, 3):
         pool = sorted(by_level[level], key=lambda r: (_rank(str(r["task_id"]), seed), str(r["task_id"])))
         diagnostic_quota = DIAGNOSTIC_QUOTAS[level]
         evaluation_quota = QUOTAS[level]
-        needed = diagnostic_quota + evaluation_quota
-        if len(pool) < needed:
-            raise ValueError(f"GAIA level {level} has {len(pool)} rows, need {needed}")
-        start = 0 if partition == "diagnostic" else diagnostic_quota
-        quota = diagnostic_quota if partition == "diagnostic" else evaluation_quota
-        selected.extend(pool[start:start + quota])
-    return sorted(selected, key=lambda r: (int(r["Level"]), _rank(str(r["task_id"]), seed)))
+        reserved = diagnostic_quota + evaluation_quota
+        if len(pool) < reserved:
+            raise ValueError(f"GAIA level {level} has {len(pool)} rows, need {reserved}")
+
+        if partition == "diagnostic":
+            selected.extend(pool[:diagnostic_quota])
+            continue
+        if partition == "evaluation":
+            selected.extend(pool[diagnostic_quota:reserved])
+            continue
+
+        shadow_quota = SHADOW_QUOTAS[level]
+        remaining = pool[reserved:]
+        if len(remaining) < shadow_quota:
+            raise ValueError(
+                f"GAIA shadow level {level} has {len(remaining)} unused rows, need {shadow_quota}"
+            )
+        shadow_pool = sorted(
+            remaining,
+            key=lambda r: (_rank(str(r["task_id"]), shadow_seed), str(r["task_id"])),
+        )
+        selected.extend(shadow_pool[:shadow_quota])
+
+    order_seed = shadow_seed if partition == "shadow" else seed
+    return sorted(selected, key=lambda r: (int(r["Level"]), _rank(str(r["task_id"]), order_seed)))
 
 
 def select_gaia100(rows: Iterable[dict], seed: str = "gaia100-v1") -> list[dict]:
@@ -59,7 +77,6 @@ def select_gaia100(rows: Iterable[dict], seed: str = "gaia100-v1") -> list[dict]
     return sorted(selected, key=lambda r: (int(r["Level"]), _rank(str(r["task_id"]), seed)))
 
 
-
 def resolve_file_paths(rows: Iterable[dict], data_dir: str | Path) -> list[dict]:
     root = Path(data_dir).resolve()
     resolved = []
@@ -73,6 +90,7 @@ def resolve_file_paths(rows: Iterable[dict], data_dir: str | Path) -> list[dict]
             item["file_path"] = str(path.resolve())
         resolved.append(item)
     return resolved
+
 
 def load_validation(source: str = "gaia-benchmark/GAIA", token: str | None = None, revision: str = GAIA_REVISION):
     try:
@@ -143,7 +161,15 @@ def save_local_manifest(
     partition: str = "evaluation",
 ) -> None:
     path = Path(path)
-    quotas = DIAGNOSTIC_QUOTAS if partition == "diagnostic" else QUOTAS
+    quota_by_partition = {
+        "diagnostic": DIAGNOSTIC_QUOTAS,
+        "shadow": SHADOW_QUOTAS,
+        "evaluation": QUOTAS,
+    }
+    try:
+        quotas = quota_by_partition[partition]
+    except KeyError as exc:
+        raise ValueError("partition must be 'diagnostic', 'shadow', or 'evaluation'") from exc
     data = {
         "name": f"GAIA local {partition} partition",
         "partition": partition,
