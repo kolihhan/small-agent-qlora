@@ -1,0 +1,236 @@
+name: GAIA blind shadow gate
+
+on:
+  push:
+    paths:
+      - ".github/GAIA_SHADOW_RUN"
+
+permissions:
+  contents: read
+
+env:
+  MODEL: qwen3.5:4b
+  OLLAMA_URL: http://127.0.0.1:11434
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+jobs:
+  shadow-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Read and validate trigger metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASELINE_SHA="$(sed -n 's/^baseline_sha=//p' .github/GAIA_SHADOW_TRIGGER)"
+          EXPOSURE="$(sed -n 's/^exposure=//p' .github/GAIA_SHADOW_TRIGGER)"
+          CANDIDATE_NAME="$(sed -n 's/^candidate_name=//p' .github/GAIA_SHADOW_TRIGGER)"
+          if [[ ! "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "invalid baseline sha"
+            exit 2
+          fi
+          if [ "$EXPOSURE" -lt 1 ] || [ "$EXPOSURE" -gt 3 ]; then
+            echo "invalid shadow exposure"
+            exit 2
+          fi
+          if [ -z "$CANDIDATE_NAME" ]; then
+            echo "missing candidate name"
+            exit 2
+          fi
+          echo "baseline_sha=$BASELINE_SHA" >> "$GITHUB_OUTPUT"
+          echo "exposure=$EXPOSURE" >> "$GITHUB_OUTPUT"
+          echo "candidate_name=$CANDIDATE_NAME" >> "$GITHUB_OUTPUT"
+          echo "EXPOSURE=$EXPOSURE" >> "$GITHUB_ENV"
+
+      - name: Verify gated dataset credential
+        shell: bash
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "HF_TOKEN_NOT_CONFIGURED"
+            exit 42
+          fi
+
+      - name: Checkout baseline
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ steps.meta.outputs.baseline_sha }}
+          path: baseline
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install evaluation dependencies
+        run: python -m pip install -e ".[eval,search,files]"
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+
+      - name: Start Ollama and pull frozen model tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in {1..30}; do
+            if curl -fsS "$OLLAMA_URL/api/tags" >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS "$OLLAMA_URL/api/tags" >/dev/null
+          ollama pull "$MODEL"
+          MODEL_DIGEST="$(ollama list | awk 'NR==2 {print $2}')"
+          if [ -z "$MODEL_DIGEST" ]; then
+            echo "missing model digest"
+            exit 3
+          fi
+          echo "MODEL_DIGEST=$MODEL_DIGEST" >> "$GITHUB_ENV"
+
+      - name: Run frozen baseline Shadow25
+        shell: bash
+        run: |
+          set +e
+          PYTHONPATH="$GITHUB_WORKSPACE/baseline/src" python -m gaia_small_agent.cli gaia-eval \
+            --source gaia-benchmark/GAIA \
+            --hf-token "$HF_TOKEN" \
+            --partition shadow \
+            --backend ollama \
+            --model "$MODEL" \
+            --ollama-url "$OLLAMA_URL" \
+            --max-steps 12 \
+            --max-new-tokens 512 \
+            --work-root runs/shadow-base \
+            --protected-questions runs/shadow-base/protected.json
+          status=$?
+          echo "BASE_STATUS=$status" >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Run frozen candidate Shadow25
+        shell: bash
+        run: |
+          set +e
+          PYTHONPATH="$GITHUB_WORKSPACE/src" python -m gaia_small_agent.cli gaia-eval \
+            --source gaia-benchmark/GAIA \
+            --hf-token "$HF_TOKEN" \
+            --partition shadow \
+            --backend ollama \
+            --model "$MODEL" \
+            --ollama-url "$OLLAMA_URL" \
+            --max-steps 12 \
+            --max-new-tokens 512 \
+            --work-root runs/shadow-candidate \
+            --protected-questions runs/shadow-candidate/protected.json
+          status=$?
+          echo "CANDIDATE_STATUS=$status" >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Build sanitized aggregate verdict
+        if: always()
+        shell: bash
+        env:
+          BASELINE_SHA: ${{ steps.meta.outputs.baseline_sha }}
+          CANDIDATE_NAME: ${{ steps.meta.outputs.candidate_name }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from gaia_small_agent.benchmark.promotion import evaluate_shadow_promotion
+
+          SAFE_KEYS = (
+              "correct", "total", "accuracy", "completed", "completion_rate",
+              "tool_calls", "tool_successes", "tool_errors", "duplicate_calls_blocked",
+              "tool_success_rate", "average_steps", "model_calls", "mean_latency_ms",
+              "levels", "supported", "capability_gap", "failure_labels",
+              "failure_signals", "stop_reasons",
+          )
+
+          def load_summary(path):
+              path = Path(path)
+              if not path.exists():
+                  return None
+              raw = json.loads(path.read_text(encoding="utf-8"))
+              return {key: raw[key] for key in SAFE_KEYS if key in raw}
+
+          base = load_summary("runs/shadow-base/summary.json")
+          candidate = load_summary("runs/shadow-candidate/summary.json")
+          base_status = int(os.environ.get("BASE_STATUS", "999"))
+          candidate_status = int(os.environ.get("CANDIDATE_STATUS", "999"))
+          valid_run = (
+              base_status == 0
+              and candidate_status == 0
+              and base is not None
+              and candidate is not None
+              and base.get("total") == 25
+              and candidate.get("total") == 25
+          )
+          verdict = (
+              evaluate_shadow_promotion(base, candidate)
+              if valid_run
+              else {
+                  "promote": False,
+                  "correct_delta": None,
+                  "completion_delta": None,
+                  "new_catastrophic_failures": [],
+                  "reasons": ["incomplete_shadow_run"],
+              }
+          )
+          payload = {
+              "schema_version": "gaia-shadow-gate/v1",
+              "baseline_sha": os.environ.get("BASELINE_SHA"),
+              "candidate_sha": os.environ.get("GITHUB_SHA"),
+              "candidate_name": os.environ.get("CANDIDATE_NAME"),
+              "exposure": int(os.environ.get("EXPOSURE", "0")),
+              "model": os.environ.get("MODEL"),
+              "model_digest": os.environ.get("MODEL_DIGEST"),
+              "gaia_revision": "682dd723ee1e1697e00360edccf2366dc8418dd9",
+              "partition": "shadow",
+              "max_steps": 12,
+              "max_new_tokens": 512,
+              "thinking": False,
+              "valid_run": valid_run,
+              "baseline": base,
+              "candidate": candidate,
+              "verdict": verdict,
+          }
+          Path("gaia-shadow-summary.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          print(json.dumps({
+              "valid_run": valid_run,
+              "baseline_correct": None if base is None else base.get("correct"),
+              "candidate_correct": None if candidate is None else candidate.get("correct"),
+              "verdict": verdict,
+          }, indent=2))
+          PY
+
+      - name: Remove gated raw data
+        if: always()
+        shell: bash
+        run: rm -rf runs/shadow-base runs/shadow-candidate
+
+      - name: Upload sanitized aggregate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaia-shadow-gate-${{ steps.meta.outputs.exposure }}
+          path: gaia-shadow-summary.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce valid paired run
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path("gaia-shadow-summary.json").read_text(encoding="utf-8"))
+          raise SystemExit(0 if payload["valid_run"] else 1)
+          PY
