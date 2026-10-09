@@ -38,6 +38,7 @@ def test_step_limit_gets_one_tool_free_finalization_call(tmp_path):
     assert result.answer == "42"
     assert result.stop_reason == "final_after_step_limit"
     assert len(model.calls) == 3
+    assert result.metrics.model_calls == 3
     assert model.calls[-1][1] == []
     assert "tool budget" in model.calls[-1][0][-1]["content"].casefold()
     assert result.trace[-1].kind == "final_after_step_limit"
@@ -61,5 +62,6 @@ def test_step_limit_finalization_does_not_execute_more_tools(tmp_path):
     assert model.calls == 3
     assert result.completed is False
     assert result.stop_reason == "max_steps"
+    assert result.metrics.model_calls == 3
     assert result.metrics.tool_calls == 2
     assert result.trace[-1].kind == "step_limit_finalization_failed"
