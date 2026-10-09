@@ -2,3 +2,4 @@ seed=tinyagent-policy-v1
 model=qwen3.5:4b
 heldout=200
 shards=10
+run=1
