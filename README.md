@@ -27,6 +27,7 @@
 | **Question** | Can QLoRA improve the tool-use policy of a small local agent, or does it mostly add training cost? |
 | **What I built** | A single-model Qwen3.5-4B agent with `search`, `read`, `inspect`, and `python`, plus trajectory collection, QLoRA training, leakage guards, and a Base-vs-LoRA comparator. |
 | **Runtime** | Local CLI with bounded tool I/O, explicit backend failure states, readiness checks, atomic run artifacts, and visible action traces. |
+| **GitHub baseline** | Qwen3.5-4B completed **12/12** frozen local held-out tasks on a GitHub-hosted Ubuntu runner: **10/12 strict answers**, **9/12 strict full-pass**. |
 | **Current answer** | **Unanswered.** The experiment infrastructure exists, but there is no valid Base-vs-LoRA improvement claim yet. |
 | **Design focus** | Controlled evaluation, visible trajectories, bounded tool use, and honest stop conditions under local hardware constraints. |
 
@@ -101,6 +102,7 @@ That makes the result easier to interpret than comparing two unrelated agents.
 |---|---|
 | Tool-using agent runtime | ✅ Implemented |
 | Runtime readiness / failure contracts | ✅ Implemented |
+| GitHub-hosted Ollama held-out baseline | ✅ 12 / 12 completed |
 | GAIA evaluation runner | ✅ Implemented |
 | Visible trajectory logging | ✅ Implemented |
 | Verified trajectory collector | ✅ Implemented |
@@ -111,6 +113,34 @@ That makes the result easier to interpret than comparing two unrelated agents.
 | Final Base-vs-LoRA result | ⏳ Not yet established |
 
 ## Current evidence
+
+### GitHub-hosted local held-out baseline
+
+A frozen, self-authored 12-case set exercises local `read`, `inspect`, `python`, and multi-step tool use without reusing the synthetic training questions. GitHub Actions installs Ollama on a hosted Ubuntu runner, pulls the real `qwen3.5:4b` model, checks runtime readiness, and runs the agent end to end.
+
+| Frozen baseline fact | Result |
+|---|---:|
+| Model | `qwen3.5:4b` |
+| Completed | **12 / 12** |
+| Strict answer accuracy | **10 / 12 (83.3%)** |
+| Prescribed-tool pass | **10 / 12 (83.3%)** |
+| Strict full-pass | **9 / 12 (75.0%)** |
+| Tool success | **15 / 16 (93.8%)** |
+| Duplicate-call blocks | **0** |
+| Read strict accuracy | **3 / 3** |
+| Inspect strict accuracy | **3 / 3** |
+| Compute strict accuracy | **3 / 3** |
+| Multi-step strict accuracy | **1 / 3** |
+
+The frozen benchmark SHA-256 is `2fa5314ea8b48e8dbda91ba0207f75a22b482861f47e1d4ba787bb8ac1a678f9`; the Ollama model digest is `d8b0f5e9760cd1682034f292d7ef72ec46f432149be0df7574bf2d6e92e38c04`.
+
+Evidence: [`evaluation/local-heldout-v1/cases.jsonl`](evaluation/local-heldout-v1/cases.jsonl), [`evaluation/local-heldout-v1/result.json`](evaluation/local-heldout-v1/result.json), and [GitHub Actions run 37881814240](https://github.com/kolihhan/small-agent-qlora/actions/runs/37881814240).
+
+The two strict answer failures still contained the correct target values (`2176` and `115`) but violated the requested return-only format. That is recorded as a **post-hoc diagnostic**, not promoted to the frozen benchmark score. One additional full-pass miss answered correctly using `read` instead of the benchmark's prescribed `inspect` route. The trace also shows one successful recovery from a blocked Python import: the model changed strategy and returned the correct GCD on its next call.
+
+The main observed weakness in this small baseline is therefore **multi-step output discipline**, not single-step retrieval or arithmetic. Because these outputs have now been inspected, this v1 set should be treated as diagnostic data for future changes rather than reused as an unseen validation set.
+
+### Earlier GAIA diagnostic attempt
 
 An earlier diagnostic attempt stopped after **13 persisted tasks** because the machine crossed the RAM safety guard. It is preserved as debugging evidence, not presented as a complete benchmark.
 
@@ -287,6 +317,8 @@ small-agent-qlora/
 ## Verification
 
 CPU-only CI verifies package installation, CLI entry-point loading, tests, and compilation on Linux and Windows. Real model/GAIA evidence remains a separate local experiment contract; passing CI is not a benchmark result.
+
+The GitHub-hosted Ollama workflow is separate from unit CI: it downloads the actual 4B model and produces an explicit held-out report artifact rather than treating a green unit-test job as model evidence.
 
 See [`docs/verification.md`](docs/verification.md) for the distinction between repository verification and preserved experiment evidence.
 

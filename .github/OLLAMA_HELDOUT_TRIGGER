@@ -1,0 +1,3 @@
+local-heldout-v1
+model=qwen3.5:4b
+cases_sha256=2fa5314ea8b48e8dbda91ba0207f75a22b482861f47e1d4ba787bb8ac1a678f9

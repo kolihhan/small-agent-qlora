@@ -1,0 +1,105 @@
+name: Ollama held-out v1
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/OLLAMA_HELDOUT_TRIGGER"
+
+permissions:
+  contents: read
+
+env:
+  MODEL: qwen3.5:4b
+  CASES_SHA256: 2fa5314ea8b48e8dbda91ba0207f75a22b482861f47e1d4ba787bb8ac1a678f9
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Verify frozen benchmark
+        run: echo "${CASES_SHA256}  evaluation/local-heldout-v1/cases.jsonl" | sha256sum -c -
+
+      - name: Install project
+        run: python -m pip install -e ".[search,files]"
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+
+      - name: Start Ollama and pull model
+        run: |
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
+          ollama pull "$MODEL"
+          ollama list
+
+      - name: Runtime readiness
+        run: small-agent doctor --model "$MODEL" --ollama-url http://127.0.0.1:11434 --workspace runs/doctor
+
+      - name: Run frozen 12-case benchmark
+        run: |
+          python -m gaia_small_agent.benchmark.local_heldout \
+            --cases evaluation/local-heldout-v1/cases.jsonl \
+            --output runs/local-heldout-v1/report.json \
+            --work-root runs/local-heldout-v1/work \
+            --model "$MODEL" \
+            --ollama-url http://127.0.0.1:11434 \
+            --max-steps 6 \
+            --max-new-tokens 256 \
+            --timeout 600
+
+      - name: Print benchmark result
+        if: always()
+        run: |
+          if [ ! -f runs/local-heldout-v1/report.json ]; then
+            echo "No benchmark report was produced."
+            exit 0
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("runs/local-heldout-v1/report.json").read_text(encoding="utf-8"))
+          m = report["metrics"]
+          print("=== SMALL-AGENT HELD-OUT RESULT ===")
+          print(f"model={report['model']['name']} digest={report['model']['digest']}")
+          print(f"benchmark_sha256={report['benchmark_sha256']}")
+          print(f"answer_accuracy={m['correct']}/{report['sample_size']} ({m['accuracy']:.3f})")
+          print(f"required_tool_pass={m['required_tool_pass']}/{report['sample_size']} ({m['required_tool_pass_rate']:.3f})")
+          print(f"full_pass={m['full_pass']}/{report['sample_size']} ({m['full_pass_rate']:.3f})")
+          print(f"completion_rate={m['completion_rate']:.3f} tool_success_rate={m['tool_success_rate']:.3f}")
+          print(f"tool_calls={m['tool_calls']} tool_errors={m['tool_errors']} duplicate_blocks={m['duplicate_calls_blocked']}")
+          for category, row in m["by_category"].items():
+              print(f"category={category} correct={row['correct']}/{row['total']} full_pass={row['full_pass']}/{row['total']}")
+          print("--- cases ---")
+          for row in report["cases"]:
+              print(
+                  f"{row['id']}: correct={row['correct']} required_ok={row['required_tools_satisfied']} "
+                  f"full_pass={row['full_pass']} used_tools={row['used_tools']} answer={row['answer']!r}"
+              )
+          PY
+
+      - name: Upload benchmark report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: small-agent-local-heldout-v1
+          path: runs/local-heldout-v1/report.json
+          if-no-files-found: warn
+          retention-days: 14
