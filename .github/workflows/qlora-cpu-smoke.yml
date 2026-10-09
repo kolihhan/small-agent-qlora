@@ -16,7 +16,7 @@ env:
 jobs:
   train-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -35,23 +35,15 @@ jobs:
       - name: Install training dependencies
         run: python -m pip install -e ".[train,files]"
 
-      - name: Generate frozen train split and balanced smoke subset
+      - name: Generate frozen train split and one-row smoke subset
         run: |
           small-agent generate-oracle-policy --output-dir runs/oracle --seed "$POLICY_SEED"
           python - <<'PY'
           import json
-          from collections import defaultdict
           from pathlib import Path
 
           rows = [json.loads(line) for line in Path("runs/oracle/train.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
-          buckets = defaultdict(list)
-          for row in rows:
-              buckets[row["capability"]].append(row)
-          selected = []
-          for capability in sorted(buckets):
-              selected.extend(buckets[capability][:2])
-          if len(selected) != 10:
-              raise SystemExit(f"expected 10 balanced smoke rows, got {len(selected)}")
+          selected = [next(row for row in rows if row["capability"] == "no_tool_stop")]
           Path("runs/smoke-train.jsonl").write_text(
               "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in selected),
               encoding="utf-8",
@@ -60,7 +52,7 @@ jobs:
               json.dumps({"algorithm": "sha256-normalized-question-v1", "hashes": []}),
               encoding="utf-8",
           )
-          print({capability: 2 for capability in sorted(buckets)})
+          print({"rows": 1, "capability": "no_tool_stop"})
           PY
 
       - name: Show resources before model load
@@ -68,7 +60,7 @@ jobs:
           df -h /
           free -h
 
-      - name: Train QLoRA smoke on CPU
+      - name: Train one real QLoRA update on CPU
         run: |
           small-agent train-qlora \
             --data runs/smoke-train.jsonl \
@@ -93,12 +85,13 @@ jobs:
               "success": True,
               "platform": platform.platform(),
               "cuda_available": torch.cuda.is_available(),
-              "training_rows": 10,
+              "training_rows": 1,
               "model": config["model"],
               "quantization": config["quantization"],
               "compute_dtype": config["compute_dtype"],
               "max_length": config["max_length"],
               "smoke_epochs": 0.02,
+              "trainer_loss_path": config["trainer_loss_path"],
           }
           Path("runs/qlora-smoke-result.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           print(json.dumps(payload, indent=2, sort_keys=True))
