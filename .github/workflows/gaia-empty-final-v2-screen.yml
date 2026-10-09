@@ -1,0 +1,84 @@
+name: GAIA empty-final recovery v2 screen
+
+on:
+  push:
+    paths:
+      - ".github/GAIA_EMPTY_FINAL_V2_TRIGGER"
+
+permissions:
+  contents: read
+
+env:
+  MODEL: qwen3.5:4b
+  OLLAMA_URL: http://127.0.0.1:11434
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+jobs:
+  candidate13:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout v2 candidate
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Verify gated dataset credential
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "HF_TOKEN_NOT_CONFIGURED"
+            exit 42
+          fi
+
+      - name: Install dependencies
+        run: python -m pip install -e ".[eval,search,files]"
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+
+      - name: Start Ollama and pull model
+        run: |
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in {1..30}; do
+            if curl -fsS "$OLLAMA_URL/api/tags" >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS "$OLLAMA_URL/api/tags" >/dev/null
+          ollama pull "$MODEL"
+
+      - name: Run v2 first 13 Diagnostic25 cases
+        run: |
+          small-agent gaia-eval \
+            --source gaia-benchmark/GAIA \
+            --hf-token "$HF_TOKEN" \
+            --partition diagnostic \
+            --limit 13 \
+            --backend ollama \
+            --model "$MODEL" \
+            --ollama-url "$OLLAMA_URL" \
+            --max-steps 4 \
+            --max-new-tokens 512 \
+            --work-root runs/gaia-empty-final-v2-screen \
+            --protected-questions runs/gaia-protected-v2.json
+
+      - name: Print sanitized summary
+        if: always()
+        run: |
+          if [ -f runs/gaia-empty-final-v2-screen/summary.json ]; then
+            cat runs/gaia-empty-final-v2-screen/summary.json
+          else
+            echo "NO_SUMMARY"
+          fi
+
+      - name: Upload sanitized summary only
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gaia-empty-final-v2-screen-summary
+          path: runs/gaia-empty-final-v2-screen/summary.json
+          if-no-files-found: warn
+          retention-days: 14
