@@ -1,0 +1,104 @@
+name: GAIA policy candidate screen
+
+on:
+  push:
+    paths:
+      - ".github/GAIA_POLICY_CANDIDATE_SCREEN_TRIGGER"
+
+permissions:
+  contents: read
+
+env:
+  MODEL: qwen3.5:4b
+  OLLAMA_URL: http://127.0.0.1:11434
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+jobs:
+  candidate-screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Verify gated dataset credential
+        run: test -n "$HF_TOKEN"
+
+      - name: Install dependencies
+        run: python -m pip install -e ".[eval,search,files]"
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+
+      - name: Start Ollama and pull model
+        run: |
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in {1..30}; do
+            curl -fsS "$OLLAMA_URL/api/tags" >/dev/null && break
+            sleep 1
+          done
+          curl -fsS "$OLLAMA_URL/api/tags" >/dev/null
+          ollama pull "$MODEL"
+
+      - name: Run candidate on first 13 Diagnostic25 cases
+        run: |
+          python -m gaia_small_agent.cli gaia-eval \
+            --source gaia-benchmark/GAIA \
+            --hf-token "$HF_TOKEN" \
+            --partition diagnostic \
+            --limit 13 \
+            --backend ollama \
+            --model "$MODEL" \
+            --ollama-url "$OLLAMA_URL" \
+            --max-steps 4 \
+            --max-new-tokens 512 \
+            --work-root runs/candidate-screen13 \
+            --protected-questions runs/candidate-screen-protected.json
+
+      - name: Print sanitized candidate screen
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('runs/candidate-screen13/summary.json')
+          candidate = json.loads(p.read_text()) if p.exists() else None
+          baseline = {
+              'correct': 0,
+              'total': 13,
+              'completed': 2,
+              'max_steps_failures': 10,
+              'tool_calls': 46,
+              'source_run_id': 37905105429,
+          }
+          out = {
+              'schema_version': 'gaia-policy-candidate-screen/v1',
+              'screen_only': True,
+              'max_steps': 4,
+              'baseline_reference': baseline,
+              'candidate': candidate,
+          }
+          if candidate:
+              out['delta'] = {
+                  'correct': candidate['correct'] - baseline['correct'],
+                  'completed': candidate['completed'] - baseline['completed'],
+                  'max_steps_failures': candidate.get('failure_labels', {}).get('max_steps', 0) - baseline['max_steps_failures'],
+                  'tool_calls': candidate['tool_calls'] - baseline['tool_calls'],
+              }
+          print(json.dumps(out, indent=2))
+          Path('runs/gaia-policy-candidate-screen.json').write_text(json.dumps(out, indent=2) + '\n')
+          PY
+
+      - name: Upload sanitized candidate screen
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gaia-policy-candidate-screen
+          path: runs/gaia-policy-candidate-screen.json
+          retention-days: 14
