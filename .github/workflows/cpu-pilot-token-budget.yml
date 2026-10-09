@@ -25,7 +25,7 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install tokenizer dependencies
-        run: python -m pip install -e ".[files]" "transformers>=5.15,<6"
+        run: python -m pip install -e ".[files]" "transformers>=5.15,<6" "jinja2>=3.1"
       - name: Measure frozen training examples
         shell: bash
         run: |
