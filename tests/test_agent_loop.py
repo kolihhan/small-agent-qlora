@@ -238,12 +238,15 @@ def test_model_runtime_error_stops_cleanly_with_structured_trace(tmp_path, stop_
     assert result.trace[-1].data == {"stop_reason": stop_reason, "message": "backend failed"}
 
 
-def test_empty_final_answer_is_not_completed(tmp_path):
-    model = ScriptedModel([AssistantTurn(content="   ", tool_calls=[])])
+def test_empty_final_answer_stays_incomplete_after_one_failed_recovery(tmp_path):
+    model = ScriptedModel([
+        AssistantTurn(content="   ", tool_calls=[]),
+        AssistantTurn(content="   ", tool_calls=[]),
+    ])
 
     result = AgentRuntime(model, [], max_steps=2).run("answer", tmp_path)
 
     assert result.completed is False
     assert result.stop_reason == "empty_final"
     assert result.answer == ""
-    assert result.trace[-1].kind == "empty_final"
+    assert result.trace[-1].kind == "empty_final_recovery_failed"
