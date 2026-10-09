@@ -1,9 +1,6 @@
 name: CPU Pilot Token Budget Diagnostic
 
 on:
-  push:
-    branches:
-      - experiment/cpu-pilot-smoke
   workflow_dispatch:
 
 permissions:
