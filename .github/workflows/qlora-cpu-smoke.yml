@@ -74,7 +74,7 @@ jobs:
             --data runs/smoke-train.jsonl \
             --output runs/qlora-smoke-adapter \
             --hf-model "$HF_MODEL" \
-            --max-length 512 \
+            --max-length 1536 \
             --epochs 0.02 \
             --protected-questions runs/empty-protected.json
 
