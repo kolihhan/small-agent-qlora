@@ -1,7 +1,7 @@
 from gaia_small_agent.tools.base import ToolResult
 
 
-def test_preflight_smokes_exact_default_surface(monkeypatch, tmp_path):
+def test_preflight_smokes_exact_default_surface_without_live_search(monkeypatch, tmp_path):
     from gaia_small_agent import tools
 
     calls = []
@@ -12,6 +12,8 @@ def test_preflight_smokes_exact_default_surface(monkeypatch, tmp_path):
 
         def run(self, arguments, workspace):
             calls.append((self.name, arguments, workspace))
+            if self.name == "search":
+                raise AssertionError("evaluation preflight must not depend on a live search response")
             content = "42" if self.name == "python" else "p4-tool-preflight"
             return ToolResult(True, content)
 
@@ -21,12 +23,13 @@ def test_preflight_smokes_exact_default_surface(monkeypatch, tmp_path):
     result = tools.preflight_default_tools(tmp_path)
 
     assert result["tool_names"] == ["search", "read", "inspect", "python"]
-    assert [name for name, _, _ in calls] == result["tool_names"]
+    assert [name for name, _, _ in calls] == ["read", "inspect", "python"]
     assert all(item[2] == tmp_path for item in calls)
 
 
-def test_preflight_fails_before_inference_when_a_tool_is_unavailable(monkeypatch, tmp_path):
+def test_preflight_fails_before_inference_when_search_dependency_is_unavailable(monkeypatch, tmp_path):
     import pytest
+    from importlib.metadata import PackageNotFoundError
     from gaia_small_agent import tools
 
     class FakeTool:
@@ -34,11 +37,16 @@ def test_preflight_fails_before_inference_when_a_tool_is_unavailable(monkeypatch
             self.name = name
 
         def run(self, arguments, workspace):
-            if self.name == "search":
-                return ToolResult(False, "ddgs missing", "MISSING_DEPENDENCY")
-            return ToolResult(True, "42" if self.name == "python" else "ok")
+            return ToolResult(True, "42" if self.name == "python" else "p4-tool-preflight")
 
     monkeypatch.setattr(tools, "default_tools", lambda: [FakeTool(name) for name in ("search", "read", "inspect", "python")])
+
+    def fake_version(package):
+        if package == "ddgs":
+            raise PackageNotFoundError(package)
+        return "test"
+
+    monkeypatch.setattr(tools, "version", fake_version)
 
     with pytest.raises(RuntimeError, match="search preflight failed: MISSING_DEPENDENCY"):
         tools.preflight_default_tools(tmp_path)
