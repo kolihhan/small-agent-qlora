@@ -33,9 +33,8 @@ def test_trajectory_from_result_preserves_tool_observation_and_final_answer():
     assert row["messages"][-1]["content"] == "646"
 
 
-def test_collector_writes_only_verified_non_gaia_rows(tmp_path):
-    tasks = tmp_path / "tasks.jsonl"
-    tasks.write_text(
+def _collector_tasks(path):
+    path.write_text(
         "\n".join([
             json.dumps({"id": "ok", "source": "synthetic", "license": "CC0-1.0", "generator": "unit", "generator_version": "1", "oracle_type": "exact", "oracle_version": "1", "required_tools": [], "question": "q1", "expected_answer": "yes"}),
             json.dumps({"id": "bad", "source": "synthetic", "license": "CC0-1.0", "generator": "unit", "generator_version": "1", "oracle_type": "exact", "oracle_version": "1", "required_tools": [], "question": "q2", "expected_answer": "no"}),
@@ -44,17 +43,39 @@ def test_collector_writes_only_verified_non_gaia_rows(tmp_path):
         encoding="utf-8",
     )
 
-    class Runtime:
-        tools = {}
-        def run(self, question, workspace):
-            answer = "yes"
-            return AgentResult(answer, True, "final", [TraceEvent("final", 1, {"answer": answer})], RunMetrics(steps=1))
+
+class _CollectorRuntime:
+    tools = {}
+
+    def run(self, question, workspace):
+        answer = "yes"
+        return AgentResult(answer, True, "final", [TraceEvent("final", 1, {"answer": answer})], RunMetrics(steps=1))
+
+
+def test_collector_writes_only_verified_non_gaia_rows(tmp_path):
+    tasks = tmp_path / "tasks.jsonl"
+    _collector_tasks(tasks)
 
     output = tmp_path / "verified.jsonl"
-    summary = collect_verified_trajectories(tasks, output, Runtime, tmp_path / "runs")
+    summary = collect_verified_trajectories(tasks, output, _CollectorRuntime, tmp_path / "runs")
     rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
     assert [r["task_id"] for r in rows] == ["ok"]
     assert summary == {"total": 3, "verified": 1, "failed": 1, "rejected_gaia": 1}
+
+
+def test_collector_reuses_one_runtime_across_eligible_tasks(tmp_path):
+    tasks = tmp_path / "tasks.jsonl"
+    _collector_tasks(tasks)
+    factory_calls = 0
+
+    def factory():
+        nonlocal factory_calls
+        factory_calls += 1
+        return _CollectorRuntime()
+
+    collect_verified_trajectories(tasks, tmp_path / "verified.jsonl", factory, tmp_path / "runs")
+
+    assert factory_calls == 1
 
 
 def test_correct_final_answer_is_not_verified_when_policy_trace_is_dirty():
