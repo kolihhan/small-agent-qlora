@@ -1,9 +1,6 @@
 name: CPU Policy Pilot
 
 on:
-  push:
-    branches:
-      - experiment/cpu-pilot-smoke
   workflow_dispatch:
 
 permissions:
@@ -80,8 +77,7 @@ jobs:
                   for row in result["tasks"]
               ],
           }
-          line = "CPU_POLICY_PILOT_SUMMARY_JSON=" + json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
-          print(line)
+          print("CPU_POLICY_PILOT_SUMMARY_JSON=" + json.dumps(compact, ensure_ascii=False, separators=(",", ":")))
           Path("pilot-summary.json").write_text(json.dumps(compact, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
           PY
 
