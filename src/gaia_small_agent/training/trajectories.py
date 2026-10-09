@@ -209,6 +209,8 @@ def collect_verified_trajectories(
             handle.flush()
         progress[task_id] = status
 
+    runtime: AgentRuntime | None = None
+    tool_schemas: list[dict] | None = None
     for line_number, task in tasks:
         source = str(task.get("source") or "")
         task_id = str(task.get("id") or f"task-{line_number}")
@@ -228,8 +230,9 @@ def collect_verified_trajectories(
             record_progress(task_id, "rejected_protected")
             continue
         expected = str(task["expected_answer"])
-        runtime = runtime_factory()
-        tool_schemas = [tool.definition() for tool in runtime.tools.values()]
+        if runtime is None:
+            runtime = runtime_factory()
+            tool_schemas = [tool.definition() for tool in runtime.tools.values()]
         workspace = work_root / task_id
         workspace.mkdir(parents=True, exist_ok=True)
         _materialize_files(task, workspace)
@@ -240,7 +243,7 @@ def collect_verified_trajectories(
             question=question,
             expected_answer=expected,
             result=result,
-            tools=tool_schemas,
+            tools=tool_schemas or [],
             required_tools=required_tools,
             provenance=provenance,
         )
