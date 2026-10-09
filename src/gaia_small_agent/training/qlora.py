@@ -86,6 +86,14 @@ def _render_turn_examples(processor, rows: list[dict]) -> list[dict[str, str]]:
     return examples
 
 
+def _training_precision(torch) -> tuple[Any, bool, bool]:
+    if not torch.cuda.is_available():
+        return torch.float32, False, False
+    if torch.cuda.is_bf16_supported():
+        return torch.bfloat16, True, False
+    return torch.float16, False, True
+
+
 def train_qlora(
     data_path: str | Path,
     output_dir: str | Path,
@@ -109,7 +117,7 @@ def train_qlora(
         raise RuntimeError("Install training dependencies: pip install -e '.[train]'") from exc
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    compute_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+    compute_dtype, use_bf16, use_fp16 = _training_precision(torch)
     bnb = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -171,8 +179,8 @@ def train_qlora(
         logging_steps=5,
         save_strategy="epoch",
         report_to="none",
-        bf16=(compute_dtype == torch.bfloat16),
-        fp16=(compute_dtype == torch.float16),
+        bf16=use_bf16,
+        fp16=use_fp16,
     )
     trainer = SFTTrainer(
         model=language_model,
