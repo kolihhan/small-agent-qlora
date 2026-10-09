@@ -53,6 +53,7 @@ class AgentRuntime:
 
         for step in range(1, self.max_steps + 1):
             metrics.steps = step
+            metrics.model_calls += 1
             try:
                 turn = self.model.complete(messages, [t.definition() for t in self.tools.values()])
             except ModelCapacityError:
@@ -116,6 +117,7 @@ class AgentRuntime:
 
         finalization_step = self.max_steps + 1
         messages.append({"role": "user", "content": _STEP_LIMIT_FINALIZATION})
+        metrics.model_calls += 1
         try:
             turn = self.model.complete(messages, [])
         except ModelCapacityError:
