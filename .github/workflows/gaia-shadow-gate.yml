@@ -1,0 +1,168 @@
+name: GAIA shadow gate
+
+on:
+  push:
+    paths:
+      - ".github/GAIA_SHADOW_TRIGGER"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MODEL: qwen3.5:4b
+  OLLAMA_URL: http://127.0.0.1:11434
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+jobs:
+  paired-shadow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Read bounded exposure metadata
+        id: protocol
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline_sha="$(grep '^baseline_sha=' .github/GAIA_SHADOW_TRIGGER | cut -d= -f2-)"
+          exposure="$(grep '^exposure=' .github/GAIA_SHADOW_TRIGGER | cut -d= -f2-)"
+          candidate_name="$(grep '^candidate_name=' .github/GAIA_SHADOW_TRIGGER | cut -d= -f2-)"
+          if [[ ! "$baseline_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "baseline_sha must be a 40-character lowercase Git SHA" >&2
+            exit 2
+          fi
+          if [[ ! "$exposure" =~ ^[123]$ ]]; then
+            echo "exposure must be 1, 2, or 3" >&2
+            exit 2
+          fi
+          if [[ -z "$candidate_name" ]]; then
+            echo "candidate_name must be non-empty" >&2
+            exit 2
+          fi
+          echo "baseline_sha=$baseline_sha" >> "$GITHUB_OUTPUT"
+          echo "exposure=$exposure" >> "$GITHUB_OUTPUT"
+          echo "candidate_name=$candidate_name" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout frozen baseline
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ steps.protocol.outputs.baseline_sha }}
+          path: baseline
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Verify gated dataset credential
+        shell: bash
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "HF_TOKEN_NOT_CONFIGURED"
+            exit 42
+          fi
+
+      - name: Install evaluation dependencies
+        run: python -m pip install -e ".[eval,search,files]"
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+
+      - name: Start Ollama and pull model
+        shell: bash
+        run: |
+          set -euo pipefail
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in {1..30}; do
+            if curl -fsS "$OLLAMA_URL/api/tags" >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS "$OLLAMA_URL/api/tags" >/dev/null
+          ollama pull "$MODEL"
+          model_id="$(ollama list | awk -v model="$MODEL" '$1 == model {print $2; exit}')"
+          if [ -z "$model_id" ]; then
+            echo "Could not resolve Ollama model ID" >&2
+            exit 3
+          fi
+          echo "MODEL_ID=$model_id" >> "$GITHUB_ENV"
+
+      - name: Candidate runtime readiness
+        run: small-agent doctor --model "$MODEL" --ollama-url "$OLLAMA_URL" --workspace runs/doctor
+
+      - name: Run frozen baseline Shadow25
+        shell: bash
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE/baseline/src" python -m gaia_small_agent.cli gaia-eval \
+            --source gaia-benchmark/GAIA \
+            --hf-token "$HF_TOKEN" \
+            --partition shadow \
+            --backend ollama \
+            --model "$MODEL" \
+            --ollama-url "$OLLAMA_URL" \
+            --max-steps 12 \
+            --max-new-tokens 512 \
+            --work-root runs/gaia-baseline-shadow \
+            --protected-questions runs/baseline-protected.json
+
+      - name: Run frozen candidate Shadow25
+        shell: bash
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE/src" python -m gaia_small_agent.cli gaia-eval \
+            --source gaia-benchmark/GAIA \
+            --hf-token "$HF_TOKEN" \
+            --partition shadow \
+            --backend ollama \
+            --model "$MODEL" \
+            --ollama-url "$OLLAMA_URL" \
+            --max-steps 12 \
+            --max-new-tokens 512 \
+            --work-root runs/gaia-candidate-shadow \
+            --protected-questions runs/candidate-protected.json
+
+      - name: Build aggregate promotion verdict
+        env:
+          BASELINE_SHA: ${{ steps.protocol.outputs.baseline_sha }}
+          EXPOSURE: ${{ steps.protocol.outputs.exposure }}
+          CANDIDATE_NAME: ${{ steps.protocol.outputs.candidate_name }}
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from gaia_small_agent.benchmark.promotion import evaluate_shadow_promotion
+
+          base = json.loads(Path("runs/gaia-baseline-shadow/summary.json").read_text(encoding="utf-8"))
+          candidate = json.loads(Path("runs/gaia-candidate-shadow/summary.json").read_text(encoding="utf-8"))
+          verdict = evaluate_shadow_promotion(base, candidate)
+          payload = {
+              "schema_version": "gaia-shadow-gate/v1",
+              "partition": "shadow",
+              "exposure": int(os.environ["EXPOSURE"]),
+              "baseline_sha": os.environ["BASELINE_SHA"],
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "candidate_name": os.environ["CANDIDATE_NAME"],
+              "model": os.environ["MODEL"],
+              "model_id": os.environ["MODEL_ID"],
+              "baseline": base,
+              "candidate": candidate,
+              "verdict": verdict,
+          }
+          out = Path("runs/shadow-gate-summary.json")
+          out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload sanitized aggregate only
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaia-shadow-gate-summary
+          path: runs/shadow-gate-summary.json
+          if-no-files-found: error
+          retention-days: 14
