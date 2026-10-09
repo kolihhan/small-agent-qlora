@@ -1,9 +1,6 @@
 name: CPU Pilot Smoke
 
 on:
-  push:
-    branches:
-      - experiment/cpu-pilot-smoke
   workflow_dispatch:
 
 permissions:
@@ -34,7 +31,6 @@ jobs:
         run: |
           python - <<'PY'
           import json
-          import os
           import platform
           import time
 
