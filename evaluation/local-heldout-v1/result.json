@@ -1,0 +1,87 @@
+{
+  "schema_version": "small-agent-heldout-summary/v1",
+  "status": "complete",
+  "benchmark": "local-heldout-v1",
+  "benchmark_sha256": "2fa5314ea8b48e8dbda91ba0207f75a22b482861f47e1d4ba787bb8ac1a678f9",
+  "sample_size": 12,
+  "model": {
+    "name": "qwen3.5:4b",
+    "digest": "d8b0f5e9760cd1682034f292d7ef72ec46f432149be0df7574bf2d6e92e38c04"
+  },
+  "github": {
+    "run_id": 37881814240,
+    "job_id": 113662973180,
+    "head_sha": "9772acba99472469a297bc5ef2f1d570bf904189",
+    "runner_os": "Linux",
+    "artifact_id": 11595340940,
+    "artifact_name": "small-agent-local-heldout-v1",
+    "artifact_zip_sha256": "4e28ef1b2dad3a174d0fc644c3315977c529144889d9beb913e5192a28ea47aa"
+  },
+  "runtime": {
+    "max_steps": 6,
+    "max_new_tokens": 256,
+    "thinking": false
+  },
+  "metrics": {
+    "strict_answer_accuracy": {"correct": 10, "total": 12, "rate": 0.8333333333333334},
+    "completion": {"completed": 12, "total": 12, "rate": 1.0},
+    "prescribed_route_pass": {"passed": 10, "total": 12, "rate": 0.8333333333333334},
+    "strict_full_pass": {"passed": 9, "total": 12, "rate": 0.75},
+    "tool_calls": 16,
+    "tool_successes": 15,
+    "tool_errors": 1,
+    "duplicate_calls_blocked": 0,
+    "tool_success_rate": 0.9375,
+    "average_steps": 2.25,
+    "mean_latency_ms": 14488.64653041667,
+    "by_category": {
+      "read": {"strict_correct": 3, "total": 3, "strict_full_pass": 3},
+      "inspect": {"strict_correct": 3, "total": 3, "strict_full_pass": 2},
+      "compute": {"strict_correct": 3, "total": 3, "strict_full_pass": 3},
+      "multi_step": {"strict_correct": 1, "total": 3, "strict_full_pass": 1}
+    }
+  },
+  "audit": {
+    "strict_failures": [
+      {
+        "case_id": "heldout-multi-01",
+        "expected": "2176",
+        "answer": "The result is 2176.",
+        "note": "Correct numeric value but violated the requested return-only format."
+      },
+      {
+        "case_id": "heldout-multi-03",
+        "expected": "115",
+        "answer": "The multiplier is 23 and the number of columns in orders.csv is 5.\n\n23 × 5 = 115",
+        "note": "Correct numeric value but violated the requested return-only format."
+      }
+    ],
+    "route_mismatches": [
+      {
+        "case_id": "heldout-inspect-03",
+        "required": ["inspect"],
+        "used": ["read"],
+        "strict_answer_correct": true,
+        "note": "The answer was correct; required-tool pass here measures a prescribed route rather than task correctness."
+      },
+      {
+        "case_id": "heldout-multi-03",
+        "required": ["read", "inspect", "python"],
+        "used": ["read", "inspect"],
+        "strict_answer_correct": false,
+        "note": "The model obtained both operands and computed 115 without Python; this route mismatch should not be treated as a reasoning failure by itself."
+      }
+    ],
+    "recovery": {
+      "case_id": "heldout-compute-03",
+      "first_error": "UNSAFE_PYTHON: imports are not allowed",
+      "outcome": "Recovered on the next Python call and returned 12 correctly."
+    },
+    "posthoc_value_audit": {
+      "matched_target_value": 12,
+      "total": 12,
+      "rate": 1.0,
+      "claim_scope": "Diagnostic only. This was computed after observing outputs and is not the frozen benchmark score."
+    }
+  }
+}
