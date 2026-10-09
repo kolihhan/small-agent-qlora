@@ -13,11 +13,11 @@
 </p>
 
 <p align="center">
+  <a href="#runtime">Runtime</a> ·
   <a href="#the-experiment">Experiment</a> ·
-  <a href="#agent-loop">Agent loop</a> ·
-  <a href="#current-evidence">Current evidence</a> ·
+  <a href="#current-evidence">Evidence</a> ·
   <a href="#quickstart">Quickstart</a> ·
-  <a href="#evaluation-contract">Evaluation contract</a>
+  <a href="#evaluation-contract">Evaluation</a>
 </p>
 
 ## At a glance
@@ -26,11 +26,45 @@
 |---|---|
 | **Question** | Can QLoRA improve the tool-use policy of a small local agent, or does it mostly add training cost? |
 | **What I built** | A single-model Qwen3.5-4B agent with `search`, `read`, `inspect`, and `python`, plus trajectory collection, QLoRA training, leakage guards, and a Base-vs-LoRA comparator. |
+| **Runtime** | Local CLI with bounded tool I/O, explicit backend failure states, readiness checks, atomic run artifacts, and visible action traces. |
 | **Current answer** | **Unanswered.** The experiment infrastructure exists, but there is no valid Base-vs-LoRA improvement claim yet. |
 | **Design focus** | Controlled evaluation, visible trajectories, bounded tool use, and honest stop conditions under local hardware constraints. |
 
 > [!NOTE]
 > This repository treats **“QLoRA was not justified by the available evidence”** as a valid outcome. The goal is not to force a fine-tuning success story.
+
+## Runtime
+
+The runtime intentionally stays small: one model chooses a tool call or a final answer, and the harness owns execution boundaries around it.
+
+```text
+user task
+   ↓
+Qwen3.5-4B
+   ↓
+choose next action
+   ├─ search
+   ├─ read
+   ├─ inspect
+   └─ python
+   ↓
+observation
+   ↓
+next action or final answer
+```
+
+Operational behavior is explicit rather than hidden behind a larger agent framework:
+
+- model timeouts, unavailable backends, capacity stops, and known model errors are recorded as distinct incomplete outcomes;
+- tool exceptions become bounded observations so the model can change strategy;
+- exact duplicate calls are blocked;
+- URL reads block local/private destinations and stream within a source-size budget;
+- workspace files are size-checked before expensive parsing;
+- the Python tool runs in an isolated, time-limited subprocess with a restricted builtin surface;
+- `small-agent doctor` checks local readiness without loading model weights;
+- `small-agent run --output ...` writes an atomic `small-agent-run/v1` artifact with the answer, stop reason, metrics, trace, and effective runtime configuration.
+
+This is a **production-style local runtime**, not a hardened multi-tenant service or hostile-code sandbox. There is no planner/router/critic graph.
 
 ## The experiment
 
@@ -61,33 +95,12 @@ The comparison is intentionally paired:
 
 That makes the result easier to interpret than comparing two unrelated agents.
 
-## Agent loop
-
-```text
-user task
-   ↓
-Qwen3.5-4B
-   ↓
-choose next action
-   ├─ search
-   ├─ read
-   ├─ inspect
-   └─ python
-   ↓
-observation
-   ↓
-next action or final answer
-```
-
-The harness executes the tool, returns the observation, limits the number of steps, blocks exact duplicate calls, and records the visible action trace.
-
-This is a **single-model loop**, not a planner / router / critic graph.
-
 ## Current status
 
 | Component | Status |
 |---|---|
 | Tool-using agent runtime | ✅ Implemented |
+| Runtime readiness / failure contracts | ✅ Implemented |
 | GAIA evaluation runner | ✅ Implemented |
 | Visible trajectory logging | ✅ Implemented |
 | Verified trajectory collector | ✅ Implemented |
@@ -149,10 +162,42 @@ This catches exact reuse. It **does not** detect a paraphrased benchmark questio
 
 ## Quickstart
 
-Install the pieces you need:
+### Local runtime
+
+For the ordinary Ollama-backed agent, install only the runtime tool extras:
+
+```powershell
+python -m pip install -e ".[search,files]"
+```
+
+With Ollama running and `qwen3.5:4b` available, check readiness before the first task:
+
+```powershell
+small-agent doctor
+```
+
+Then run a task and keep a reproducible JSON artifact:
+
+```powershell
+small-agent run "Find the relevant evidence and answer concisely." `
+  --output runs/task/result.json
+```
+
+The run artifact keeps the existing result fields and also records the backend/model identity, adapter path when applicable, step/token limits, thinking mode, tool surface, and observation cap.
+
+### Evaluation and training extras
+
+Install evaluation support without the training stack when that is all you need:
+
+```powershell
+python -m pip install -e ".[eval,search,files]"
+```
+
+The Transformers / QLoRA path needs the heavier training dependencies and a compatible CUDA environment:
 
 ```powershell
 python -m pip install -e ".[eval,search,files,train]"
+small-agent doctor --backend transformers
 ```
 
 ### Canonical controlled experiment
@@ -168,12 +213,6 @@ The script expects the frozen local model and GAIA snapshots described in the pr
 ### Development commands
 
 The individual commands below are useful for inspecting or debugging one stage; they are **not a substitute for the canonical end-to-end protocol**.
-
-Run one question:
-
-```powershell
-small-agent run "your question here"
-```
 
 Run the diagnostic partition:
 
@@ -207,15 +246,16 @@ small-agent train-qlora `
 
 ## What gets recorded
 
-For each task the runner keeps:
+A single `small-agent run --output` artifact records:
 
-- final answer and correctness
-- stop reason and step count
-- tool calls and tool errors
-- duplicate-call blocks
+- schema version and effective runtime configuration
+- final answer, completion flag, and stop reason
+- step/tool metrics
 - visible action trace
 
-It also flags cases with known unsupported semantic image / audio / video attachments. That flag describes the current tool surface; it is not a proof that the attachment was semantically necessary to answer the task.
+The GAIA runner additionally records correctness, latency, capability-gap flags, and diagnostic failure labels per task.
+
+It flags cases with known unsupported semantic image / audio / video attachments. That flag describes the current tool surface; it is not a proof that the attachment was semantically necessary to answer the task.
 
 The current `inspect` tool reads document and tabular structure; it is **not** a general vision or audio model.
 
@@ -238,10 +278,17 @@ small-agent-qlora/
 - The Python tool is process-isolated and time-limited, but not a hardened hostile-code sandbox.
 - `inspect` does not provide semantic image / audio / video understanding.
 - Search uses the live web, so exact results can change.
+- Runtime source-size limits reduce accidental memory blow-ups; they are not a complete security boundary.
 - Exact hash checks do not catch paraphrased benchmark leakage.
 - The current independent synthetic curriculum is deliberately small and does not cover every autonomous tool-selection pattern.
 - The Transformers / QLoRA path needs a compatible local CUDA / PyTorch / bitsandbytes setup.
 - No final Base-vs-LoRA claim should be made until a valid paired run completes.
+
+## Verification
+
+CPU-only CI verifies package installation, CLI entry-point loading, tests, and compilation on Linux and Windows. Real model/GAIA evidence remains a separate local experiment contract; passing CI is not a benchmark result.
+
+See [`docs/verification.md`](docs/verification.md) for the distinction between repository verification and preserved experiment evidence.
 
 ## References
 

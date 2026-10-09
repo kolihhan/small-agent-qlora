@@ -9,6 +9,17 @@ class ModelCapacityError(RuntimeError):
         super().__init__()
 
 
+class ModelRuntimeError(RuntimeError):
+    _ALLOWED_STOP_REASONS = frozenset({"model_timeout", "model_unavailable", "model_error"})
+
+    def __init__(self, stop_reason: str, message: str):
+        if stop_reason not in self._ALLOWED_STOP_REASONS:
+            raise ValueError(f"invalid model stop reason: {stop_reason}")
+        self.stop_reason = stop_reason
+        self.message = str(message)
+        super().__init__(self.message)
+
+
 @dataclass(frozen=True)
 class ToolCall:
     id: str

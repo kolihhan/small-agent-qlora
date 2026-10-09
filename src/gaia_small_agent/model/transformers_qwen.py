@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ..agent.types import AssistantTurn, ModelCapacityError, ToolCall
+from ..agent.types import AssistantTurn, ModelCapacityError, ModelRuntimeError, ToolCall
 
 _TOOL_BLOCK_RE = re.compile(r"<tool_call>\s*<function=([^>]+)>\s*(.*?)</function>\s*</tool_call>", re.S)
 _PARAM_RE = re.compile(r"<parameter=([^>]+)>\s*(.*?)\s*</parameter>", re.S)
@@ -136,15 +136,18 @@ class TransformersQwenModel:
             prompt_len = inputs["input_ids"].shape[-1]
             new_ids = generated[0][prompt_len:]
             text = tokenizer.decode(new_ids, skip_special_tokens=False)
-            # Chat turn terminator should not become visible answer content.
             text = text.replace("<|im_end|>", "").replace("<|endoftext|>", "").strip()
             turn = parse_qwen_turn(text)
             if turn.tool_calls:
                 turn.tool_calls = [ToolCall(id=f"call-{next(self._ids)}", name=c.name, arguments=c.arguments) for c in turn.tool_calls]
             return turn
+        except ModelRuntimeError:
+            raise
         except Exception as exc:
             if _is_capacity_error(exc, self.torch):
                 raise ModelCapacityError from None
+            if type(exc) is RuntimeError:
+                raise ModelRuntimeError("model_error", f"Transformers inference failed: {exc}") from None
             raise
         finally:
             inputs = generated = new_ids = None

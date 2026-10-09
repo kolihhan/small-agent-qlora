@@ -1,12 +1,62 @@
 import zipfile
 
 from gaia_small_agent.tools.read import ReadTool
+from gaia_small_agent.tools.limits import MAX_REMOTE_BYTES, MAX_WORKSPACE_FILE_BYTES
 
 
 def test_read_blocks_loopback_url_before_http_request(tmp_path):
     result = ReadTool().run({"source": "http://127.0.0.1:8080/secret"}, tmp_path)
     assert result.ok is False
     assert result.error_code == "PRIVATE_URL_BLOCKED"
+
+
+def test_read_rejects_oversized_workspace_file_before_parsing(tmp_path):
+    path = tmp_path / "large.txt"
+    with path.open("wb") as handle:
+        handle.seek(MAX_WORKSPACE_FILE_BYTES)
+        handle.write(b"x")
+
+    result = ReadTool().run({"source": path.name}, tmp_path)
+
+    assert result.ok is False
+    assert result.error_code == "CONTENT_TOO_LARGE"
+    assert "limit" in result.content.casefold()
+
+
+def test_read_streams_remote_content_and_rejects_over_budget_body(monkeypatch, tmp_path):
+    import gaia_small_agent.tools.read as read_module
+
+    class FakeResponse:
+        headers = {"content-type": "text/plain; charset=utf-8"}
+        is_redirect = False
+        is_permanent_redirect = False
+
+        def __init__(self):
+            self.closed = False
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size=65536):
+            yield b"x" * MAX_REMOTE_BYTES
+            yield b"y"
+
+        @property
+        def text(self):
+            raise AssertionError("streamed HTTP reader must not access response.text")
+
+        def close(self):
+            self.closed = True
+
+    response = FakeResponse()
+    monkeypatch.setattr(read_module, "_public_url_error", lambda url: None)
+    monkeypatch.setattr(read_module.requests, "get", lambda *args, **kwargs: response)
+
+    result = ReadTool().run({"source": "https://example.com/large"}, tmp_path)
+
+    assert result.ok is False
+    assert result.error_code == "CONTENT_TOO_LARGE"
+    assert response.closed is True
 
 
 def test_read_rejects_extensionless_zip_as_unsupported_binary(tmp_path):

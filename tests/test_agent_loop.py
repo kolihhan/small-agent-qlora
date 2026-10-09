@@ -3,7 +3,7 @@ import pytest
 from gaia_small_agent.agent.loop import AgentRuntime
 from gaia_small_agent.agent.types import AssistantTurn, ToolCall
 from gaia_small_agent.tools.base import Tool, ToolResult
-from gaia_small_agent.agent.types import ModelCapacityError
+from gaia_small_agent.agent.types import ModelCapacityError, ModelRuntimeError
 
 
 class ScriptedModel:
@@ -221,6 +221,21 @@ def test_model_capacity_stops_without_retry_and_retains_prior_trace(tmp_path):
     assert result.stop_reason == "model_capacity"
     assert [event.kind for event in result.trace] == ["tool_call", "tool_result", "model_capacity"]
     assert result.metrics.tool_successes == 1
+
+
+@pytest.mark.parametrize("stop_reason", ["model_timeout", "model_unavailable", "model_error"])
+def test_model_runtime_error_stops_cleanly_with_structured_trace(tmp_path, stop_reason):
+    class FailingModel:
+        def complete(self, messages, tools):
+            raise ModelRuntimeError(stop_reason, "backend failed")
+
+    result = AgentRuntime(FailingModel(), [], max_steps=2).run("answer", tmp_path)
+
+    assert result.completed is False
+    assert result.answer == ""
+    assert result.stop_reason == stop_reason
+    assert result.trace[-1].kind == "model_error"
+    assert result.trace[-1].data == {"stop_reason": stop_reason, "message": "backend failed"}
 
 
 def test_empty_final_answer_is_not_completed(tmp_path):
