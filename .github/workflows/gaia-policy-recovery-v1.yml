@@ -1,0 +1,139 @@
+name: GAIA policy recovery v1
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/GAIA_POLICY_RECOVERY_TRIGGER"
+
+permissions:
+  contents: read
+
+env:
+  MODEL: qwen3.5:4b
+  OLLAMA_URL: http://127.0.0.1:11434
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+jobs:
+  paired-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Checkout frozen baseline runtime
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: hardening/production-runtime-v1
+          path: baseline
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Verify gated dataset credential
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "HF_TOKEN_NOT_CONFIGURED"
+            exit 42
+          fi
+
+      - name: Install shared dependencies
+        run: python -m pip install -e ".[eval,search,files]"
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+
+      - name: Start Ollama and pull model
+        run: |
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in {1..30}; do
+            if curl -fsS "$OLLAMA_URL/api/tags" >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS "$OLLAMA_URL/api/tags" >/dev/null
+          ollama pull "$MODEL"
+          ollama list
+
+      - name: Candidate runtime readiness
+        run: small-agent doctor --model "$MODEL" --ollama-url "$OLLAMA_URL" --workspace runs/doctor
+
+      - name: Run frozen baseline on first 13 Diagnostic25 cases
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE/baseline/src" python -m gaia_small_agent.cli gaia-eval \
+            --source gaia-benchmark/GAIA \
+            --hf-token "$HF_TOKEN" \
+            --partition diagnostic \
+            --limit 13 \
+            --backend ollama \
+            --model "$MODEL" \
+            --ollama-url "$OLLAMA_URL" \
+            --max-steps 12 \
+            --max-new-tokens 512 \
+            --work-root runs/gaia-baseline13 \
+            --protected-questions runs/gaia-protected-baseline.json
+
+      - name: Run candidate on the same first 13 Diagnostic25 cases
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE/src" python -m gaia_small_agent.cli gaia-eval \
+            --source gaia-benchmark/GAIA \
+            --hf-token "$HF_TOKEN" \
+            --partition diagnostic \
+            --limit 13 \
+            --backend ollama \
+            --model "$MODEL" \
+            --ollama-url "$OLLAMA_URL" \
+            --max-steps 12 \
+            --max-new-tokens 512 \
+            --work-root runs/gaia-candidate13 \
+            --protected-questions runs/gaia-protected-candidate.json
+
+      - name: Build sanitized paired summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          def load(path):
+              p = Path(path)
+              return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+
+          base = load("runs/gaia-baseline13/summary.json")
+          candidate = load("runs/gaia-candidate13/summary.json")
+          payload = {
+              "schema_version": "gaia-policy-recovery-paired/v1",
+              "model": "qwen3.5:4b",
+              "dataset_partition": "diagnostic-first-13",
+              "baseline_ref": "hardening/production-runtime-v1",
+              "candidate_sha": "${{ github.sha }}",
+              "baseline": base,
+              "candidate": candidate,
+          }
+          if base is not None and candidate is not None:
+              payload["delta"] = {
+                  "correct": candidate["correct"] - base["correct"],
+                  "completed": candidate["completed"] - base["completed"],
+                  "max_steps_failures": candidate.get("failure_labels", {}).get("max_steps", 0) - base.get("failure_labels", {}).get("max_steps", 0),
+                  "duplicate_blocks": candidate["duplicate_calls_blocked"] - base["duplicate_calls_blocked"],
+                  "tool_errors": candidate["tool_errors"] - base["tool_errors"],
+              }
+          out = Path("runs/gaia-policy-recovery-paired-summary.json")
+          out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+          print("=== SANITIZED PAIRED GAIA DIAGNOSTIC ===")
+          print(json.dumps(payload, indent=2))
+          PY
+
+      - name: Upload sanitized aggregate only
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gaia-policy-recovery-paired-summary
+          path: runs/gaia-policy-recovery-paired-summary.json
+          if-no-files-found: warn
+          retention-days: 14
