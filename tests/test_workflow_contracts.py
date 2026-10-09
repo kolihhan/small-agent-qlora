@@ -5,13 +5,15 @@ def test_gaia_shadow_workflow_is_matched_and_aggregate_only():
     path = Path(".github/workflows/gaia-shadow-gate.yml")
     assert path.exists()
     text = path.read_text(encoding="utf-8")
+    trigger = Path(".github/GAIA_SHADOW_TRIGGER").read_text(encoding="utf-8")
 
     assert "HF_TOKEN_NOT_CONFIGURED" in text
-    assert "baseline_sha=" in Path(".github/GAIA_SHADOW_TRIGGER").read_text(encoding="utf-8")
-    assert "exposure=" in Path(".github/GAIA_SHADOW_TRIGGER").read_text(encoding="utf-8")
-    assert "candidate_name=" in Path(".github/GAIA_SHADOW_TRIGGER").read_text(encoding="utf-8")
+    assert "baseline_sha=" in trigger
+    assert "exposure=" in trigger
+    assert "candidate_name=" in trigger
+    assert ".github/GAIA_SHADOW_RUN" in text
 
-    assert "ref: ${{ env.BASELINE_SHA }}" in text
+    assert "ref: ${{ steps.meta.outputs.baseline_sha }}" in text
     assert "path: baseline" in text
     assert text.count("--partition shadow") == 2
     assert text.count("--max-steps 12") == 2
