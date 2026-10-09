@@ -21,6 +21,10 @@ Do not reveal hidden chain-of-thought; tool calls and short factual status are s
 """
 MAX_TOOL_OBSERVATION_CHARS = 2000
 _TOOL_OBSERVATION_TRUNCATION = "\n...[truncated from {count} characters; request a narrower result or use another tool call to inspect only what is needed]"
+_STEP_LIMIT_FINALIZATION = (
+    "The tool budget is exhausted. Do not request another tool. "
+    "Using only the evidence already gathered, return the best final answer now."
+)
 
 
 def _bound_tool_observation(observation: str) -> str:
@@ -110,4 +114,26 @@ class AgentRuntime:
                 }))
                 messages.append({"role": "tool", "tool_call_id": call.id, "name": call.name, "content": obs})
 
+        finalization_step = self.max_steps + 1
+        messages.append({"role": "user", "content": _STEP_LIMIT_FINALIZATION})
+        try:
+            turn = self.model.complete(messages, [])
+        except ModelCapacityError:
+            trace.append(TraceEvent("step_limit_finalization_failed", finalization_step, {"reason": "model_capacity"}))
+            return AgentResult("", False, "max_steps", trace, metrics)
+        except ModelRuntimeError as exc:
+            trace.append(TraceEvent("step_limit_finalization_failed", finalization_step, {
+                "reason": exc.stop_reason,
+                "message": exc.message,
+            }))
+            return AgentResult("", False, "max_steps", trace, metrics)
+
+        answer = (turn.content or "").strip()
+        if not turn.tool_calls and answer:
+            trace.append(TraceEvent("final_after_step_limit", finalization_step, {"answer": answer}))
+            return AgentResult(answer, True, "final_after_step_limit", trace, metrics)
+
+        trace.append(TraceEvent("step_limit_finalization_failed", finalization_step, {
+            "reason": "tool_call_returned" if turn.tool_calls else "empty_final",
+        }))
         return AgentResult("", False, "max_steps", trace, metrics)
