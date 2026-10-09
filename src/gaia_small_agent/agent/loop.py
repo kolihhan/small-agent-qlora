@@ -21,6 +21,14 @@ Do not reveal hidden chain-of-thought; tool calls and short factual status are s
 """
 MAX_TOOL_OBSERVATION_CHARS = 2000
 _TOOL_OBSERVATION_TRUNCATION = "\n...[truncated from {count} characters; request a narrower result or use another tool call to inspect only what is needed]"
+_STEP_LIMIT_FINALIZATION = (
+    "The tool budget is exhausted. Do not request another tool. "
+    "Using only the evidence already gathered, return the best final answer now."
+)
+_EMPTY_FINAL_RECOVERY = (
+    "No final answer was returned. Do not request another tool. "
+    "Using only the evidence already gathered, return the best final answer now."
+)
 
 
 def _bound_tool_observation(observation: str) -> str:
@@ -35,6 +43,43 @@ class AgentRuntime:
         self.model = model
         self.tools = {tool.name: tool for tool in tools}
         self.max_steps = max_steps
+
+    def _recover_final(
+        self,
+        messages: list[dict],
+        trace: list[TraceEvent],
+        metrics: RunMetrics,
+        *,
+        step: int,
+        prompt: str,
+        success_kind: str,
+        success_reason: str,
+        failure_kind: str,
+        failure_reason: str,
+    ) -> AgentResult:
+        messages.append({"role": "user", "content": prompt})
+        try:
+            turn = self.model.complete(messages, [])
+        except ModelCapacityError:
+            trace.append(TraceEvent(failure_kind, step, {"reason": "model_capacity"}))
+            if failure_reason == "max_steps":
+                return AgentResult("", False, "max_steps", trace, metrics)
+            return AgentResult("", False, "model_capacity", trace, metrics)
+        except ModelRuntimeError as exc:
+            trace.append(TraceEvent(failure_kind, step, {"reason": exc.stop_reason, "message": exc.message}))
+            if failure_reason == "max_steps":
+                return AgentResult("", False, "max_steps", trace, metrics)
+            return AgentResult("", False, exc.stop_reason, trace, metrics)
+
+        answer = (turn.content or "").strip()
+        if not turn.tool_calls and answer:
+            trace.append(TraceEvent(success_kind, step, {"answer": answer}))
+            return AgentResult(answer, True, success_reason, trace, metrics)
+
+        trace.append(TraceEvent(failure_kind, step, {
+            "reason": "tool_call_returned" if turn.tool_calls else "empty_final",
+        }))
+        return AgentResult("", False, failure_reason, trace, metrics)
 
     def run(self, question: str, workspace: str | Path) -> AgentResult:
         workspace = Path(workspace)
@@ -61,8 +106,18 @@ class AgentRuntime:
             if not turn.tool_calls:
                 answer = (turn.content or "").strip()
                 if not answer:
-                    trace.append(TraceEvent("empty_final", step, {}))
-                    return AgentResult("", False, "empty_final", trace, metrics)
+                    messages.append({"role": "assistant", "content": turn.content or ""})
+                    return self._recover_final(
+                        messages,
+                        trace,
+                        metrics,
+                        step=step,
+                        prompt=_EMPTY_FINAL_RECOVERY,
+                        success_kind="final_after_empty",
+                        success_reason="final_after_empty",
+                        failure_kind="empty_final_recovery_failed",
+                        failure_reason="empty_final",
+                    )
                 trace.append(TraceEvent("final", step, {"answer": answer}))
                 return AgentResult(answer, True, "final", trace, metrics)
 
@@ -110,4 +165,14 @@ class AgentRuntime:
                 }))
                 messages.append({"role": "tool", "tool_call_id": call.id, "name": call.name, "content": obs})
 
-        return AgentResult("", False, "max_steps", trace, metrics)
+        return self._recover_final(
+            messages,
+            trace,
+            metrics,
+            step=self.max_steps + 1,
+            prompt=_STEP_LIMIT_FINALIZATION,
+            success_kind="final_after_step_limit",
+            success_reason="final_after_step_limit",
+            failure_kind="step_limit_finalization_failed",
+            failure_reason="max_steps",
+        )
