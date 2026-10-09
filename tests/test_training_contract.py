@@ -86,3 +86,33 @@ def test_turn_rendering_fails_closed_if_chat_template_cannot_isolate_native_comp
     row = _verified_row()
     with pytest.raises(ValueError, match="native format"):
         _render_turn_examples(BadTokenizer(), [row])
+
+
+def test_oracle_tool_and_no_tool_rows_render_as_next_action_examples(tmp_path):
+    from gaia_small_agent.training.oracle_policy import generate_oracle_policy_dataset
+    from gaia_small_agent.training.qlora import _render_turn_examples
+
+    paths = generate_oracle_policy_dataset(tmp_path / "oracle", seed="render")
+    rows = [json.loads(line) for line in paths["dev"].read_text(encoding="utf-8").splitlines()]
+    tool_row = next(row for row in rows if row["capability"] == "tool_selection")
+    no_tool_row = next(row for row in rows if row["capability"] == "no_tool_stop")
+
+    class NativeShapeTokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            def dump(value):
+                return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+            if kwargs.get("add_generation_prompt"):
+                return dump(messages) + "<assistant>"
+            if messages and messages[-1].get("role") == "assistant":
+                return dump(messages[:-1]) + "<assistant>" + dump(messages[-1])
+            return dump(messages)
+
+    tool_examples = _render_turn_examples(NativeShapeTokenizer(), [tool_row])
+    no_tool_examples = _render_turn_examples(NativeShapeTokenizer(), [no_tool_row])
+
+    assert len(tool_examples) == 2
+    assert any("tool_calls" in example["completion"] for example in tool_examples)
+    assert any(tool_row["expected_answer"] in example["completion"] for example in tool_examples)
+    assert len(no_tool_examples) == 1
+    assert no_tool_row["expected_answer"] in no_tool_examples[0]["completion"]
