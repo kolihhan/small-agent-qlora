@@ -126,6 +126,28 @@ def test_runtime_uses_text_only_causal_lm_loader():
     assert "AutoModelForMultimodalLM" not in source
     assert "AutoTokenizer" in source
 
+
+def test_cpu_quantized_runtime_uses_float32_compute():
+    from gaia_small_agent.model.transformers_qwen import _quant_compute_dtype
+
+    class Cuda:
+        @staticmethod
+        def is_available():
+            return False
+
+        @staticmethod
+        def is_bf16_supported():
+            return False
+
+    class Torch:
+        cuda = Cuda()
+        float32 = "float32"
+        float16 = "float16"
+        bfloat16 = "bfloat16"
+
+    assert _quant_compute_dtype(Torch()) == "float32"
+
+
 def test_complete_skips_cuda_cache_when_cuda_unavailable():
     model = _model(cuda_available=False)
 
