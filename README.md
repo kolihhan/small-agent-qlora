@@ -25,13 +25,13 @@
 | | |
 |---|---|
 | **Question** | Can QLoRA improve the tool-use policy of a small local agent, or does it mostly add training cost? |
-| **What I built** | A single-model Qwen3.5-4B agent with `search`, `read`, `inspect`, and `python`, plus trajectory collection, QLoRA training, leakage guards, and a Base-vs-LoRA comparator. |
+| **What I built** | A single-model Qwen3.5-4B agent with `search`, `read`, `inspect`, and `python`, plus controlled GAIA evaluation, trajectory collection, QLoRA training, leakage guards, and paired comparison. |
 | **Runtime** | Local CLI with bounded tool I/O, explicit backend failure states, readiness checks, atomic run artifacts, and visible action traces. |
-| **Current answer** | **Unanswered.** The experiment infrastructure exists, but there is no valid Base-vs-LoRA improvement claim yet. |
-| **Design focus** | Controlled evaluation, visible trajectories, bounded tool use, and honest stop conditions under local hardware constraints. |
+| **Current answer** | **Unanswered.** The experiment infrastructure exists, but no unseen GAIA result currently justifies a QLoRA improvement claim. |
+| **Design focus** | Diagnose on exposed development data, promote only on blind evidence, then isolate runtime/policy gains from QLoRA gains. |
 
 > [!NOTE]
-> This repository treats **“QLoRA was not justified by the available evidence”** as a valid outcome. The goal is not to force a fine-tuning success story.
+> This repository treats **“QLoRA did not improve the frozen agent”** as a valid outcome. The goal is not to force a fine-tuning success story.
 
 ## Runtime
 
@@ -68,32 +68,31 @@ This is a **production-style local runtime**, not a hardened multi-tenant servic
 
 ## The experiment
 
-The project isolates one question: **does policy fine-tuning improve the same small agent on the same evaluation tasks?**
+The project asks two separate questions instead of mixing them together:
 
-```mermaid
-flowchart LR
-    T[Evaluation task] --> B[Qwen3.5-4B Base]
-    T --> L[Qwen3.5-4B + QLoRA]
-    B --> H1[Same tool harness]
-    L --> H2[Same tool harness]
-    H1 --> C[Paired comparison]
-    H2 --> C
+1. Can ordinary runtime/policy engineering improve the same 4B agent on unseen GAIA tasks?
+2. After the best runtime/policy is frozen, does QLoRA add further value?
 
-    D[Separate non-eval tasks] --> R[Verified trajectories]
-    R --> Q[QLoRA adapter]
-    Q --> L
+```text
+Diagnostic25 (DEV, inspectable)
+          ↓
+one general hypothesis
+          ↓
+runtime/tool fix OR non-GAIA training treatment
+          ↓
+frozen candidate
+          ↓
+Blind Shadow25
+     reject / promote
+              ↓
+      freeze final arms
+              ↓
+       Evaluation100
+              ↓
+Base vs policy vs policy+QLoRA
 ```
 
-The comparison is intentionally paired:
-
-- same base model family
-- same tool surface
-- same step limits
-- same evaluation partition
-- same scorer
-- only the adapter changes
-
-That makes the result easier to interpret than comparing two unrelated agents.
+Each candidate changes one explainable treatment at a time. Correct GAIA answers are the primary metric; completion, tool success, latency, step count, and duplicate calls are diagnostics, not substitutes for accuracy.
 
 ## Current status
 
@@ -101,22 +100,27 @@ That makes the result easier to interpret than comparing two unrelated agents.
 |---|---|
 | Tool-using agent runtime | ✅ Implemented |
 | Runtime readiness / failure contracts | ✅ Implemented |
-| GAIA evaluation runner | ✅ Implemented |
+| Diagnostic25 development partition | ✅ Implemented |
+| Blind Shadow25 partition + promotion gate | ✅ Implemented |
+| Aggregate-only matched Shadow workflow | ✅ Implemented |
+| Frozen Evaluation100 partition | ✅ Implemented |
 | Visible trajectory logging | ✅ Implemented |
-| Verified trajectory collector | ✅ Implemented |
+| Verified non-GAIA trajectory collector | ✅ Implemented |
 | Training-data leakage guard | ✅ Implemented |
 | QLoRA training entry point | ✅ Implemented |
 | Base-vs-LoRA comparator | ✅ Implemented |
+| Shadow-promoted policy candidate | ⏳ Not yet established |
 | Valid trained adapter for final comparison | ⏳ Not yet established |
-| Final Base-vs-LoRA result | ⏳ Not yet established |
+| Final Base / policy / QLoRA result | ⏳ Not yet established |
 
 ## Current evidence
 
-An earlier diagnostic attempt stopped after **13 persisted tasks** because the machine crossed the RAM safety guard. It is preserved as debugging evidence, not presented as a complete benchmark.
+An earlier local diagnostic attempt stopped after **13 persisted tasks** because the machine crossed the RAM safety guard. It is preserved as development evidence, not presented as a benchmark result.
 
 | Partial diagnostic fact | Result |
 |---|---:|
 | Persisted tasks | 13 / 25 |
+| Coverage | 8 Level 1 / 5 Level 2 / 0 Level 3 |
 | Exact match | 2 / 13 |
 | Completed tasks | 6 / 13 |
 | Model calls | 118 |
@@ -125,40 +129,61 @@ An earlier diagnostic attempt stopped after **13 persisted tasks** because the m
 | Stop reason | available RAM below guard threshold |
 
 > [!IMPORTANT]
-> These numbers are a **partial prefix**, not a Diagnostic25 accuracy result and not evidence that QLoRA helps. No adapter was trained from this run.
+> The historical 13-case prefix is **DEV-only and distribution-biased** because truncation happened after level ordering. Repeated experiments on that prefix do not establish GAIA improvement. Later termination experiments that improved completion on exposed cases are likewise runtime/development observations unless they pass blind Shadow.
 
-The preserved decision record is in [`docs/p4-decision.md`](docs/p4-decision.md).
+The preserved historical decision record is in [`docs/p4-decision.md`](docs/p4-decision.md).
 
 ## Evaluation contract
 
-The GAIA validation set is split into separate internal partitions:
+The pinned GAIA validation set is divided into three disjoint experiment roles:
 
 ```text
 GAIA validation: 165
 
-Diagnostic:       25
-Evaluation:      100
-Unused:           40
+Diagnostic (DEV):    25   8 / 13 / 4 by level
+Shadow (blind):      25   8 / 13 / 4 by level
+Evaluation (FINAL): 100  32 / 52 / 16 by level
+Unused:              15
 ```
 
-The contract is:
+### Diagnostic25
 
-1. Use the 25 diagnostic tasks to observe and classify agent-policy failure modes.
-2. Build training data from a **separate, deterministic non-GAIA curriculum**. The current curriculum is pre-registered independently and does not consume Diagnostic25 outputs or copy GAIA questions/answers.
-3. Keep only verified tool-use trajectories that pass the collection checks.
-4. Train one QLoRA adapter.
-5. Run Base and +LoRA on the same frozen 100-task evaluation partition.
-6. Compare task-by-task transitions, not just one aggregate score.
+Diagnostic25 is the only GAIA set whose case-level questions, traces, answers, and failure signals may be inspected during development. It exists to discover general failure patterns and form falsifiable hypotheses. `--limit` is a debug convenience only and must not support a performance claim.
+
+### Shadow25
+
+Shadow25 is a blind promotion gate. Candidate and baseline run against the same deterministic manifest and matched model/runtime settings. Development sees aggregate metrics only; case-level questions, reference answers, model answers, traces, manifests, protected hashes, and task workspaces are not uploaded.
+
+A candidate is promoted only when all three are true:
+
+- exact correct count improves by at least **+2 tasks** over the frozen baseline;
+- completion regresses by no more than **1 task**;
+- no new catastrophic runtime stop class appears.
+
+Efficiency improvements without an exact-correct improvement are runtime improvements, **not GAIA performance improvements**.
+
+This cycle permits at most **three Shadow candidate exposures**. A rejected Shadow candidate is not debugged by opening Shadow cases.
+
+### Evaluation100
+
+Evaluation100 remains unopened during candidate development. Before it is opened, all final comparison arms must already be frozen. The intended final comparison separates:
+
+1. frozen Base vs best Shadow-promoted runtime/policy;
+2. the same best runtime/policy without vs with QLoRA.
+
+This prevents using Evaluation100 feedback to decide how to tune the LoRA arm.
 
 This is an **internal controlled evaluation setup**, not an official GAIA leaderboard submission.
 
-The current synthetic curriculum is intentionally narrow. It provides controlled `read`, `inspect`, and `python` policy examples, but by itself does not establish broad autonomous tool-selection coverage across every tool or task type.
-
 ## Training-data guard
 
-GAIA questions are hashed locally and checked against candidate training inputs. Sources marked as GAIA are rejected from the training path.
+Training remains non-GAIA. Diagnostic, Shadow, and Evaluation questions, answers, traces, and case-specific rules are forbidden from the QLoRA path.
 
-This catches exact reuse. It **does not** detect a paraphrased benchmark question, so provenance still requires manual judgment.
+GAIA questions are hashed locally and checked against candidate training inputs. Sources marked as GAIA are rejected. Exact hashes do not detect paraphrases, so provenance and manual judgment still matter.
+
+The current independent curriculum is intentionally narrow (`read_fact`, `inspect_metadata`, `python_numeric`, `format_recovery`). It is extended only when development evidence identifies a general capability worth teaching. A low GAIA score by itself is not enough justification to train QLoRA.
+
+Only trajectories that satisfy the verification contract are eligible for training: correct final answer, required tools satisfied, zero tool errors, zero duplicate blocks, complete provenance, and visible policy actions only.
 
 ## Quickstart
 
@@ -183,11 +208,7 @@ small-agent run "Find the relevant evidence and answer concisely." `
   --output runs/task/result.json
 ```
 
-The run artifact keeps the existing result fields and also records the backend/model identity, adapter path when applicable, step/token limits, thinking mode, tool surface, and observation cap.
-
 ### Evaluation and training extras
-
-Install evaluation support without the training stack when that is all you need:
 
 ```powershell
 python -m pip install -e ".[eval,search,files]"
@@ -200,21 +221,9 @@ python -m pip install -e ".[eval,search,files,train]"
 small-agent doctor --backend transformers
 ```
 
-### Canonical controlled experiment
+### Development evaluation
 
-The sealed, resource-aware pipeline is the canonical experiment path. It pins the local model/dataset snapshots, runs the diagnostic and training gates, requires complete 100-task Base and +LoRA evaluation arms, and only then creates the paired comparison.
-
-```powershell
-.\scripts\run_p4_full_pipeline.ps1 -RunRoot runs\p4-controlled
-```
-
-The script expects the frozen local model and GAIA snapshots described in the protocol. It is intentionally allowed to stop and preserve incomplete artifacts when a resource or evidence gate fails.
-
-### Development commands
-
-The individual commands below are useful for inspecting or debugging one stage; they are **not a substitute for the canonical end-to-end protocol**.
-
-Run the diagnostic partition:
+Diagnostic25 is the inspectable development partition:
 
 ```powershell
 small-agent gaia-eval `
@@ -223,7 +232,13 @@ small-agent gaia-eval `
   --work-root runs/gaia-diagnostic-base
 ```
 
-Collect verified training trajectories:
+`small-agent gaia-eval --partition shadow` exists for the controlled blind workflow; ordinary development should not use it interactively to inspect or tune Shadow cases.
+
+The repository also retains the resource-aware local P4 pipeline for sealed local experiments. It is not a substitute for the blind Shadow promotion contract.
+
+### Training
+
+Collect verified non-GAIA trajectories:
 
 ```powershell
 small-agent collect-trajectories `
@@ -233,7 +248,7 @@ small-agent collect-trajectories `
   --protected-questions runs/gaia-protected-question-hashes.json
 ```
 
-Train an adapter:
+Train an adapter only after a training hypothesis is justified:
 
 ```powershell
 small-agent train-qlora `
@@ -242,7 +257,7 @@ small-agent train-qlora `
   --protected-questions runs/gaia-protected-question-hashes.json
 ```
 
-`small-agent compare-evals` is a lower-level comparator for complete frozen Evaluation100 arms. It rejects partial runs and configuration drift other than the adapter treatment.
+`small-agent compare-evals` remains the lower-level comparator for complete frozen Evaluation100 Base/+LoRA arms and rejects configuration drift other than the adapter treatment.
 
 ## What gets recorded
 
@@ -253,11 +268,9 @@ A single `small-agent run --output` artifact records:
 - step/tool metrics
 - visible action trace
 
-The GAIA runner additionally records correctness, latency, capability-gap flags, and diagnostic failure labels per task.
+The GAIA runner additionally records correctness, latency, capability-gap flags, diagnostic failure labels, and aggregate stop-reason counts.
 
-It flags cases with known unsupported semantic image / audio / video attachments. That flag describes the current tool surface; it is not a proof that the attachment was semantically necessary to answer the task.
-
-The current `inspect` tool reads document and tabular structure; it is **not** a general vision or audio model.
+Shadow CI publishes only the sanitized aggregate summary and promotion verdict. Raw gated task data stays ephemeral on the runner and is deleted before artifact upload.
 
 ## Repository shape
 
@@ -277,18 +290,18 @@ small-agent-qlora/
 
 - The Python tool is process-isolated and time-limited, but not a hardened hostile-code sandbox.
 - `inspect` does not provide semantic image / audio / video understanding.
-- Search uses the live web, so exact results can change.
+- Search uses the live web, so exact results can change; matched baseline/candidate runs reduce but do not eliminate this variance.
 - Runtime source-size limits reduce accidental memory blow-ups; they are not a complete security boundary.
 - Exact hash checks do not catch paraphrased benchmark leakage.
 - The current independent synthetic curriculum is deliberately small and does not cover every autonomous tool-selection pattern.
 - The Transformers / QLoRA path needs a compatible local CUDA / PyTorch / bitsandbytes setup.
-- No final Base-vs-LoRA claim should be made until a valid paired run completes.
+- No final Base-vs-LoRA claim should be made until the final arms are frozen and a valid paired Evaluation100 run completes.
 
 ## Verification
 
-CPU-only CI verifies package installation, CLI entry-point loading, tests, and compilation on Linux and Windows. Real model/GAIA evidence remains a separate local experiment contract; passing CI is not a benchmark result.
+CPU-only CI verifies package installation, CLI entry-point loading, tests, and compilation on Linux and Windows. Real model/GAIA evidence is a separate controlled experiment contract; passing CI is not a benchmark result.
 
-See [`docs/verification.md`](docs/verification.md) for the distinction between repository verification and preserved experiment evidence.
+The full framework design is in [`docs/superpowers/specs/2026-10-09-gaia-improvement-framework-design.md`](docs/superpowers/specs/2026-10-09-gaia-improvement-framework-design.md).
 
 ## References
 
