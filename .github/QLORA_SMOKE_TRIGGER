@@ -1,4 +1,6 @@
 model=Qwen/Qwen3.5-4B
 seed=tinyagent-policy-v1
 rows=10
+max_length=1536
+attempt=2
 purpose=compute-feasibility-only
