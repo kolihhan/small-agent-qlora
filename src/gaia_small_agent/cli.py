@@ -17,6 +17,9 @@ from .training.qlora import train_qlora
 from .training.trajectories import collect_verified_trajectories
 from .training.protection import build_protected_question_hashes
 from .training.policy_tasks import generate_policy_tasks
+from .training.oracle_policy import generate_oracle_policy_dataset
+from .training.policy_eval import evaluate_policy_tasks
+from .training.policy_promotion import evaluate_policy_promotion
 
 
 def _positive_int(value: str) -> int:
@@ -181,6 +184,38 @@ def generate_policy_tasks_command(args) -> int:
     return 0
 
 
+def generate_oracle_policy_command(args) -> int:
+    paths = generate_oracle_policy_dataset(args.output_dir, seed=args.seed)
+    payload = {"seed": args.seed, "paths": {name: str(path) for name, path in paths.items()}}
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def eval_policy_command(args) -> int:
+    runtime = make_runtime(args)
+    summary = evaluate_policy_tasks(args.tasks, lambda: runtime, args.work_root)
+    text = json.dumps(summary, indent=2, sort_keys=True)
+    print(text)
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text + "\n", encoding="utf-8")
+    return 0
+
+
+def compare_policy_command(args) -> int:
+    baseline = json.loads(Path(args.base).read_text(encoding="utf-8"))
+    candidate = json.loads(Path(args.candidate).read_text(encoding="utf-8"))
+    verdict = evaluate_policy_promotion(baseline, candidate, min_exact_pp=args.min_exact_pp)
+    text = json.dumps(verdict, indent=2, sort_keys=True)
+    print(text)
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text + "\n", encoding="utf-8")
+    return 0 if verdict["promote"] else 2
+
+
 def compare_command(args) -> int:
     result = compare_runs(args.base, args.adapter_run)
     text = json.dumps(result, indent=2)
@@ -254,11 +289,30 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--protected-questions", default="runs/gaia-protected-question-hashes.json")
     train.set_defaults(func=train_command)
 
-    policy = sub.add_parser("generate-policy-tasks", help="Generate the deterministic independent policy curriculum")
+    policy = sub.add_parser("generate-policy-tasks", help="Generate the legacy deterministic policy curriculum")
     policy.add_argument("--output", required=True)
     policy.add_argument("--count", type=int, default=64)
     policy.add_argument("--seed", default="p4-policy-v1")
     policy.set_defaults(func=generate_policy_tasks_command)
+
+    oracle = sub.add_parser("generate-oracle-policy", help="Generate the TinyAgent-style deterministic oracle policy dataset")
+    oracle.add_argument("--output-dir", required=True)
+    oracle.add_argument("--seed", default="tinyagent-policy-v1")
+    oracle.set_defaults(func=generate_oracle_policy_command)
+
+    policy_eval = sub.add_parser("eval-policy", help="Evaluate Base or QLoRA on deterministic held-out tool-policy tasks")
+    policy_eval.add_argument("--tasks", required=True)
+    policy_eval.add_argument("--work-root", default="runs/policy-eval")
+    policy_eval.add_argument("--output", default=None)
+    add_runtime_args(policy_eval)
+    policy_eval.set_defaults(func=eval_policy_command)
+
+    policy_compare = sub.add_parser("compare-policy-evals", help="Apply the preregistered held-out QLoRA promotion gate")
+    policy_compare.add_argument("--base", required=True)
+    policy_compare.add_argument("--candidate", required=True)
+    policy_compare.add_argument("--min-exact-pp", type=float, default=10.0)
+    policy_compare.add_argument("--output", default=None)
+    policy_compare.set_defaults(func=compare_policy_command)
 
     compare = sub.add_parser("compare-evals", help="Compare frozen Base and +LoRA local evaluation runs")
     compare.add_argument("--base", required=True)
