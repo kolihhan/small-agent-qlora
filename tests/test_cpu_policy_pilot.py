@@ -1,4 +1,5 @@
 from gaia_small_agent.training.cpu_policy_pilot import (
+    TRAIN_MAX_LENGTH,
     build_frozen_task_sets,
     oracle_trajectory,
     summarize_pair,
@@ -13,6 +14,10 @@ def test_frozen_pilot_splits_are_disjoint_and_fixed_size(tmp_path):
     assert [row["id"] for row in train] == [f"policy-{i:03d}" for i in range(1, 17)]
     assert [row["id"] for row in evaluation] == [f"policy-{i:03d}" for i in range(17, 29)]
     assert {row["question"] for row in train}.isdisjoint({row["question"] for row in evaluation})
+
+
+def test_frozen_pilot_uses_measured_minimum_safe_training_budget():
+    assert TRAIN_MAX_LENGTH == 768
 
 
 def test_oracle_trajectory_is_verified_and_uses_required_tool(tmp_path):
