@@ -1,3 +1,4 @@
+from gaia_small_agent.benchmark.gaia100 import summarize_results
 from gaia_small_agent.benchmark.promotion import evaluate_shadow_promotion
 
 
@@ -9,6 +10,18 @@ def _summary(*, correct, completed=25, stop_reasons=None, tool_calls=100):
         "tool_calls": tool_calls,
         "stop_reasons": stop_reasons or {"final": completed},
     }
+
+
+def test_summary_includes_aggregate_stop_reasons():
+    rows = [
+        {"level": 1, "correct": True, "completed": True, "stop_reason": "final", "tool_calls": 0, "tool_successes": 0, "steps": 1},
+        {"level": 2, "correct": False, "completed": False, "stop_reason": "model_capacity", "tool_calls": 0, "tool_successes": 0, "steps": 1},
+        {"level": 2, "correct": False, "completed": False, "stop_reason": "model_capacity", "tool_calls": 0, "tool_successes": 0, "steps": 1},
+    ]
+
+    summary = summarize_results(rows)
+
+    assert summary["stop_reasons"] == {"final": 1, "model_capacity": 2}
 
 
 def test_shadow_promotion_requires_two_more_correct_without_completion_regression():
