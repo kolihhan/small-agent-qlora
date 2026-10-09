@@ -56,6 +56,14 @@ def _is_capacity_error(exc: Exception, torch) -> bool:
     return False
 
 
+def _quant_compute_dtype(torch):
+    if not torch.cuda.is_available():
+        return torch.float32
+    if torch.cuda.is_bf16_supported():
+        return torch.bfloat16
+    return torch.float16
+
+
 class TransformersQwenModel:
     def __init__(
         self,
@@ -77,7 +85,7 @@ class TransformersQwenModel:
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         kwargs: dict[str, Any] = {"device_map": "auto", "trust_remote_code": True}
         if quantize_4bit:
-            compute_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+            compute_dtype = _quant_compute_dtype(torch)
             kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
