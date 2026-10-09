@@ -1,0 +1,115 @@
+name: QLoRA CPU feasibility smoke
+
+on:
+  push:
+    paths:
+      - ".github/QLORA_SMOKE_TRIGGER"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  POLICY_SEED: tinyagent-policy-v1
+  HF_MODEL: Qwen/Qwen3.5-4B
+
+jobs:
+  train-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Show initial resources
+        run: |
+          df -h /
+          free -h
+
+      - name: Install training dependencies
+        run: python -m pip install -e ".[train,files]"
+
+      - name: Generate frozen train split and balanced smoke subset
+        run: |
+          small-agent generate-oracle-policy --output-dir runs/oracle --seed "$POLICY_SEED"
+          python - <<'PY'
+          import json
+          from collections import defaultdict
+          from pathlib import Path
+
+          rows = [json.loads(line) for line in Path("runs/oracle/train.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+          buckets = defaultdict(list)
+          for row in rows:
+              buckets[row["capability"]].append(row)
+          selected = []
+          for capability in sorted(buckets):
+              selected.extend(buckets[capability][:2])
+          if len(selected) != 10:
+              raise SystemExit(f"expected 10 balanced smoke rows, got {len(selected)}")
+          Path("runs/smoke-train.jsonl").write_text(
+              "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in selected),
+              encoding="utf-8",
+          )
+          Path("runs/empty-protected.json").write_text(
+              json.dumps({"algorithm": "sha256-normalized-question-v1", "hashes": []}),
+              encoding="utf-8",
+          )
+          print({capability: 2 for capability in sorted(buckets)})
+          PY
+
+      - name: Show resources before model load
+        run: |
+          df -h /
+          free -h
+
+      - name: Train QLoRA smoke on CPU
+        run: |
+          small-agent train-qlora \
+            --data runs/smoke-train.jsonl \
+            --output runs/qlora-smoke-adapter \
+            --hf-model "$HF_MODEL" \
+            --max-length 512 \
+            --epochs 0.02 \
+            --protected-questions runs/empty-protected.json
+
+      - name: Record feasibility evidence
+        run: |
+          python - <<'PY'
+          import json
+          import platform
+          from pathlib import Path
+          import torch
+
+          adapter = Path("runs/qlora-smoke-adapter")
+          config = json.loads((adapter / "run_config.json").read_text(encoding="utf-8"))
+          payload = {
+              "schema_version": "qlora-cpu-smoke/v1",
+              "success": True,
+              "platform": platform.platform(),
+              "cuda_available": torch.cuda.is_available(),
+              "training_rows": 10,
+              "model": config["model"],
+              "quantization": config["quantization"],
+              "compute_dtype": config["compute_dtype"],
+              "max_length": config["max_length"],
+              "smoke_epochs": 0.02,
+          }
+          Path("runs/qlora-smoke-result.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload smoke evidence only
+        uses: actions/upload-artifact@v4
+        with:
+          name: qlora-cpu-smoke-result
+          path: |
+            runs/qlora-smoke-result.json
+            runs/qlora-smoke-adapter/run_config.json
+          if-no-files-found: error
+          retention-days: 14
