@@ -79,8 +79,6 @@ def classify_failure_label(result, *, correct: bool, capability_gap: str | None)
     return "incomplete_other"
 
 
-
-
 def collect_failure_signals(result, *, correct: bool, capability_gap: str | None) -> list[str]:
     if correct:
         return []
@@ -100,6 +98,7 @@ def collect_failure_signals(result, *, correct: bool, capability_gap: str | None
     if result.completed and result.metrics.tool_calls == 0:
         signals.append("premature_final_proxy")
     return signals
+
 
 def _atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -246,7 +245,7 @@ def run_gaia100(dataset, runtime_factory: Callable[[], AgentRuntime], work_root:
             "completed": result.completed,
             "stop_reason": result.stop_reason,
             "steps": result.metrics.steps,
-            "model_calls": result.metrics.steps,
+            "model_calls": result.metrics.model_calls,
             "latency_ms": latency_ms,
             "tool_calls": result.metrics.tool_calls,
             "tool_successes": result.metrics.tool_successes,
