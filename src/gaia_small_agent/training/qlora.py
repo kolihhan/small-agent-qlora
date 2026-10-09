@@ -86,6 +86,22 @@ def _render_turn_examples(processor, rows: list[dict]) -> list[dict[str, str]]:
     return examples
 
 
+def _validate_example_token_budget(tokenizer, examples: list[dict[str, str]], max_length: int) -> int:
+    """Fail before TRL if truncation would remove any supervised completion."""
+    max_required = 0
+    for index, example in enumerate(examples):
+        prompt_tokens = len(tokenizer(example["prompt"], add_special_tokens=False)["input_ids"])
+        completion_tokens = len(tokenizer(example["completion"], add_special_tokens=False)["input_ids"])
+        required = prompt_tokens + completion_tokens + 1  # reserve one token for EOS
+        max_required = max(max_required, required)
+        if required > max_length:
+            raise ValueError(
+                f"training max_length={max_length} truncates completion tokens for example {index}; "
+                f"requires at least {required} tokens"
+            )
+    return max_required
+
+
 def _training_precision(torch) -> tuple[Any, bool, bool]:
     if not torch.cuda.is_available():
         return torch.float32, False, False
@@ -117,6 +133,9 @@ def train_qlora(
         raise RuntimeError("Install training dependencies: pip install -e '.[train]'") from exc
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    examples = _render_turn_examples(tokenizer, rows)
+    required_max_length = _validate_example_token_budget(tokenizer, examples, max_length)
+
     compute_dtype, use_bf16, use_fp16 = _training_precision(torch)
     bnb = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -141,13 +160,10 @@ def train_qlora(
     )
     language_model = get_peft_model(language_model, peft_cfg)
 
-    # Hard boundary: the trainer receives only the language backbone, so LoRA cannot
-    # be injected into the vision encoder or other multimodal parent modules.
     for name, param in language_model.named_parameters():
         if param.requires_grad and "lora_" not in name:
             raise RuntimeError(f"Unexpected trainable non-LoRA parameter: {name}")
 
-    examples = _render_turn_examples(tokenizer, rows)
     dataset = Dataset.from_list(examples)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -160,6 +176,7 @@ def train_qlora(
         "lora_dropout": lora_dropout,
         "learning_rate": learning_rate,
         "max_length": max_length,
+        "required_max_length": required_max_length,
         "epochs": epochs,
         "training_examples": len(examples),
         "policy": "turn-level state -> next assistant action; completion-only loss",
