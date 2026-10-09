@@ -1,0 +1,114 @@
+name: GAIA policy recovery screen
+
+on:
+  push:
+    paths:
+      - ".github/GAIA_POLICY_SCREEN_TRIGGER"
+
+permissions:
+  contents: read
+
+env:
+  MODEL: qwen3.5:4b
+  OLLAMA_URL: http://127.0.0.1:11434
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+jobs:
+  paired-screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Checkout frozen baseline runtime
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: hardening/production-runtime-v1
+          path: baseline
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Verify gated dataset credential
+        run: test -n "$HF_TOKEN"
+
+      - name: Install shared dependencies
+        run: python -m pip install -e ".[eval,search,files]"
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+
+      - name: Start Ollama and pull model
+        run: |
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in {1..30}; do
+            curl -fsS "$OLLAMA_URL/api/tags" >/dev/null && break
+            sleep 1
+          done
+          curl -fsS "$OLLAMA_URL/api/tags" >/dev/null
+          ollama pull "$MODEL"
+
+      - name: Run baseline stress screen
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE/baseline/src" python -m gaia_small_agent.cli gaia-eval \
+            --source gaia-benchmark/GAIA \
+            --hf-token "$HF_TOKEN" \
+            --partition diagnostic \
+            --limit 13 \
+            --backend ollama \
+            --model "$MODEL" \
+            --ollama-url "$OLLAMA_URL" \
+            --max-steps 4 \
+            --max-new-tokens 512 \
+            --work-root runs/screen-baseline13 \
+            --protected-questions runs/screen-protected-baseline.json
+
+      - name: Run candidate stress screen
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE/src" python -m gaia_small_agent.cli gaia-eval \
+            --source gaia-benchmark/GAIA \
+            --hf-token "$HF_TOKEN" \
+            --partition diagnostic \
+            --limit 13 \
+            --backend ollama \
+            --model "$MODEL" \
+            --ollama-url "$OLLAMA_URL" \
+            --max-steps 4 \
+            --max-new-tokens 512 \
+            --work-root runs/screen-candidate13 \
+            --protected-questions runs/screen-protected-candidate.json
+
+      - name: Print sanitized stress-screen result
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          def load(path):
+              p = Path(path)
+              return json.loads(p.read_text()) if p.exists() else None
+          b = load('runs/screen-baseline13/summary.json')
+          c = load('runs/screen-candidate13/summary.json')
+          out = {'schema_version':'gaia-policy-recovery-screen/v1','screen_only':True,'max_steps':4,'baseline':b,'candidate':c}
+          if b and c:
+              out['delta'] = {
+                  'correct': c['correct'] - b['correct'],
+                  'completed': c['completed'] - b['completed'],
+                  'max_steps_failures': c.get('failure_labels',{}).get('max_steps',0) - b.get('failure_labels',{}).get('max_steps',0),
+                  'tool_calls': c['tool_calls'] - b['tool_calls'],
+              }
+          Path('runs/gaia-policy-recovery-screen.json').write_text(json.dumps(out, indent=2)+'\n')
+          print(json.dumps(out, indent=2))
+          PY
+
+      - name: Upload sanitized screen only
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gaia-policy-recovery-screen
+          path: runs/gaia-policy-recovery-screen.json
+          retention-days: 14
