@@ -193,6 +193,12 @@ def test_local_gaia_eval_parser_exposes_partition_and_protection_paths():
     assert args.protected_questions == "runs/gaia-protected-question-hashes.json"
 
 
+def test_local_gaia_eval_parser_accepts_shadow_partition():
+    args = build_parser().parse_args(["gaia-eval", "--partition", "shadow"])
+
+    assert args.partition == "shadow"
+
+
 def test_compare_eval_parser():
     args = build_parser().parse_args([
         "compare-evals",
