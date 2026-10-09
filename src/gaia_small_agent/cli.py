@@ -224,10 +224,10 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--workspace", default="runs/doctor")
     doctor.set_defaults(func=doctor_command)
 
-    gaia = sub.add_parser("gaia-eval", aliases=["gaia100"], help="Run the local GAIA diagnostic or frozen evaluation partition")
+    gaia = sub.add_parser("gaia-eval", aliases=["gaia100"], help="Run a GAIA diagnostic, blind shadow, or frozen evaluation partition")
     gaia.add_argument("--source", default="gaia-benchmark/GAIA", help="HF dataset repo or local snapshot path")
     gaia.add_argument("--hf-token", default=None)
-    gaia.add_argument("--partition", choices=["diagnostic", "evaluation"], default="diagnostic")
+    gaia.add_argument("--partition", choices=["diagnostic", "shadow", "evaluation"], default="diagnostic")
     gaia.add_argument("--seed", default=LOCAL_PROTOCOL_SEED)
     gaia.add_argument("--gaia-revision", default=GAIA_REVISION, help="Pinned GAIA dataset revision")
     gaia.add_argument("--manifest", default=None, help="Defaults to <work-root>/manifest.json")
