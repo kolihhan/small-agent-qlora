@@ -86,3 +86,28 @@ def test_turn_rendering_fails_closed_if_chat_template_cannot_isolate_native_comp
     row = _verified_row()
     with pytest.raises(ValueError, match="native format"):
         _render_turn_examples(BadTokenizer(), [row])
+
+
+def test_training_precision_uses_float32_without_mixed_precision_on_cpu():
+    from gaia_small_agent.training.qlora import _training_precision
+
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return False
+
+        @staticmethod
+        def is_bf16_supported():
+            return False
+
+    class FakeTorch:
+        cuda = FakeCuda()
+        float32 = "float32"
+        float16 = "float16"
+        bfloat16 = "bfloat16"
+
+    dtype, bf16, fp16 = _training_precision(FakeTorch())
+
+    assert dtype == "float32"
+    assert bf16 is False
+    assert fp16 is False
