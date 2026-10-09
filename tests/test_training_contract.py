@@ -111,3 +111,28 @@ def test_training_precision_uses_float32_without_mixed_precision_on_cpu():
     assert dtype == "float32"
     assert bf16 is False
     assert fp16 is False
+
+
+def test_training_rejects_max_length_that_truncates_completion_tokens():
+    from gaia_small_agent.training.qlora import _validate_example_token_budget
+
+    class FakeTokenizer:
+        def __call__(self, text, *, add_special_tokens=False):
+            return {"input_ids": text.split()}
+
+    examples = [{"prompt": "p p p p p", "completion": "c c"}]
+
+    with pytest.raises(ValueError, match=r"max_length=7.*requires at least 8"):
+        _validate_example_token_budget(FakeTokenizer(), examples, 7)
+
+
+def test_training_accepts_max_length_that_preserves_prompt_completion_and_eos():
+    from gaia_small_agent.training.qlora import _validate_example_token_budget
+
+    class FakeTokenizer:
+        def __call__(self, text, *, add_special_tokens=False):
+            return {"input_ids": text.split()}
+
+    examples = [{"prompt": "p p p p p", "completion": "c c"}]
+
+    assert _validate_example_token_budget(FakeTokenizer(), examples, 8) == 8
