@@ -86,6 +86,19 @@ def _render_turn_examples(processor, rows: list[dict]) -> list[dict[str, str]]:
     return examples
 
 
+def _cpu_safe_compute_loss(model, inputs: dict, *, return_outputs: bool = False):
+    """Use the model's native causal-LM loss without TRL's Triton-only fused head.
+
+    TRL 1.15 routes SFT loss through ``fused_lm_head=True``. That path requires a
+    Triton device driver and therefore fails on CPU-only feasibility runners. The
+    CPU smoke still uses the exact same labels and completion-only masking; only
+    the loss implementation falls back to the model's native causal-LM loss.
+    """
+    outputs = model(**inputs)
+    loss = outputs.loss
+    return (loss, outputs) if return_outputs else loss
+
+
 def train_qlora(
     data_path: str | Path,
     output_dir: str | Path,
@@ -109,7 +122,8 @@ def train_qlora(
         raise RuntimeError("Install training dependencies: pip install -e '.[train]'") from exc
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    compute_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+    cuda_available = torch.cuda.is_available()
+    compute_dtype = torch.bfloat16 if cuda_available and torch.cuda.is_bf16_supported() else torch.float16
     bnb = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -156,6 +170,7 @@ def train_qlora(
         "training_examples": len(examples),
         "policy": "turn-level state -> next assistant action; completion-only loss",
         "scope": "text-only causal language model",
+        "trainer_loss_path": "trl-fused" if cuda_available else "native-cpu",
     }
     (output_dir / "run_config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
 
@@ -174,7 +189,16 @@ def train_qlora(
         bf16=(compute_dtype == torch.bfloat16),
         fp16=(compute_dtype == torch.float16),
     )
-    trainer = SFTTrainer(
+
+    trainer_cls = SFTTrainer
+    if not cuda_available:
+        class CpuSafeSFTTrainer(SFTTrainer):
+            def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+                return _cpu_safe_compute_loss(model, inputs, return_outputs=return_outputs)
+
+        trainer_cls = CpuSafeSFTTrainer
+
+    trainer = trainer_cls(
         model=language_model,
         args=config,
         train_dataset=dataset,
