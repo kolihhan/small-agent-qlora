@@ -18,6 +18,20 @@ def _rows():
     return rows
 
 
+def _rows_with_counts(counts):
+    rows = []
+    for level, count in counts.items():
+        for i in range(count):
+            rows.append({
+                "task_id": f"L{level}-{i:03d}",
+                "Level": level,
+                "Question": f"Question {level}-{i}",
+                "Final answer": "ok",
+                "file_path": "",
+            })
+    return rows
+
+
 def test_local_partitions_are_deterministic_stratified_and_disjoint():
     from gaia_small_agent.benchmark.gaia100 import select_gaia_partition
 
@@ -31,6 +45,37 @@ def test_local_partitions_are_deterministic_stratified_and_disjoint():
     assert [sum(int(r["Level"]) == level for r in evaluation) for level in (1, 2, 3)] == [32, 52, 16]
     assert {r["task_id"] for r in diagnostic}.isdisjoint({r["task_id"] for r in evaluation})
     assert [r["task_id"] for r in evaluation] == [r["task_id"] for r in select_gaia_partition(rows, "evaluation", seed="local-v2")]
+
+
+def test_shadow_partition_is_deterministic_stratified_and_disjoint():
+    from gaia_small_agent.benchmark.gaia100 import select_gaia_partition
+
+    rows = _rows()
+    diagnostic = select_gaia_partition(rows, "diagnostic", seed="local-v2")
+    evaluation = select_gaia_partition(rows, "evaluation", seed="local-v2")
+    shadow = select_gaia_partition(rows, "shadow", seed="local-v2")
+
+    diagnostic_ids = {r["task_id"] for r in diagnostic}
+    evaluation_ids = {r["task_id"] for r in evaluation}
+    shadow_ids = {r["task_id"] for r in shadow}
+
+    assert len(shadow) == 25
+    assert [sum(int(r["Level"]) == level for r in shadow) for level in (1, 2, 3)] == [8, 13, 4]
+    assert diagnostic_ids.isdisjoint(shadow_ids)
+    assert evaluation_ids.isdisjoint(shadow_ids)
+    assert diagnostic_ids.isdisjoint(evaluation_ids)
+    assert [r["task_id"] for r in shadow] == [
+        r["task_id"] for r in select_gaia_partition(list(reversed(rows)), "shadow", seed="local-v2")
+    ]
+
+
+def test_shadow_partition_fails_loudly_when_unused_pool_cannot_fill_quotas():
+    from gaia_small_agent.benchmark.gaia100 import select_gaia_partition
+
+    rows = _rows_with_counts({1: 47, 2: 78, 3: 24})
+
+    with pytest.raises(ValueError, match="need"):
+        select_gaia_partition(rows, "shadow", seed="local-v2")
 
 
 def test_protected_question_hashes_reject_exact_gaia_content_even_with_safe_source(tmp_path):
