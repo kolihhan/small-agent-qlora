@@ -130,6 +130,7 @@ def summarize_results(rows: list[dict]) -> dict:
     capability_gap = [r for r in rows if r.get("capability_gap")]
     failure_labels = Counter(str(r.get("failure_label") or "unclassified") for r in rows)
     failure_signals = Counter(signal for r in rows for signal in r.get("failure_signals", []))
+    stop_reasons = Counter(str(r.get("stop_reason") or "unknown") for r in rows)
     return {
         "name": "GAIA local evaluation",
         "correct": correct,
@@ -150,6 +151,7 @@ def summarize_results(rows: list[dict]) -> dict:
         "capability_gap": _population_summary(capability_gap),
         "failure_labels": dict(sorted(failure_labels.items())),
         "failure_signals": dict(sorted(failure_signals.items())),
+        "stop_reasons": dict(sorted(stop_reasons.items())),
     }
 
 
