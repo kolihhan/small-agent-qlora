@@ -116,3 +116,40 @@ def test_oracle_tool_and_no_tool_rows_render_as_next_action_examples(tmp_path):
     assert any(tool_row["expected_answer"] in example["completion"] for example in tool_examples)
     assert len(no_tool_examples) == 1
     assert no_tool_row["expected_answer"] in no_tool_examples[0]["completion"]
+
+
+def test_cpu_safe_loss_uses_native_model_loss_without_fused_lm_head():
+    from gaia_small_agent.training.qlora import _cpu_safe_compute_loss
+
+    calls = []
+
+    class Output:
+        loss = 1.25
+
+    class Model:
+        def __call__(self, **kwargs):
+            calls.append(kwargs)
+            return Output()
+
+    loss = _cpu_safe_compute_loss(Model(), {"input_ids": [1], "labels": [1]})
+
+    assert loss == 1.25
+    assert calls == [{"input_ids": [1], "labels": [1]}]
+
+
+def test_cpu_safe_loss_can_return_outputs():
+    from gaia_small_agent.training.qlora import _cpu_safe_compute_loss
+
+    class Output:
+        loss = 2.5
+
+    output = Output()
+
+    class Model:
+        def __call__(self, **kwargs):
+            return output
+
+    loss, returned = _cpu_safe_compute_loss(Model(), {"input_ids": [1], "labels": [1]}, return_outputs=True)
+
+    assert loss == 2.5
+    assert returned is output
