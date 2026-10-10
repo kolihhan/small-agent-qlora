@@ -16,12 +16,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Fetch private Space build logs
+      - name: Fetch latest private Space build logs
         shell: bash
         run: |
           set -euo pipefail
           test -n "$HF_TOKEN"
           python -m pip install --quiet 'huggingface_hub>=1.0'
+          echo "diagnostic generation: python-3.11 retry"
           python - <<'PY'
           import os
           from huggingface_hub import fetch_space_logs
