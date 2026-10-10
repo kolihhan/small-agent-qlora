@@ -1,0 +1,222 @@
+name: Final matched Qwen3.5 9B Base vs QLoRA v2 GAIA v2
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/gaia-9b-final-matched-v2.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  CONVERT_RUN_ID: "38068599374"
+  TRAIN_RUN_ID: "38068245793"
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA256: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_RELEASE_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_RELEASE_SHA256: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  MODEL_ALIAS: qwen3.5-9b
+  ADAPTER_SHA256: 8eab99e9cad4c73eb044c84a0cbb015d2835ace3e4f0159544dec23a6ef2cc4c
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Verify frozen conversion run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          payload="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'X-GitHub-Api-Version: 2022-11-28' "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${CONVERT_RUN_ID}")"
+          status="$(python -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], d.get("conclusion"))' <<<"$payload")"
+          [ "$status" = "completed success" ] || { echo "conversion is not verified-success: $status"; exit 1; }
+
+      - name: Download frozen converted adapter
+        uses: actions/download-artifact@v4
+        with:
+          name: qwen35-9b-qlora-v2-gguf
+          path: matched-input
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.CONVERT_RUN_ID }}
+
+      - name: Verify adapter provenance and hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s matched-input/qwen35-9b-qlora-v2-adapter.gguf
+          test -s matched-input/adapter-conversion-meta.json
+          test -s matched-input/source/training-meta.json
+          echo "$ADAPTER_SHA256  matched-input/qwen35-9b-qlora-v2-adapter.gguf" | sha256sum -c -
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          conv=json.loads(Path('matched-input/adapter-conversion-meta.json').read_text())
+          train=json.loads(Path('matched-input/source/training-meta.json').read_text())
+          assert conv['source_training_run_id'] == os.environ['TRAIN_RUN_ID'], conv
+          assert conv['training_steps'] == 12, conv
+          assert conv['adapter_sha256'] == os.environ['ADAPTER_SHA256'], conv
+          assert train['cuda'] is True and train['max_steps'] == 12, train
+          assert train['training_examples'] == 3600, train
+          assert train['min_completion_tokens'] > 0, train
+          print(json.dumps({'conversion':conv,'training':train},indent=2,sort_keys=True))
+          PY
+
+      - name: Freeze adapter inside matched run
+        uses: actions/upload-artifact@v4
+        with:
+          name: matched-qwen35-9b-qlora-v2
+          path: matched-input
+          if-no-files-found: error
+          retention-days: 30
+
+  eval:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        arm: [base, qlora]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install frozen agent evaluator
+        run: python -m pip install --quiet -e '.[search,files,eval]'
+
+      - name: Download and verify same base GGUF for both arms
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model
+          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf
+          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
+
+      - name: Download and verify same llama-server for both arms
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-delay 3 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
+          mkdir -p /tmp/llama-bin
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+          "$SERVER" --version
+
+      - name: Download frozen adapter for QLoRA arm
+        if: matrix.arm == 'qlora'
+        uses: actions/download-artifact@v4
+        with:
+          name: matched-qwen35-9b-qlora-v2
+          path: matched-input
+
+      - name: Start frozen non-thinking inference protocol
+        shell: bash
+        env:
+          ARM: ${{ matrix.arm }}
+        run: |
+          set -euo pipefail
+          mkdir -p "runs/$ARM/shard-${{ matrix.shard }}"
+          args=(-m model/Qwen3.5-9B-Q4_K_M.gguf --alias "$MODEL_ALIAS" --host 127.0.0.1 --port 8080 --ctx-size 4096 --threads 4 --parallel 1 --jinja --reasoning-budget 0 --temperature 0)
+          if [ "$ARM" = qlora ]; then
+            echo "$ADAPTER_SHA256  matched-input/qwen35-9b-qlora-v2-adapter.gguf" | sha256sum -c -
+            args+=(--lora matched-input/qwen35-9b-qlora-v2-adapter.gguf)
+          fi
+          "$LLAMA_SERVER" "${args[@]}" > "runs/$ARM/shard-${{ matrix.shard }}/llama-server.log" 2>&1 &
+          echo $! > "runs/$ARM/shard-${{ matrix.shard }}/llama-server.pid"
+          for i in {1..180}; do
+            curl -fsS http://127.0.0.1:8080/health >/dev/null && exit 0
+            sleep 2
+          done
+          tail -200 "runs/$ARM/shard-${{ matrix.shard }}/llama-server.log" >&2
+          exit 1
+
+      - name: API smoke test
+        shell: bash
+        run: |
+          python - <<'PY'
+          import requests
+          body={'model':'qwen3.5-9b','messages':[{'role':'user','content':'Reply with exactly READY.'}],'temperature':0,'max_tokens':32}
+          r=requests.post('http://127.0.0.1:8080/v1/chat/completions',json=body,timeout=180); r.raise_for_status(); d=r.json()
+          assert d.get('choices') and isinstance(d['choices'][0].get('message'),dict), d
+          print(d['choices'][0]['message'])
+          PY
+
+      - name: Run frozen GAIA Evaluation100 shard
+        shell: bash
+        env:
+          ARM: ${{ matrix.arm }}
+        run: |
+          set -euo pipefail
+          python scripts/run_gaia_eval_shard.py --backend openai_compat --model "$MODEL_ALIAS" --openai-base-url http://127.0.0.1:8080 --hf-token "$HF_TOKEN" --shard-index "${{ matrix.shard }}" --shard-count 20 --work-root "runs/$ARM/shard-${{ matrix.shard }}" --output "runs/$ARM/shard-${{ matrix.shard }}/shard.json"
+
+      - name: Stop server
+        if: always()
+        shell: bash
+        env:
+          ARM: ${{ matrix.arm }}
+        run: |
+          if [ -f "runs/$ARM/shard-${{ matrix.shard }}/llama-server.pid" ]; then kill "$(cat "runs/$ARM/shard-${{ matrix.shard }}/llama-server.pid")" || true; fi
+
+      - name: Upload shard evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: finalv2-gaia-${{ matrix.arm }}-shard-${{ matrix.shard }}
+          path: runs/${{ matrix.arm }}/shard-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 30
+
+  summarize:
+    needs: eval
+    if: ${{ always() && needs.eval.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python -m pip install --quiet -e .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: finalv2-gaia-*-shard-*
+          path: downloaded
+
+      - name: Aggregate exact per-case matched results
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from gaia_small_agent.benchmark.gaia100 import summarize_results
+          summaries={}; ids_by_arm={}
+          for arm in ('base','qlora'):
+              records=[]; ids=set()
+              files=sorted(Path('downloaded').glob(f'finalv2-gaia-{arm}-shard-*/results.jsonl'))
+              if len(files)!=20: raise SystemExit(f'{arm}: expected 20 results.jsonl, got {len(files)}')
+              for path in files:
+                  for line in path.read_text(encoding='utf-8').splitlines():
+                      if not line.strip(): continue
+                      row=json.loads(line); tid=row['task_id']
+                      if tid in ids: raise SystemExit(f'{arm}: duplicate task {tid}')
+                      ids.add(tid); records.append(row)
+              if len(records)!=100: raise SystemExit(f'{arm}: expected 100 records, got {len(records)}')
+              summaries[arm]=summarize_results(records); ids_by_arm[arm]=ids
+          if ids_by_arm['base'] != ids_by_arm['qlora']: raise SystemExit('matched arms have different task identities')
+          b,q=summaries['base'],summaries['qlora']
+          payload={'schema_version':'matched-gaia-9b-qlora-v2/final-v2','protocol':{'benchmark':'GAIA 2023 validation / frozen Evaluation100','base_gguf_sha256':'8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54','adapter_sha256':'8eab99e9cad4c73eb044c84a0cbb015d2835ace3e4f0159544dec23a6ef2cc4c','reasoning_budget':0,'context_tokens':4096,'max_new_tokens':512,'agent_max_steps':12,'shards':20,'adapter_training_steps':12},'base':b,'qlora':q,'delta':{'correct_absolute':q['correct']-b['correct'],'accuracy_pp':(q['accuracy']-b['accuracy'])*100,'tool_success_rate_pp':(q['tool_success_rate']-b['tool_success_rate'])*100,'tool_errors':q['tool_errors']-b['tool_errors'],'duplicate_calls_blocked':q['duplicate_calls_blocked']-b['duplicate_calls_blocked'],'completion_rate_pp':(q['completion_rate']-b['completion_rate'])*100,'levels_correct':{lvl:q['levels'][lvl]['correct']-b['levels'][lvl]['correct'] for lvl in ('1','2','3')}}}
+          Path('final-matched-summary.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps(payload,indent=2,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finalv2-gaia-9b-base-vs-qlora-v2-summary
+          path: final-matched-summary.json
+          if-no-files-found: error
+          retention-days: 30
