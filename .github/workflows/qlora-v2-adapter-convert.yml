@@ -11,40 +11,32 @@ permissions:
   actions: read
 
 env:
-  SOURCE_RUN_ID: "38067525779"
+  SOURCE_RUN_ID: "38068245793"
   LLAMA_CPP_COMMIT: aa94f2086147cd4bfbcff818ce998dffce5fcb39
   BASE_MODEL_ID: Qwen/Qwen3.5-9B
+  EXPERIMENT_COMMIT: 9c0836080eebd57f47d223fde53715d9ed243d00
 
 jobs:
   convert:
     runs-on: ubuntu-latest
     timeout-minutes: 50
     steps:
-      - name: Wait for training run
+      - name: Verify training run
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for i in {1..180}; do
-            payload="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'X-GitHub-Api-Version: 2022-11-28' \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}")"
-            status="$(python -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$payload")"
-            conclusion="$(python -c 'import json,sys; print(json.load(sys.stdin).get("conclusion"))' <<<"$payload")"
-            echo "training status=$status conclusion=$conclusion"
-            if [ "$status" = completed ]; then
-              [ "$conclusion" = success ] || { echo "training run failed"; exit 1; }
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "training run did not finish in time" >&2
-          exit 1
+          payload="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}")"
+          status="$(python -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], d.get("conclusion"))' <<<"$payload")"
+          echo "training $status"
+          [ "$status" = "completed success" ] || { echo "verified training run is not successful"; exit 1; }
 
       - name: Download adapter artifact
         uses: actions/download-artifact@v4
         with:
-          name: qwen35-9b-qlora-v2-zero-gpu-free
+          name: qwen35-9b-qlora-v2-final
           path: runs/source
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
@@ -62,9 +54,10 @@ jobs:
           test -s runs/adapter/adapter_model.safetensors
           test -s runs/adapter/run_config.json
           python - <<'PY'
-          import json
+          import json, os
           from pathlib import Path
           cfg = json.loads(Path('runs/adapter/adapter_config.json').read_text())
+          run_cfg = json.loads(Path('runs/adapter/run_config.json').read_text())
           meta = json.loads(Path('runs/source/training-meta.json').read_text())
           print(json.dumps({
               'base_model_name_or_path': cfg.get('base_model_name_or_path'),
@@ -72,11 +65,15 @@ jobs:
               'lora_alpha': cfg.get('lora_alpha'),
               'target_modules': cfg.get('target_modules'),
               'training_meta': meta,
+              'truncation_policy': run_cfg.get('truncation_policy'),
           }, indent=2, sort_keys=True))
-          if meta.get('cuda') is not True:
-              raise SystemExit('training metadata does not confirm CUDA')
-          if meta.get('max_steps') != 12:
-              raise SystemExit(f"unexpected max_steps: {meta.get('max_steps')}")
+          assert meta.get('ok') is True, meta
+          assert meta.get('cuda') is True, meta
+          assert meta.get('max_steps') == 12, meta
+          assert meta.get('experiment_commit') == os.environ['EXPERIMENT_COMMIT'], meta
+          assert run_cfg.get('training_examples') == 3600, run_cfg
+          assert run_cfg.get('truncation_policy') == 'preserve full completion; left-trim oldest prompt tokens', run_cfg
+          assert int(run_cfg.get('min_completion_tokens', 0)) > 0, run_cfg
           PY
 
       - name: Pin llama.cpp converter and install dependencies
@@ -107,6 +104,7 @@ jobs:
           from pathlib import Path
           payload = {
               'source_training_run_id': os.environ['SOURCE_RUN_ID'],
+              'experiment_commit': os.environ['EXPERIMENT_COMMIT'],
               'training_steps': 12,
               'llama_cpp_commit': os.environ['LLAMA_CPP_COMMIT'],
               'base_model_id': os.environ['BASE_MODEL_ID'],
