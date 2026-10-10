@@ -1,0 +1,98 @@
+name: Native GGUF Ollama adapter proof
+
+on:
+  push:
+    paths:
+      - ".github/NATIVE_GGUF_OLLAMA_PROOF_TRIGGER"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  TRAIN_RUN_ID: "38018637246"
+  MODEL_URL: https://huggingface.co/bartowski/Qwen_Qwen3.5-4B-GGUF/resolve/main/Qwen_Qwen3.5-4B-Q4_K_M.gguf?download=true
+  MODEL_FILE: Qwen_Qwen3.5-4B-Q4_K_M.gguf
+
+jobs:
+  adapter-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Download proven adapter artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: native-gguf-train-proof
+          path: proof
+          github-token: ${{ github.token }}
+          run-id: ${{ env.TRAIN_RUN_ID }}
+
+      - name: Locate adapter
+        run: |
+          set -euo pipefail
+          ADAPTER=$(find proof -type f -name 'native-smoke-adapter.gguf' -print -quit)
+          test -n "$ADAPTER" && test -s "$ADAPTER"
+          echo "ADAPTER=$(realpath "$ADAPTER")" >> "$GITHUB_ENV"
+          ls -lh "$ADAPTER"
+
+      - name: Download exact Q4 base
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/model
+          curl -fL --retry 3 --retry-delay 5 "$MODEL_URL" -o "/tmp/model/$MODEL_FILE"
+          echo "13c16f426047e2de38cd075bdade4a7bcbc8c774384876f677740cda65f8a983  /tmp/model/$MODEL_FILE" | sha256sum -c -
+          echo "BASE_MODEL=/tmp/model/$MODEL_FILE" >> "$GITHUB_ENV"
+
+      - name: Install and start Ollama
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/ollama.log
+          exit 1
+
+      - name: Import exact Base and Base plus GGUF LoRA
+        run: |
+          set -euo pipefail
+          printf 'FROM %s\n' "$BASE_MODEL" > /tmp/Modelfile.base
+          printf 'FROM %s\nADAPTER %s\n' "$BASE_MODEL" "$ADAPTER" > /tmp/Modelfile.adapter
+          ollama create native-qwen-base -f /tmp/Modelfile.base
+          ollama create native-qwen-lora -f /tmp/Modelfile.adapter
+          ollama list
+
+      - name: Run bounded matched inference proof
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, urllib.request
+          prompt = "The answer token is DIRECT-123456. Return only that token."
+          out = {}
+          for model in ("native-qwen-base", "native-qwen-lora"):
+              body = json.dumps({"model": model, "prompt": prompt, "stream": False, "options": {"temperature": 0, "num_predict": 16}}).encode()
+              req = urllib.request.Request("http://127.0.0.1:11434/api/generate", data=body, headers={"Content-Type": "application/json"})
+              with urllib.request.urlopen(req, timeout=180) as resp:
+                  payload = json.load(resp)
+              out[model] = str(payload.get("response", "")).strip()
+          result = {"success": True, "base_response": out["native-qwen-base"], "adapter_response": out["native-qwen-lora"]}
+          open("ollama-adapter-proof.json", "w", encoding="utf-8").write(json.dumps(result, indent=2) + "\n")
+          print(json.dumps(result, indent=2))
+          PY
+
+      - name: Upload proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-gguf-ollama-adapter-proof
+          path: |
+            ollama-adapter-proof.json
+            /tmp/ollama.log
+          if-no-files-found: warn
+          retention-days: 14
