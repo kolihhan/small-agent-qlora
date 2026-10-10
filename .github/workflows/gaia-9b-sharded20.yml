@@ -1,4 +1,4 @@
-name: GAIA 9B baseline 20-way
+name: GAIA 9B clean Base v2 20-way
 
 on:
   workflow_dispatch:
@@ -14,6 +14,7 @@ env:
   OLLAMA_URL: http://127.0.0.1:11434
   HF_TOKEN: ${{ secrets.HF_TOKEN }}
   SHARD_COUNT: "20"
+  BASE_PROTOCOL: clean-v2-nonthinking
 
 jobs:
   evaluate-shard:
@@ -80,12 +81,13 @@ jobs:
           data = json.loads(path.read_text(encoding="utf-8"))
           data["model_id"] = os.environ["MODEL_ID"]
           data["commit_sha"] = os.environ["COMMIT_SHA"]
+          data["base_protocol"] = os.environ["BASE_PROTOCOL"]
           path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           PY
       - name: Upload sanitized shard aggregate only
         uses: actions/upload-artifact@v4
         with:
-          name: gaia-9b-20-shard-${{ matrix.shard }}
+          name: gaia-9b-clean-v2-shard-${{ matrix.shard }}
           path: runs/gaia-9b-shard-${{ matrix.shard }}-summary.json
           if-no-files-found: error
           retention-days: 14
@@ -97,7 +99,7 @@ jobs:
       - name: Download shard aggregates
         uses: actions/download-artifact@v4
         with:
-          pattern: gaia-9b-20-shard-*
+          pattern: gaia-9b-clean-v2-shard-*
           path: runs/shards
           merge-multiple: true
       - name: Build frozen Evaluation100 aggregate
@@ -122,6 +124,9 @@ jobs:
           model_ids = {s["model_id"] for s in shards}
           if len(model_ids) != 1:
               raise SystemExit("model identity differs across shards")
+          protocols = {s.get("base_protocol") for s in shards}
+          if protocols != {"clean-v2-nonthinking"}:
+              raise SystemExit(f"base protocol mismatch: {protocols}")
 
           summaries = [s["summary"] for s in shards]
           total = sum(int(s["total"]) for s in summaries)
@@ -154,9 +159,10 @@ jobs:
           tool_calls = sum(int(s["tool_calls"]) for s in summaries)
           tool_successes = sum(int(s["tool_successes"]) for s in summaries)
           payload = {
-              "schema_version": "gaia-9b-baseline/v1",
+              "schema_version": "gaia-9b-clean-base/v2",
               "benchmark": "GAIA 2023 validation / frozen Evaluation100",
               "partition": "evaluation",
+              "protocol": "clean-v2-nonthinking",
               "dataset_revision": shards[0]["dataset_revision"],
               "seed": shards[0]["seed"],
               "model": shards[0]["model"],
@@ -187,14 +193,14 @@ jobs:
                   "stop_reasons": dict(sorted(stop_reasons.items())),
               },
           }
-          out = Path("runs/gaia-9b-baseline-summary.json")
+          out = Path("runs/gaia-9b-clean-base-v2-summary.json")
           out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           print(json.dumps(payload, indent=2, sort_keys=True))
           PY
       - name: Upload final sanitized aggregate only
         uses: actions/upload-artifact@v4
         with:
-          name: gaia-9b-baseline-summary-20way
-          path: runs/gaia-9b-baseline-summary.json
+          name: gaia-9b-clean-base-v2-summary-20way
+          path: runs/gaia-9b-clean-base-v2-summary.json
           if-no-files-found: error
           retention-days: 30
