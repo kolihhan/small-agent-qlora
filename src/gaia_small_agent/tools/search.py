@@ -22,6 +22,13 @@ class SearchTool(Tool):
     def __init__(self, timeout_s: float = 5.0):
         self.timeout_s = float(timeout_s)
 
+    def _client(self, ddgs_cls):
+        try:
+            return ddgs_cls(timeout=self.timeout_s)
+        except TypeError:
+            # Keep compatibility with simple injected clients while real DDGS gets a hard timeout.
+            return ddgs_cls()
+
     def run(self, arguments: dict[str, Any], workspace: Path) -> ToolResult:
         query = arguments.get("query")
         if not isinstance(query, str) or not query.strip():
@@ -44,7 +51,7 @@ class SearchTool(Tool):
         for backend in backends:
             try:
                 rows = list(
-                    DDGS(timeout=self.timeout_s).text(
+                    self._client(DDGS).text(
                         query,
                         backend=backend,
                         max_results=max_results,
