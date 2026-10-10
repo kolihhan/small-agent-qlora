@@ -1,0 +1,249 @@
+name: Free ZeroGPU Qwen3.5 9B QLoRA v2
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/hf-zero-gpu-qlora-v2.yml"
+
+permissions:
+  contents: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  EXPERIMENT_COMMIT: 26d8bc2d54b191baaaea57f4761e9bddbb3ed5ba
+
+jobs:
+  train-adapter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Verify free ZeroGPU quota
+        id: quota
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN_NOT_CONFIGURED"; exit 42; }
+          python -m pip install --quiet 'huggingface_hub>=1.0' 'gradio_client>=1.4'
+          python - <<'PY'
+          import json, os
+          from huggingface_hub import HfApi
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          quota = api.get_zero_gpu_quota()
+          print(json.dumps({"base": quota.base, "remaining": quota.remaining}, indent=2))
+          if quota.remaining < 280:
+              raise SystemExit(f"Need >=280 free ZeroGPU seconds, only {quota.remaining} remain")
+          PY
+
+      - name: Create private temporary ZeroGPU training Space
+        id: create
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from huggingface_hub import HfApi, SpaceHardware
+
+          token = os.environ["HF_TOKEN"]
+          api = HfApi(token=token)
+          username = api.whoami()["name"]
+          repo_id = f"{username}/small-agent-qlora-v2-train"
+          api.create_repo(
+              repo_id=repo_id,
+              repo_type="space",
+              space_sdk="gradio",
+              space_hardware=SpaceHardware.ZERO_A10G,
+              private=True,
+              exist_ok=True,
+          )
+          api.add_space_secret(repo_id=repo_id, key="HF_TOKEN", value=token)
+
+          files = Path("/tmp/space-files")
+          files.mkdir(parents=True, exist_ok=True)
+          (files / "README.md").write_text('''---
+title: Small Agent QLoRA v2 Train
+emoji: 🧪
+colorFrom: gray
+colorTo: blue
+sdk: gradio
+sdk_version: 6.0.1
+app_file: app.py
+pinned: false
+license: mit
+hardware: zero-a10g
+---
+
+Temporary private training Space for the Small Agent 9B QLoRA v2 experiment.
+''', encoding="utf-8")
+          (files / "requirements.txt").write_text(f'''small-agent-qlora @ git+https://github.com/kolihhan/small-agent-qlora.git@{os.environ["EXPERIMENT_COMMIT"]}
+transformers>=5.4.0,<6
+accelerate>=1.13.0,<2
+peft>=0.18.0,<1
+bitsandbytes>=0.49.2,<1
+trl>=0.29.0,<1
+datasets>=4.8.0,<5
+huggingface_hub>=1.0
+gradio>=6,<7
+''', encoding="utf-8")
+          (files / "app.py").write_text(r'''from __future__ import annotations
+
+import json
+import os
+import shutil
+import time
+from pathlib import Path
+
+import gradio as gr
+import spaces
+import torch
+
+from gaia_small_agent.training.oracle_policy_v2 import generate_oracle_policy_v2_dataset
+from gaia_small_agent.training.qlora import train_qlora
+
+MODEL = "Qwen/Qwen3.5-9B"
+ROOT = Path("/tmp/qlora-v2")
+
+
+@spaces.GPU(duration=280)
+def train(max_steps: int = 60):
+    max_steps = int(max_steps)
+    if max_steps < 1 or max_steps > 80:
+        raise gr.Error("max_steps must be between 1 and 80")
+    if ROOT.exists():
+        shutil.rmtree(ROOT)
+    ROOT.mkdir(parents=True)
+    data = generate_oracle_policy_v2_dataset(ROOT / "oracle", seed="small-agent-policy-v2")
+    out = ROOT / "adapter"
+    start = time.time()
+    train_qlora(
+        data_path=data["train"],
+        output_dir=out,
+        model_name=MODEL,
+        max_length=768,
+        learning_rate=1e-4,
+        lora_r=16,
+        lora_alpha=32,
+        lora_dropout=0.05,
+        max_steps=max_steps,
+        save_steps=max(10, max_steps // 2),
+        gradient_accumulation_steps=8,
+        lora_target_modules="all-linear",
+    )
+    elapsed = time.time() - start
+    required = [out / "adapter_config.json", out / "adapter_model.safetensors", out / "run_config.json"]
+    missing = [str(p) for p in required if not p.is_file()]
+    if missing:
+        raise RuntimeError(f"missing adapter outputs: {missing}")
+    archive = shutil.make_archive(str(ROOT / "qwen35-9b-qlora-v2-adapter"), "zip", out)
+    meta = {
+        "model": MODEL,
+        "max_steps": max_steps,
+        "elapsed_seconds": elapsed,
+        "cuda": torch.cuda.is_available(),
+        "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "adapter_bytes": (out / "adapter_model.safetensors").stat().st_size,
+    }
+    return archive, meta
+
+
+demo = gr.Interface(
+    fn=train,
+    inputs=gr.Number(value=60, precision=0, label="Optimizer steps"),
+    outputs=[gr.File(label="Adapter archive"), gr.JSON(label="Training metadata")],
+    api_name="train",
+    title="Small Agent QLoRA v2 trainer",
+)
+
+if __name__ == "__main__":
+    demo.launch()
+''', encoding="utf-8")
+          for name in ("README.md", "requirements.txt", "app.py"):
+              api.upload_file(
+                  path_or_fileobj=files / name,
+                  path_in_repo=name,
+                  repo_id=repo_id,
+                  repo_type="space",
+              )
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write(f"HF_SPACE_ID={repo_id}\n")
+          print(repo_id)
+          PY
+
+      - name: Wait for private Space build
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          runtime = api.wait_for_space(repo_id=os.environ["HF_SPACE_ID"], timeout=1200)
+          print(runtime)
+          if str(runtime.stage) != "RUNNING" and getattr(runtime.stage, "value", None) != "RUNNING":
+              raise SystemExit(f"Space did not reach RUNNING: {runtime.stage}")
+          if str(runtime.hardware) != "zero-a10g" and getattr(runtime.hardware, "value", None) != "zero-a10g":
+              raise SystemExit(f"Space is not ZeroGPU: {runtime.hardware}")
+          PY
+
+      - name: Train adapter inside free ZeroGPU quota
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runs/zero-gpu
+          python - <<'PY'
+          import json, os, shutil
+          from pathlib import Path
+          from gradio_client import Client
+
+          client = Client(os.environ["HF_SPACE_ID"], hf_token=os.environ["HF_TOKEN"])
+          result = client.predict(60, api_name="/train")
+          if not isinstance(result, (tuple, list)) or len(result) != 2:
+              raise SystemExit(f"unexpected Space response: {result!r}")
+          archive, meta = result
+          src = Path(str(archive))
+          if not src.is_file():
+              raise SystemExit(f"adapter archive was not downloaded: {src}")
+          dst = Path("runs/zero-gpu/qwen35-9b-qlora-v2-adapter.zip")
+          shutil.copy2(src, dst)
+          Path("runs/zero-gpu/training-meta.json").write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(meta, indent=2, sort_keys=True))
+          PY
+
+      - name: Verify remaining quota
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from huggingface_hub import HfApi
+          quota = HfApi(token=os.environ["HF_TOKEN"]).get_zero_gpu_quota()
+          print(json.dumps({"remaining": quota.remaining, "resets_at": quota.resets_at.isoformat() if quota.resets_at else None}, indent=2))
+          PY
+
+      - name: Upload adapter artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen35-9b-qlora-v2-zero-gpu
+          path: |
+            runs/zero-gpu/qwen35-9b-qlora-v2-adapter.zip
+            runs/zero-gpu/training-meta.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Pause temporary Space
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          repo_id = os.environ.get("HF_SPACE_ID")
+          if repo_id:
+              try:
+                  HfApi(token=os.environ["HF_TOKEN"]).pause_space(repo_id=repo_id)
+                  print(f"paused {repo_id}")
+              except Exception as exc:
+                  print(f"pause failed: {exc}")
+          PY
