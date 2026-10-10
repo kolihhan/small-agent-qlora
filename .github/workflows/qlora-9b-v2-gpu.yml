@@ -14,7 +14,7 @@ env:
   HF_TOKEN: ${{ secrets.HF_TOKEN }}
   POLICY_SEED: small-agent-policy-v2
   PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
-  HF_HOME: ${{ runner.temp }}/hf-small-agent-qlora-v2
+  HF_HOME: /tmp/hf-small-agent-qlora-v2
 
 jobs:
   matched-qlora-v2:
@@ -125,6 +125,7 @@ jobs:
         run: |
           set -euo pipefail
           . .venv/bin/activate
+          mkdir -p runs/gaia-base-matched
           small-agent gaia-eval \
             --source gaia-benchmark/GAIA \
             --hf-token "$HF_TOKEN" \
@@ -163,6 +164,7 @@ jobs:
         run: |
           set -euo pipefail
           . .venv/bin/activate
+          mkdir -p runs/gaia-qlora-matched
           small-agent gaia-eval \
             --source gaia-benchmark/GAIA \
             --hf-token "$HF_TOKEN" \
