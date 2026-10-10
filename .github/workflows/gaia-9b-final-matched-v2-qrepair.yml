@@ -1,0 +1,144 @@
+name: Parallel repair invalid QLoRA GAIA v2 shards
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/gaia-9b-final-matched-v2-qrepair.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  SOURCE_RUN_ID: "38068816559"
+  FROZEN_COMMIT: "9840da3067eafe203b34869e679ed9b7b2f4158c"
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA256: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_RELEASE_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_RELEASE_SHA256: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  MODEL_ALIAS: qwen3.5-9b
+  ADAPTER_SHA256: 8eab99e9cad4c73eb044c84a0cbb015d2835ace3e4f0159544dec23a6ef2cc4c
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - shard: 3
+            delay: 0
+          - shard: 5
+            delay: 20
+          - shard: 18
+            delay: 40
+    steps:
+      - name: Checkout frozen evaluator commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_COMMIT }}
+      - name: Verify frozen evaluator commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$FROZEN_COMMIT"
+      - name: Install frozen agent evaluator
+        run: python -m pip install --quiet -e '.[search,files,eval]'
+      - name: Download and verify same base GGUF
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model
+          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf
+          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
+      - name: Download and verify same llama-server
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-delay 3 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
+          mkdir -p /tmp/llama-bin
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+          "$SERVER" --version
+      - name: Download frozen adapter
+        uses: actions/download-artifact@v4
+        with:
+          name: matched-qwen35-9b-qlora-v2
+          path: matched-input
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+      - name: Verify frozen adapter
+        shell: bash
+        run: echo "$ADAPTER_SHA256  matched-input/qwen35-9b-qlora-v2-adapter.gguf" | sha256sum -c -
+      - name: Start exact frozen QLoRA inference protocol
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          mkdir -p "runs/qlora/shard-$SHARD"
+          "$LLAMA_SERVER" -m model/Qwen3.5-9B-Q4_K_M.gguf --alias "$MODEL_ALIAS" --host 127.0.0.1 --port 8080 --ctx-size 4096 --threads 4 --parallel 1 --jinja --reasoning-budget 0 --temperature 0 --lora matched-input/qwen35-9b-qlora-v2-adapter.gguf > "runs/qlora/shard-$SHARD/llama-server.log" 2>&1 &
+          echo $! > "runs/qlora/shard-$SHARD/llama-server.pid"
+          for i in {1..180}; do
+            curl -fsS http://127.0.0.1:8080/health >/dev/null && exit 0
+            sleep 2
+          done
+          tail -200 "runs/qlora/shard-$SHARD/llama-server.log" >&2
+          exit 1
+      - name: API smoke test
+        shell: bash
+        run: |
+          python - <<'PY'
+          import requests
+          body={'model':'qwen3.5-9b','messages':[{'role':'user','content':'Reply with exactly READY.'}],'temperature':0,'max_tokens':32}
+          r=requests.post('http://127.0.0.1:8080/v1/chat/completions',json=body,timeout=180); r.raise_for_status(); d=r.json()
+          assert d.get('choices') and isinstance(d['choices'][0].get('message'),dict), d
+          print(d['choices'][0]['message'])
+          PY
+      - name: Stagger external search preflight only
+        shell: bash
+        run: sleep "${{ matrix.delay }}"
+      - name: Run exact frozen GAIA Evaluation100 shard
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python scripts/run_gaia_eval_shard.py --backend openai_compat --model "$MODEL_ALIAS" --openai-base-url http://127.0.0.1:8080 --hf-token "$HF_TOKEN" --shard-index "$SHARD" --shard-count 20 --work-root "runs/qlora/shard-$SHARD" --output "runs/qlora/shard-$SHARD/shard.json"
+      - name: Stop server
+        if: always()
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          if [ -f "runs/qlora/shard-$SHARD/llama-server.pid" ]; then kill "$(cat "runs/qlora/shard-$SHARD/llama-server.pid")" || true; fi
+      - name: Verify repaired shard produced five cases
+        if: success()
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          shard=os.environ['SHARD']; path=Path(f'runs/qlora/shard-{shard}/results.jsonl')
+          rows=[json.loads(x) for x in path.read_text(encoding='utf-8').splitlines() if x.strip()]
+          assert len(rows)==5, (path,len(rows)); assert len({r['task_id'] for r in rows})==5
+          print(f'QREPAIR_VERIFIED shard={shard} cases=5')
+          PY
+      - name: Upload repaired shard evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qrepairv2-gaia-qlora-shard-${{ matrix.shard }}
+          path: runs/qlora/shard-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 30
