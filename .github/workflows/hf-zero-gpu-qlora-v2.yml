@@ -19,7 +19,6 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Verify free ZeroGPU quota
-        id: quota
         shell: bash
         run: |
           set -euo pipefail
@@ -28,15 +27,112 @@ jobs:
           python - <<'PY'
           import json, os
           from huggingface_hub import HfApi
-          api = HfApi(token=os.environ["HF_TOKEN"])
-          quota = api.get_zero_gpu_quota()
+          quota = HfApi(token=os.environ["HF_TOKEN"]).get_zero_gpu_quota()
           print(json.dumps({"base": quota.base, "remaining": quota.remaining}, indent=2))
           if quota.remaining < 280:
               raise SystemExit(f"Need >=280 free ZeroGPU seconds, only {quota.remaining} remain")
           PY
 
+      - name: Prepare private Space source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/space-files
+          mkdir -p /tmp/space-files
+          cat > /tmp/space-files/README.md <<'EOF'
+          ---
+          title: Small Agent QLoRA v2 Train
+          emoji: 🧪
+          colorFrom: gray
+          colorTo: blue
+          sdk: gradio
+          sdk_version: 6.0.1
+          app_file: app.py
+          pinned: false
+          license: mit
+          hardware: zero-a10g
+          ---
+
+          Temporary private training Space for the Small Agent 9B QLoRA v2 experiment.
+          EOF
+          cat > /tmp/space-files/requirements.txt <<EOF
+          small-agent-qlora[train] @ git+https://github.com/kolihhan/small-agent-qlora.git@${EXPERIMENT_COMMIT}
+          gradio>=6,<7
+          huggingface_hub>=1.0
+          EOF
+          cat > /tmp/space-files/app.py <<'PYAPP'
+          from __future__ import annotations
+
+          import shutil
+          import time
+          from pathlib import Path
+
+          import gradio as gr
+          import spaces
+          import torch
+
+          from gaia_small_agent.training.oracle_policy_v2 import generate_oracle_policy_v2_dataset
+          from gaia_small_agent.training.qlora import train_qlora
+
+          MODEL = "Qwen/Qwen3.5-9B"
+          ROOT = Path("/tmp/qlora-v2")
+
+
+          @spaces.GPU(duration=280)
+          def train(max_steps: int = 60):
+              max_steps = int(max_steps)
+              if max_steps < 1 or max_steps > 80:
+                  raise gr.Error("max_steps must be between 1 and 80")
+              if ROOT.exists():
+                  shutil.rmtree(ROOT)
+              ROOT.mkdir(parents=True)
+              data = generate_oracle_policy_v2_dataset(ROOT / "oracle", seed="small-agent-policy-v2")
+              out = ROOT / "adapter"
+              start = time.time()
+              train_qlora(
+                  data_path=data["train"],
+                  output_dir=out,
+                  model_name=MODEL,
+                  max_length=768,
+                  learning_rate=1e-4,
+                  lora_r=16,
+                  lora_alpha=32,
+                  lora_dropout=0.05,
+                  max_steps=max_steps,
+                  save_steps=max(10, max_steps // 2),
+                  gradient_accumulation_steps=8,
+                  lora_target_modules="all-linear",
+              )
+              elapsed = time.time() - start
+              required = [out / "adapter_config.json", out / "adapter_model.safetensors", out / "run_config.json"]
+              missing = [str(p) for p in required if not p.is_file()]
+              if missing:
+                  raise RuntimeError(f"missing adapter outputs: {missing}")
+              archive = shutil.make_archive(str(ROOT / "qwen35-9b-qlora-v2-adapter"), "zip", out)
+              meta = {
+                  "model": MODEL,
+                  "max_steps": max_steps,
+                  "elapsed_seconds": elapsed,
+                  "cuda": torch.cuda.is_available(),
+                  "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+                  "adapter_bytes": (out / "adapter_model.safetensors").stat().st_size,
+              }
+              return archive, meta
+
+
+          demo = gr.Interface(
+              fn=train,
+              inputs=gr.Number(value=60, precision=0, label="Optimizer steps"),
+              outputs=[gr.File(label="Adapter archive"), gr.JSON(label="Training metadata")],
+              api_name="train",
+              title="Small Agent QLoRA v2 trainer",
+          )
+
+          if __name__ == "__main__":
+              demo.launch()
+          PYAPP
+
       - name: Create private temporary ZeroGPU training Space
-        id: create
         shell: bash
         run: |
           set -euo pipefail
@@ -58,106 +154,7 @@ jobs:
               exist_ok=True,
           )
           api.add_space_secret(repo_id=repo_id, key="HF_TOKEN", value=token)
-
           files = Path("/tmp/space-files")
-          files.mkdir(parents=True, exist_ok=True)
-          (files / "README.md").write_text('''---
-title: Small Agent QLoRA v2 Train
-emoji: 🧪
-colorFrom: gray
-colorTo: blue
-sdk: gradio
-sdk_version: 6.0.1
-app_file: app.py
-pinned: false
-license: mit
-hardware: zero-a10g
----
-
-Temporary private training Space for the Small Agent 9B QLoRA v2 experiment.
-''', encoding="utf-8")
-          (files / "requirements.txt").write_text(f'''small-agent-qlora @ git+https://github.com/kolihhan/small-agent-qlora.git@{os.environ["EXPERIMENT_COMMIT"]}
-transformers>=5.4.0,<6
-accelerate>=1.13.0,<2
-peft>=0.18.0,<1
-bitsandbytes>=0.49.2,<1
-trl>=0.29.0,<1
-datasets>=4.8.0,<5
-huggingface_hub>=1.0
-gradio>=6,<7
-''', encoding="utf-8")
-          (files / "app.py").write_text(r'''from __future__ import annotations
-
-import json
-import os
-import shutil
-import time
-from pathlib import Path
-
-import gradio as gr
-import spaces
-import torch
-
-from gaia_small_agent.training.oracle_policy_v2 import generate_oracle_policy_v2_dataset
-from gaia_small_agent.training.qlora import train_qlora
-
-MODEL = "Qwen/Qwen3.5-9B"
-ROOT = Path("/tmp/qlora-v2")
-
-
-@spaces.GPU(duration=280)
-def train(max_steps: int = 60):
-    max_steps = int(max_steps)
-    if max_steps < 1 or max_steps > 80:
-        raise gr.Error("max_steps must be between 1 and 80")
-    if ROOT.exists():
-        shutil.rmtree(ROOT)
-    ROOT.mkdir(parents=True)
-    data = generate_oracle_policy_v2_dataset(ROOT / "oracle", seed="small-agent-policy-v2")
-    out = ROOT / "adapter"
-    start = time.time()
-    train_qlora(
-        data_path=data["train"],
-        output_dir=out,
-        model_name=MODEL,
-        max_length=768,
-        learning_rate=1e-4,
-        lora_r=16,
-        lora_alpha=32,
-        lora_dropout=0.05,
-        max_steps=max_steps,
-        save_steps=max(10, max_steps // 2),
-        gradient_accumulation_steps=8,
-        lora_target_modules="all-linear",
-    )
-    elapsed = time.time() - start
-    required = [out / "adapter_config.json", out / "adapter_model.safetensors", out / "run_config.json"]
-    missing = [str(p) for p in required if not p.is_file()]
-    if missing:
-        raise RuntimeError(f"missing adapter outputs: {missing}")
-    archive = shutil.make_archive(str(ROOT / "qwen35-9b-qlora-v2-adapter"), "zip", out)
-    meta = {
-        "model": MODEL,
-        "max_steps": max_steps,
-        "elapsed_seconds": elapsed,
-        "cuda": torch.cuda.is_available(),
-        "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
-        "adapter_bytes": (out / "adapter_model.safetensors").stat().st_size,
-    }
-    return archive, meta
-
-
-demo = gr.Interface(
-    fn=train,
-    inputs=gr.Number(value=60, precision=0, label="Optimizer steps"),
-    outputs=[gr.File(label="Adapter archive"), gr.JSON(label="Training metadata")],
-    api_name="train",
-    title="Small Agent QLoRA v2 trainer",
-)
-
-if __name__ == "__main__":
-    demo.launch()
-''', encoding="utf-8")
           for name in ("README.md", "requirements.txt", "app.py"):
               api.upload_file(
                   path_or_fileobj=files / name,
@@ -180,10 +177,12 @@ if __name__ == "__main__":
           api = HfApi(token=os.environ["HF_TOKEN"])
           runtime = api.wait_for_space(repo_id=os.environ["HF_SPACE_ID"], timeout=1200)
           print(runtime)
-          if str(runtime.stage) != "RUNNING" and getattr(runtime.stage, "value", None) != "RUNNING":
-              raise SystemExit(f"Space did not reach RUNNING: {runtime.stage}")
-          if str(runtime.hardware) != "zero-a10g" and getattr(runtime.hardware, "value", None) != "zero-a10g":
-              raise SystemExit(f"Space is not ZeroGPU: {runtime.hardware}")
+          stage = getattr(runtime.stage, "value", str(runtime.stage))
+          hardware = getattr(runtime.hardware, "value", str(runtime.hardware))
+          if stage != "RUNNING":
+              raise SystemExit(f"Space did not reach RUNNING: {stage}")
+          if hardware != "zero-a10g":
+              raise SystemExit(f"Space is not ZeroGPU: {hardware}")
           PY
 
       - name: Train adapter inside free ZeroGPU quota
@@ -206,7 +205,9 @@ if __name__ == "__main__":
               raise SystemExit(f"adapter archive was not downloaded: {src}")
           dst = Path("runs/zero-gpu/qwen35-9b-qlora-v2-adapter.zip")
           shutil.copy2(src, dst)
-          Path("runs/zero-gpu/training-meta.json").write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          Path("runs/zero-gpu/training-meta.json").write_text(
+              json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
           print(json.dumps(meta, indent=2, sort_keys=True))
           PY
 
@@ -218,7 +219,10 @@ if __name__ == "__main__":
           import json, os
           from huggingface_hub import HfApi
           quota = HfApi(token=os.environ["HF_TOKEN"]).get_zero_gpu_quota()
-          print(json.dumps({"remaining": quota.remaining, "resets_at": quota.resets_at.isoformat() if quota.resets_at else None}, indent=2))
+          print(json.dumps({
+              "remaining": quota.remaining,
+              "resets_at": quota.resets_at.isoformat() if quota.resets_at else None,
+          }, indent=2))
           PY
 
       - name: Upload adapter artifact
