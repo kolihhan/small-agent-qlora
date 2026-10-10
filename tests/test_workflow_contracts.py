@@ -3,6 +3,7 @@ from pathlib import Path
 
 WORKFLOW = Path(".github/workflows/gaia-shadow-gate.yml")
 TRIGGER = Path(".github/GAIA_SHADOW_TRIGGER")
+CPU_QLORA_WORKFLOW = Path(".github/workflows/qlora-cpu-batch.yml")
 
 
 def test_shadow_workflow_is_matched_and_aggregate_only():
@@ -54,3 +55,10 @@ def test_shadow_trigger_has_explicit_bounded_exposure_metadata():
     assert all(ch in "0123456789abcdef" for ch in values["baseline_sha"])
     assert values["exposure"] in {"1", "2", "3"}
     assert values["candidate_name"]
+
+
+def test_cpu_qlora_batch_keeps_frozen_max_length():
+    text = CPU_QLORA_WORKFLOW.read_text(encoding="utf-8")
+
+    assert '--max-length 1536' in text
+    assert '--max-length 1024' not in text
