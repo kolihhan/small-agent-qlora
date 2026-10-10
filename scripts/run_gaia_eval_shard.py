@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import tempfile
 from pathlib import Path
 
 from gaia_small_agent.agent.loop import AgentRuntime, MAX_TOOL_OBSERVATION_CHARS
@@ -11,7 +10,7 @@ from gaia_small_agent.benchmark.gaia100 import GAIA_REVISION, LOCAL_PROTOCOL_SEE
 import gaia_small_agent.benchmark.runner as gaia_runner
 from gaia_small_agent.benchmark.sharding import shard_selected_rows
 from gaia_small_agent.model.ollama import OllamaModel
-from gaia_small_agent.tools import default_tools, preflight_default_tools
+from gaia_small_agent.tools import default_tools
 from gaia_small_agent.training.protection import build_protected_question_hashes
 
 
@@ -41,8 +40,7 @@ def main() -> int:
     work_root.mkdir(parents=True, exist_ok=True)
     build_protected_question_hashes(dataset, work_root / "protected-question-hashes.json")
 
-    with tempfile.TemporaryDirectory(prefix="small-agent-preflight-") as workspace:
-        tool_preflight = preflight_default_tools(workspace)
+    tool_names = sorted(default_tools())
 
     def factory() -> AgentRuntime:
         model = OllamaModel(
@@ -66,7 +64,7 @@ def main() -> int:
         "tool_observation_max_chars": MAX_TOOL_OBSERVATION_CHARS,
         "partition": "evaluation",
         "cache_implementation": None,
-        "tool_names": tool_preflight["tool_names"],
+        "tool_names": tool_names,
         "shard_index": args.shard_index,
         "shard_count": args.shard_count,
         "full_selection_sha256": _ids_hash(full_selection),
