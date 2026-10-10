@@ -72,6 +72,14 @@ def test_cpu_qlora_batch_avoids_regressed_kernel_loader():
     assert 'python -m pip install "kernels>=0.11.1"' not in text
 
 
+def test_gaia_shard_runner_live_preflights_tools():
+    runner = GAIA_SHARD_RUNNER.read_text(encoding="utf-8")
+
+    assert "preflight_default_tools" in runner
+    assert "with tempfile.TemporaryDirectory" in runner
+    assert "preflight_default_tools(workspace)" in runner
+
+
 def test_gaia_9b_thinking_baseline_is_isolated_and_matched():
     workflow = GAIA_9B_THINKING_WORKFLOW.read_text(encoding="utf-8")
     runner = GAIA_SHARD_RUNNER.read_text(encoding="utf-8")
