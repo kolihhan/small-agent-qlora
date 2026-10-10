@@ -1,0 +1,128 @@
+name: Native GGUF QLoRA train proof
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/NATIVE_GGUF_TRAINPROOF_TRIGGER"
+
+permissions:
+  contents: read
+
+env:
+  POLICY_SEED: tinyagent-policy-v1
+  QVAC_COMMIT: 2633d8d8cab160906601eeb9e3d29a4a12da88cc
+  MODEL_URL: https://huggingface.co/bartowski/Qwen_Qwen3.5-4B-GGUF/resolve/main/Qwen_Qwen3.5-4B-Q4_K_M.gguf?download=true
+  MODEL_FILE: Qwen_Qwen3.5-4B-Q4_K_M.gguf
+
+jobs:
+  train-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install generator
+        run: python -m pip install -e .
+
+      - name: Build four-row smoke dataset
+        run: |
+          set -euo pipefail
+          small-agent generate-oracle-policy --output-dir runs/oracle --seed "$POLICY_SEED"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows = [json.loads(line) for line in Path("runs/oracle/train.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+          selected = [row for row in rows if row["capability"] == "no_tool_stop"][:4]
+          with Path("runs/native-smoke.jsonl").open("w", encoding="utf-8") as handle:
+              for row in selected:
+                  messages = [
+                      {"role": str(message["role"]), "content": str(message.get("content") or "")}
+                      for message in row["messages"]
+                      if message.get("role") in {"system", "user", "assistant"}
+                  ]
+                  handle.write(json.dumps({"messages": messages}, ensure_ascii=False) + "\n")
+          assert len(selected) == 4
+          PY
+
+      - name: Build pinned native trainer
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/tetherto/qvac-fabric-llm.cpp.git /tmp/qvac-llama
+          git -C /tmp/qvac-llama checkout "$QVAC_COMMIT"
+          cmake -S /tmp/qvac-llama -B /tmp/qvac-llama/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON
+          cmake --build /tmp/qvac-llama/build --config Release -j 4 --target llama-finetune-lora llama-cli
+
+      - name: Download exact Q4 base
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/model
+          curl -fL --retry 3 --retry-delay 5 "$MODEL_URL" -o "/tmp/model/$MODEL_FILE"
+          sha256sum "/tmp/model/$MODEL_FILE" | tee runs/native-model.sha256
+
+      - name: Train native Q4 LoRA
+        run: |
+          set -euo pipefail
+          /usr/bin/time -v /tmp/qvac-llama/build/bin/llama-finetune-lora \
+            -m "/tmp/model/$MODEL_FILE" \
+            -f runs/native-smoke.jsonl \
+            -c 256 -b 64 -ub 64 \
+            --assistant-loss-only \
+            --lora-rank 2 --lora-alpha 4 \
+            --lora-modules "attn_q" \
+            --lora-seed 42 \
+            --learning-rate 1e-4 \
+            --checkpoint-save-steps 1 \
+            --checkpoint-save-dir runs/native-checkpoints \
+            --output-adapter runs/native-smoke-adapter.gguf \
+            -fa off -t 4 -tb 4 \
+            2>&1 | tee runs/native-train.log
+          test -s runs/native-smoke-adapter.gguf
+          ls -lh runs/native-smoke-adapter.gguf | tee runs/native-adapter-size.txt
+
+      - name: Upload adapter and training evidence immediately
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-gguf-train-proof
+          path: |
+            runs/native-model.sha256
+            runs/native-train.log
+            runs/native-adapter-size.txt
+            runs/native-smoke-adapter.gguf
+            runs/native-checkpoints/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Bounded reload probe
+        id: reload
+        shell: bash
+        run: |
+          set +e
+          timeout 180s /tmp/qvac-llama/build/bin/llama-cli \
+            -m "/tmp/model/$MODEL_FILE" \
+            --lora runs/native-smoke-adapter.gguf \
+            -p "The answer token is DIRECT-123456. Return only that token." \
+            -n 1 -t 4 --no-display-prompt \
+            > runs/native-adapter-inference.txt 2> runs/native-adapter-inference.err
+          code=$?
+          echo "exit_code=$code" | tee runs/native-reload-status.txt
+          exit 0
+
+      - name: Upload reload probe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-gguf-reload-probe
+          path: |
+            runs/native-reload-status.txt
+            runs/native-adapter-inference.txt
+            runs/native-adapter-inference.err
+          if-no-files-found: warn
+          retention-days: 14
