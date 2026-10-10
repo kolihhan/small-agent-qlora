@@ -174,6 +174,11 @@ def train_command(args) -> int:
         max_length=args.max_length,
         epochs=args.epochs,
         protected_questions_path=args.protected_questions,
+        max_steps=args.max_steps,
+        save_steps=args.save_steps,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        resume_from_checkpoint=args.resume_from_checkpoint,
+        lora_target_modules=args.lora_target_modules,
     )
     return 0
 
@@ -286,6 +291,11 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--hf-model", default="Qwen/Qwen3.5-4B")
     train.add_argument("--max-length", type=int, default=1536)
     train.add_argument("--epochs", type=float, default=2.0)
+    train.add_argument("--max-steps", type=_positive_int, default=None, help="Absolute trainer step target; use with checkpoints for CPU batching")
+    train.add_argument("--save-steps", type=_positive_int, default=1)
+    train.add_argument("--gradient-accumulation-steps", type=_positive_int, default=8)
+    train.add_argument("--resume-from-checkpoint", default=None)
+    train.add_argument("--lora-target-modules", default="all-linear", help="Comma-separated PEFT target module names or all-linear")
     train.add_argument("--protected-questions", default="runs/gaia-protected-question-hashes.json")
     train.set_defaults(func=train_command)
 
