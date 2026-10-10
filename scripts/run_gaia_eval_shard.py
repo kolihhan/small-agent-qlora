@@ -11,6 +11,7 @@ from gaia_small_agent.benchmark.gaia100 import GAIA_REVISION, LOCAL_PROTOCOL_SEE
 import gaia_small_agent.benchmark.runner as gaia_runner
 from gaia_small_agent.benchmark.sharding import shard_selected_rows
 from gaia_small_agent.model.ollama import OllamaModel
+from gaia_small_agent.model.openai_compat import OpenAICompatModel
 from gaia_small_agent.tools import default_tools, preflight_default_tools
 from gaia_small_agent.training.protection import build_protected_question_hashes
 
@@ -20,17 +21,38 @@ def _ids_hash(rows: list[dict]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--backend", choices=["ollama", "openai_compat"], default="ollama")
     parser.add_argument("--model", default="qwen3.5:9b")
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434")
+    parser.add_argument("--openai-base-url", default="http://127.0.0.1:8080")
     parser.add_argument("--hf-token", required=True)
     parser.add_argument("--shard-index", type=int, required=True)
     parser.add_argument("--shard-count", type=int, default=5)
     parser.add_argument("--work-root", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--thinking", action="store_true")
-    args = parser.parse_args()
+    return parser
+
+
+def build_model(args):
+    if args.backend == "openai_compat":
+        return OpenAICompatModel(
+            model=args.model,
+            base_url=args.openai_base_url,
+            max_new_tokens=512,
+        )
+    return OllamaModel(
+        model=args.model,
+        base_url=args.ollama_url,
+        max_new_tokens=512,
+        enable_thinking=args.thinking,
+    )
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     with tempfile.TemporaryDirectory(prefix="small-agent-shard-preflight-") as workspace:
         tool_preflight = preflight_default_tools(workspace)
@@ -48,16 +70,10 @@ def main() -> int:
     tool_names = tool_preflight["tool_names"]
 
     def factory() -> AgentRuntime:
-        model = OllamaModel(
-            model=args.model,
-            base_url=args.ollama_url,
-            max_new_tokens=512,
-            enable_thinking=args.thinking,
-        )
-        return AgentRuntime(model, default_tools(), max_steps=12)
+        return AgentRuntime(build_model(args), default_tools(), max_steps=12)
 
     run_config = {
-        "backend": "ollama",
+        "backend": args.backend,
         "model": args.model,
         "adapter": None,
         "max_steps": 12,
@@ -100,6 +116,7 @@ def main() -> int:
         "benchmark": "GAIA 2023 validation / frozen Evaluation100",
         "dataset_revision": GAIA_REVISION,
         "seed": LOCAL_PROTOCOL_SEED,
+        "backend": args.backend,
         "model": args.model,
         "thinking": args.thinking,
         "shard_index": args.shard_index,
