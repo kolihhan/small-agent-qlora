@@ -14,6 +14,8 @@ def test_gaia_error_diagnostic_is_real_gaia_and_aggregate_only():
     assert '"tool_calls_by_name"' in script
     assert '"tool_errors_by_name"' in script
     assert '"error_codes_by_tool"' in script
+    assert 'event.get("data")' in script
+    assert 'event.get("details")' not in script
     assert '"task_id"' not in script[script.index("payload = {"):]
     assert '"Question"' not in script[script.index("payload = {"):]
     assert '"Final answer"' not in script[script.index("payload = {"):]
