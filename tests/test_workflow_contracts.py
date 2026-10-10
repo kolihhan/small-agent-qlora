@@ -62,3 +62,9 @@ def test_cpu_qlora_batch_keeps_frozen_max_length():
 
     assert '--max-length 1536' in text
     assert '--max-length 1024' not in text
+
+
+def test_cpu_qlora_batch_installs_optimized_4bit_kernel_loader():
+    text = CPU_QLORA_WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'python -m pip install "kernels>=0.11.1"' in text
