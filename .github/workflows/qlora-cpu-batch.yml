@@ -113,7 +113,7 @@ jobs:
             --data runs/oracle/train.jsonl \
             --output runs/cpu-batch \
             --hf-model "$HF_MODEL" \
-            --max-length 1024 \
+            --max-length 1536 \
             --epochs 2.0 \
             --max-steps "$TARGET_STEP" \
             --save-steps 1 \
