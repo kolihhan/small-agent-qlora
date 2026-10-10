@@ -1,0 +1,3 @@
+experiment=tinyagent-qlora-v1
+compute=kaggle-t4
+source_sha=f21c1e5747eaccbcccdde47a2070b21c20ac6135
