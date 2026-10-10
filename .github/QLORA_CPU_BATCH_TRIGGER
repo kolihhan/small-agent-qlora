@@ -1,4 +1,4 @@
 # Resumable single-CPU QLoRA training control
 # official frozen-config CPU validation at max_length 1536
-target_step=1
-previous_run_id=0
+target_step=5
+previous_run_id=38044481397
