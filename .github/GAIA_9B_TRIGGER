@@ -1,0 +1,3 @@
+model=qwen3.5:9b
+partition=evaluation
+protocol=gaia-local-v2
