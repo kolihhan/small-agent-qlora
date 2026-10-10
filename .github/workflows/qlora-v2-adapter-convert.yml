@@ -59,14 +59,7 @@ jobs:
           cfg = json.loads(Path('runs/adapter/adapter_config.json').read_text())
           run_cfg = json.loads(Path('runs/adapter/run_config.json').read_text())
           meta = json.loads(Path('runs/source/training-meta.json').read_text())
-          print(json.dumps({
-              'base_model_name_or_path': cfg.get('base_model_name_or_path'),
-              'r': cfg.get('r'),
-              'lora_alpha': cfg.get('lora_alpha'),
-              'target_modules': cfg.get('target_modules'),
-              'training_meta': meta,
-              'truncation_policy': run_cfg.get('truncation_policy'),
-          }, indent=2, sort_keys=True))
+          print(json.dumps({'base_model_name_or_path': cfg.get('base_model_name_or_path'), 'r': cfg.get('r'), 'lora_alpha': cfg.get('lora_alpha'), 'target_modules': cfg.get('target_modules'), 'training_meta': meta, 'truncation_policy': run_cfg.get('truncation_policy')}, indent=2, sort_keys=True))
           assert meta.get('ok') is True, meta
           assert meta.get('cuda') is True, meta
           assert meta.get('max_steps') == 12, meta
@@ -83,6 +76,13 @@ jobs:
           git clone --filter=blob:none --no-checkout https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
           git -C /tmp/llama.cpp checkout "$LLAMA_CPP_COMMIT"
           python -m pip install --quiet -r /tmp/llama.cpp/requirements/requirements-convert_lora_to_gguf.txt
+          python -m pip install --quiet --upgrade 'transformers>=5.15,<6'
+          python - <<'PY'
+          from transformers import AutoConfig, __version__
+          cfg = AutoConfig.from_pretrained('Qwen/Qwen3.5-9B')
+          print('transformers', __version__, 'model_type', cfg.model_type)
+          assert cfg.model_type == 'qwen3_5'
+          PY
 
       - name: Convert PEFT adapter to GGUF
         shell: bash
@@ -102,15 +102,7 @@ jobs:
           python - <<'PY'
           import json, os
           from pathlib import Path
-          payload = {
-              'source_training_run_id': os.environ['SOURCE_RUN_ID'],
-              'experiment_commit': os.environ['EXPERIMENT_COMMIT'],
-              'training_steps': 12,
-              'llama_cpp_commit': os.environ['LLAMA_CPP_COMMIT'],
-              'base_model_id': os.environ['BASE_MODEL_ID'],
-              'adapter_gguf_bytes': Path('runs/qwen35-9b-qlora-v2-adapter.gguf').stat().st_size,
-              'adapter_sha256': Path('runs/qwen35-9b-qlora-v2-adapter.sha256').read_text().split()[0],
-          }
+          payload = {'source_training_run_id': os.environ['SOURCE_RUN_ID'], 'experiment_commit': os.environ['EXPERIMENT_COMMIT'], 'training_steps': 12, 'llama_cpp_commit': os.environ['LLAMA_CPP_COMMIT'], 'base_model_id': os.environ['BASE_MODEL_ID'], 'adapter_gguf_bytes': Path('runs/qwen35-9b-qlora-v2-adapter.gguf').stat().st_size, 'adapter_sha256': Path('runs/qwen35-9b-qlora-v2-adapter.sha256').read_text().split()[0]}
           Path('runs/adapter-conversion-meta.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
           print(json.dumps(payload, indent=2, sort_keys=True))
           PY
