@@ -1,0 +1,248 @@
+name: Matched Qwen3.5 9B QLoRA v2
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/qlora-9b-v2-gpu.yml"
+
+permissions:
+  contents: read
+
+env:
+  HF_MODEL: Qwen/Qwen3.5-9B
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  POLICY_SEED: small-agent-policy-v2
+  PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  HF_HOME: ${{ runner.temp }}/hf-small-agent-qlora-v2
+
+jobs:
+  matched-qlora-v2:
+    runs-on: [self-hosted, linux, x64, gpu]
+    timeout-minutes: 720
+    steps:
+      - name: Checkout exact experiment commit
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: GPU and credential preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN_NOT_CONFIGURED"; exit 42; }
+          nvidia-smi
+          python3 - <<'PY'
+          import subprocess
+          out = subprocess.check_output([
+              "nvidia-smi",
+              "--query-gpu=name,memory.total,driver_version",
+              "--format=csv,noheader,nounits",
+          ], text=True).strip()
+          print(out)
+          if not out:
+              raise SystemExit("No NVIDIA GPU visible")
+          memory_mib = int(out.splitlines()[0].split(",")[1].strip())
+          if memory_mib < 7000:
+              raise SystemExit(f"Need >=7000 MiB VRAM for 9B QLoRA; got {memory_mib}")
+          PY
+
+      - name: Set up isolated environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .venv
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[all]"
+
+      - name: Verify CUDA runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          . .venv/bin/activate
+          python - <<'PY'
+          import json, torch
+          payload = {
+              "torch": torch.__version__,
+              "cuda_available": torch.cuda.is_available(),
+              "cuda_version": torch.version.cuda,
+              "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+              "vram_gib": round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2) if torch.cuda.is_available() else 0,
+          }
+          print(json.dumps(payload, indent=2))
+          if not torch.cuda.is_available():
+              raise SystemExit("CUDA is not available to PyTorch")
+          PY
+
+      - name: Resolve and download one frozen 9B snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          . .venv/bin/activate
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi, snapshot_download
+          model = os.environ["HF_MODEL"]
+          token = os.environ.get("HF_TOKEN") or None
+          revision = HfApi(token=token).model_info(model).sha
+          path = snapshot_download(repo_id=model, revision=revision, token=token)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write(f"HF_REVISION={revision}\n")
+              f.write(f"HF_MODEL_PATH={path}\n")
+          print({"model": model, "revision": revision, "snapshot": path})
+          PY
+
+      - name: Build protected GAIA hashes and deterministic v2 curriculum
+        shell: bash
+        run: |
+          set -euo pipefail
+          . .venv/bin/activate
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from gaia_small_agent.benchmark.gaia100 import GAIA_REVISION, load_validation
+          from gaia_small_agent.training.oracle_policy_v2 import generate_oracle_policy_v2_dataset
+          from gaia_small_agent.training.protection import build_protected_question_hashes
+          from gaia_small_agent.training.qlora import load_verified_rows
+
+          dataset = load_validation("gaia-benchmark/GAIA", token=os.environ["HF_TOKEN"], revision=GAIA_REVISION)
+          protected = Path("runs/gaia-protected-question-hashes.json")
+          hashes = build_protected_question_hashes(dataset, protected)
+          paths = generate_oracle_policy_v2_dataset("runs/oracle-v2", seed=os.environ["POLICY_SEED"])
+          counts = {}
+          for split, path in paths.items():
+              rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+              counts[split] = len(rows)
+              assert all("gaia" not in str(row.get("source", "")).casefold() for row in rows)
+          assert counts == {"train": 1600, "dev": 200, "test": 200}, counts
+          verified = load_verified_rows(paths["train"], protected_questions_path=protected)
+          assert len(verified) == 1600
+          print({"counts": counts, "protected_question_hashes": len(hashes)})
+          PY
+
+      - name: Evaluate matched 9B Base on GAIA Evaluation100
+        shell: bash
+        run: |
+          set -euo pipefail
+          . .venv/bin/activate
+          small-agent gaia-eval \
+            --source gaia-benchmark/GAIA \
+            --hf-token "$HF_TOKEN" \
+            --partition evaluation \
+            --backend transformers \
+            --hf-model "$HF_MODEL_PATH" \
+            --max-steps 12 \
+            --max-new-tokens 512 \
+            --protected-questions runs/gaia-protected-question-hashes.json \
+            --work-root runs/gaia-base-matched \
+            --manifest runs/gaia-base-matched/manifest.json \
+            | tee runs/gaia-base-matched/stdout.log
+          test -s runs/gaia-base-matched/summary.json
+
+      - name: Train 9B QLoRA v2
+        shell: bash
+        run: |
+          set -euo pipefail
+          . .venv/bin/activate
+          small-agent train-qlora \
+            --data runs/oracle-v2/train.jsonl \
+            --output runs/qlora-9b-v2-adapter \
+            --hf-model "$HF_MODEL_PATH" \
+            --max-length 768 \
+            --max-steps 100 \
+            --save-steps 25 \
+            --gradient-accumulation-steps 8 \
+            --lora-target-modules all-linear \
+            --protected-questions runs/gaia-protected-question-hashes.json
+          test -s runs/qlora-9b-v2-adapter/adapter_config.json
+          test -s runs/qlora-9b-v2-adapter/adapter_model.safetensors
+          test -s runs/qlora-9b-v2-adapter/run_config.json
+
+      - name: Evaluate matched 9B QLoRA on GAIA Evaluation100
+        shell: bash
+        run: |
+          set -euo pipefail
+          . .venv/bin/activate
+          small-agent gaia-eval \
+            --source gaia-benchmark/GAIA \
+            --hf-token "$HF_TOKEN" \
+            --partition evaluation \
+            --backend transformers \
+            --hf-model "$HF_MODEL_PATH" \
+            --adapter runs/qlora-9b-v2-adapter \
+            --max-steps 12 \
+            --max-new-tokens 512 \
+            --protected-questions runs/gaia-protected-question-hashes.json \
+            --work-root runs/gaia-qlora-matched \
+            --manifest runs/gaia-qlora-matched/manifest.json \
+            | tee runs/gaia-qlora-matched/stdout.log
+          test -s runs/gaia-qlora-matched/summary.json
+
+      - name: Build matched final result
+        shell: bash
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          . .venv/bin/activate
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          base = json.loads(Path("runs/gaia-base-matched/summary.json").read_text(encoding="utf-8"))
+          qlora = json.loads(Path("runs/gaia-qlora-matched/summary.json").read_text(encoding="utf-8"))
+          for summary in (base, qlora):
+              assert summary["total"] == 100
+              assert summary["levels"]["1"]["total"] == 32
+              assert summary["levels"]["2"]["total"] == 52
+              assert summary["levels"]["3"]["total"] == 16
+          payload = {
+              "schema_version": "gaia-matched-9b-qlora-v2/v1",
+              "commit_sha": os.environ["COMMIT_SHA"],
+              "model": os.environ["HF_MODEL"],
+              "model_revision": os.environ["HF_REVISION"],
+              "backend": "transformers",
+              "quantize_4bit": True,
+              "thinking": False,
+              "max_steps": 12,
+              "max_new_tokens": 512,
+              "policy_seed": os.environ["POLICY_SEED"],
+              "training": json.loads(Path("runs/qlora-9b-v2-adapter/run_config.json").read_text(encoding="utf-8")),
+              "base": base,
+              "qlora": qlora,
+              "delta": {
+                  "correct": qlora["correct"] - base["correct"],
+                  "accuracy_pp": (qlora["accuracy"] - base["accuracy"]) * 100.0,
+                  "tool_errors": qlora["tool_errors"] - base["tool_errors"],
+                  "duplicate_calls_blocked": qlora["duplicate_calls_blocked"] - base["duplicate_calls_blocked"],
+              },
+          }
+          Path("runs/gaia-matched-9b-qlora-v2-result.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          print(json.dumps({
+              "base": {"correct": base["correct"], "levels": base["levels"], "tool_errors": base["tool_errors"]},
+              "qlora": {"correct": qlora["correct"], "levels": qlora["levels"], "tool_errors": qlora["tool_errors"]},
+              "delta": payload["delta"],
+          }, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload final aggregates and adapter
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaia-matched-9b-qlora-v2
+          path: |
+            runs/gaia-base-matched/summary.json
+            runs/gaia-qlora-matched/summary.json
+            runs/gaia-matched-9b-qlora-v2-result.json
+            runs/qlora-9b-v2-adapter/run_config.json
+            runs/qlora-9b-v2-adapter/adapter_config.json
+            runs/qlora-9b-v2-adapter/adapter_model.safetensors
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Cleanup large model cache
+        if: always()
+        shell: bash
+        run: rm -rf "$HF_HOME" || true
