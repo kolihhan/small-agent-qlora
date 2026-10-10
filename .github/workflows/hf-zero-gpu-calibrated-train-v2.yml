@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import os
+          import os, re
           from pathlib import Path
           from huggingface_hub import HfApi, hf_hub_download
 
@@ -51,15 +51,15 @@ jobs:
           declared = int(os.environ["DECLARED_GPU_SECONDS"])
           path = Path(hf_hub_download(repo_id=repo_id, filename="app.py", repo_type="space", token=token))
           text = path.read_text(encoding="utf-8")
-          candidates = ["@spaces.GPU(duration=280)", "@spaces.GPU(duration=180)"]
           new = f"@spaces.GPU(duration={declared})"
-          if new not in text:
-              for old in candidates:
-                  if old in text:
-                      text = text.replace(old, new, 1)
-                      break
-              else:
-                  raise SystemExit("Could not locate expected ZeroGPU duration decorator in Space app.py")
+          pattern = r"@spaces\.GPU\(duration\s*=\s*\d+\)"
+          matches = re.findall(pattern, text)
+          print(f"FOUND_GPU_DECORATORS={matches}")
+          if len(matches) != 1:
+              raise SystemExit(f"Expected exactly one numeric ZeroGPU duration decorator, found {len(matches)}")
+          text, count = re.subn(pattern, new, text, count=1)
+          if count != 1 or new not in text:
+              raise SystemExit("Failed to patch ZeroGPU duration decorator")
           out = Path("/tmp/app.py")
           out.write_text(text, encoding="utf-8")
           HfApi(token=token).upload_file(
