@@ -11,6 +11,7 @@ from .benchmark.runner import run_gaia100
 from .benchmark.compare import compare_runs
 from .doctor import run_doctor
 from .model.ollama import OllamaModel
+from .model.openai_compat import OpenAICompatModel
 from .model.transformers_qwen import TransformersQwenModel
 from .tools import default_tools, preflight_default_tools
 from .training.qlora import train_qlora
@@ -39,10 +40,23 @@ def make_runtime(args) -> AgentRuntime:
             max_new_tokens=args.max_new_tokens,
             cache_implementation=None if args.cache_implementation == "default" else args.cache_implementation,
         )
+    elif args.backend == "openai_compat":
+        if args.adapter:
+            raise ValueError("--adapter is loaded by the external OpenAI-compatible server; do not pass it to small-agent")
+        model = OpenAICompatModel(
+            model=args.model,
+            base_url=args.openai_base_url,
+            max_new_tokens=args.max_new_tokens,
+        )
     else:
         if args.adapter:
             raise ValueError("--adapter requires --backend transformers; Ollama adapters must be exported separately")
-        model = OllamaModel(model=args.model, base_url=args.ollama_url, max_new_tokens=args.max_new_tokens, enable_thinking=args.thinking)
+        model = OllamaModel(
+            model=args.model,
+            base_url=args.ollama_url,
+            max_new_tokens=args.max_new_tokens,
+            enable_thinking=args.thinking,
+        )
     return AgentRuntime(model, default_tools(), max_steps=args.max_steps)
 
 
@@ -58,10 +72,14 @@ def print_trace(result) -> None:
             print(f"[{event.step}] => final")
 
 
+def _model_name(args) -> str:
+    return args.hf_model if args.backend == "transformers" else args.model
+
+
 def _single_run_config(args, runtime: AgentRuntime) -> dict:
     return {
         "backend": args.backend,
-        "model": args.hf_model if args.backend == "transformers" else args.model,
+        "model": _model_name(args),
         "adapter": str(Path(args.adapter).resolve()) if args.adapter else None,
         "max_steps": args.max_steps,
         "max_new_tokens": args.max_new_tokens,
@@ -108,7 +126,8 @@ def run_command(args) -> int:
 
 def doctor_command(args) -> int:
     model = args.hf_model if args.backend == "transformers" else args.model
-    report = run_doctor(args.backend, model, args.ollama_url, args.workspace)
+    base_url = args.openai_base_url if args.backend == "openai_compat" else args.ollama_url
+    report = run_doctor(args.backend, model, base_url, args.workspace)
     print(json.dumps(report, indent=2))
     return 0 if report["ready"] else 2
 
@@ -124,7 +143,7 @@ def gaia_command(args) -> int:
 
     run_config = {
         "backend": args.backend,
-        "model": args.hf_model if args.backend == "transformers" else args.model,
+        "model": _model_name(args),
         "adapter": str(Path(args.adapter).resolve()) if args.adapter else None,
         "max_steps": args.max_steps,
         "max_new_tokens": args.max_new_tokens,
@@ -233,13 +252,14 @@ def compare_command(args) -> int:
 
 
 def add_runtime_args(p):
-    p.add_argument("--backend", choices=["ollama", "transformers"], default="ollama")
-    p.add_argument("--model", default="qwen3.5:4b", help="Ollama model name")
+    p.add_argument("--backend", choices=["ollama", "transformers", "openai_compat"], default="ollama")
+    p.add_argument("--model", default="qwen3.5:4b", help="Ollama/OpenAI-compatible model name")
     p.add_argument("--ollama-url", default="http://localhost:11434")
+    p.add_argument("--openai-base-url", default="http://127.0.0.1:8080", help="OpenAI-compatible server base URL")
     p.add_argument("--hf-model", default="Qwen/Qwen3.5-4B", help="Transformers model id/path")
     p.add_argument("--adapter", default=None, help="LoRA adapter path; Transformers backend only")
     p.add_argument("--no-4bit", action="store_true", help="Disable 4-bit loading for Transformers backend")
-    p.add_argument("--thinking", action="store_true", help="Enable Qwen thinking mode")
+    p.add_argument("--thinking", action="store_true", help="Enable Qwen thinking mode (Ollama/Transformers only)")
     p.add_argument("--max-new-tokens", type=_positive_int, default=512)
     p.add_argument("--max-steps", type=_positive_int, default=12)
     p.add_argument("--cache-implementation", choices=["offloaded", "default"], default="default", help="Transformers KV-cache placement")
@@ -257,9 +277,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.set_defaults(func=run_command)
 
     doctor = sub.add_parser("doctor", help="Check local runtime readiness without loading model weights")
-    doctor.add_argument("--backend", choices=["ollama", "transformers"], default="ollama")
-    doctor.add_argument("--model", default="qwen3.5:4b", help="Ollama model name")
+    doctor.add_argument("--backend", choices=["ollama", "transformers", "openai_compat"], default="ollama")
+    doctor.add_argument("--model", default="qwen3.5:4b", help="Ollama/OpenAI-compatible model name")
     doctor.add_argument("--ollama-url", default="http://localhost:11434")
+    doctor.add_argument("--openai-base-url", default="http://127.0.0.1:8080")
     doctor.add_argument("--hf-model", default="Qwen/Qwen3.5-4B", help="Transformers model id/path")
     doctor.add_argument("--workspace", default="runs/doctor")
     doctor.set_defaults(func=doctor_command)
