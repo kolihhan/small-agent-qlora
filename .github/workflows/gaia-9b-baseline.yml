@@ -1,0 +1,123 @@
+name: GAIA 9B baseline
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - bench/gaia-9b-levels
+    paths:
+      - ".github/GAIA_9B_TRIGGER"
+      - ".github/workflows/gaia-9b-baseline.yml"
+
+permissions:
+  contents: read
+
+env:
+  MODEL: qwen3.5:9b
+  OLLAMA_URL: http://127.0.0.1:11434
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+jobs:
+  evaluation100:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Verify gated GAIA credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$HF_TOKEN" ]; then
+            echo "HF_TOKEN_NOT_CONFIGURED"
+            exit 42
+          fi
+
+      - name: Install evaluation dependencies
+        run: python -m pip install -e ".[eval,search,files]"
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+
+      - name: Start Ollama and pull Qwen3.5 9B
+        shell: bash
+        run: |
+          set -euo pipefail
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in {1..30}; do
+            if curl -fsS "$OLLAMA_URL/api/tags" >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS "$OLLAMA_URL/api/tags" >/dev/null
+          ollama pull "$MODEL"
+          model_id="$(ollama list | awk -v model="$MODEL" '$1 == model {print $2; exit}')"
+          test -n "$model_id"
+          echo "MODEL_ID=$model_id" >> "$GITHUB_ENV"
+
+      - name: Runtime readiness
+        run: small-agent doctor --model "$MODEL" --ollama-url "$OLLAMA_URL" --workspace runs/doctor
+
+      - name: Run frozen GAIA Evaluation100
+        shell: bash
+        run: |
+          set -euo pipefail
+          small-agent gaia-eval \
+            --source gaia-benchmark/GAIA \
+            --hf-token "$HF_TOKEN" \
+            --partition evaluation \
+            --backend ollama \
+            --model "$MODEL" \
+            --ollama-url "$OLLAMA_URL" \
+            --max-steps 12 \
+            --max-new-tokens 512 \
+            --work-root runs/gaia-9b-evaluation \
+            --protected-questions runs/gaia-protected-question-hashes.json
+
+      - name: Build sanitized aggregate
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          summary_path = Path("runs/gaia-9b-evaluation/summary.json")
+          summary = json.loads(summary_path.read_text(encoding="utf-8"))
+          quotas = {"1": 32, "2": 52, "3": 16}
+          if summary.get("total") != 100:
+              raise SystemExit(f"expected frozen Evaluation100, got {summary.get('total')}")
+          for level, expected in quotas.items():
+              if int(summary["levels"][level]["total"]) != expected:
+                  raise SystemExit(f"GAIA level {level}: expected {expected}, got {summary['levels'][level]['total']}")
+          payload = {
+              "schema_version": "gaia-9b-baseline/v1",
+              "benchmark": "GAIA 2023 validation / frozen Evaluation100",
+              "partition": "evaluation",
+              "dataset_revision": "682dd723ee1e1697e00360edccf2366dc8418dd9",
+              "model": os.environ["MODEL"],
+              "model_id": os.environ["MODEL_ID"],
+              "commit_sha": os.environ["COMMIT_SHA"],
+              "summary": summary,
+          }
+          out = Path("runs/gaia-9b-baseline-summary.json")
+          out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload sanitized aggregate only
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaia-9b-baseline-summary
+          path: runs/gaia-9b-baseline-summary.json
+          if-no-files-found: error
+          retention-days: 30
