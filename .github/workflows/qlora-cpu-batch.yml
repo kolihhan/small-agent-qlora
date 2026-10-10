@@ -54,7 +54,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
           python -m pip install -e ".[train,files]"
-          python -m pip install "flash-linear-attention[cpu]" || echo "FLA CPU package unavailable; continuing with Transformers fallback"
 
       - name: Verify CPU-only runtime
         run: |
