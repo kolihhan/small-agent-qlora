@@ -4,3 +4,4 @@ model=Qwen/Qwen3.5-4B
 revision=851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a
 heldout=200
 shards=10
+run=2026-10-10T13:43+08:00
