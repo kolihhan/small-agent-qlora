@@ -1,3 +1,4 @@
 # Resumable single-CPU QLoRA training control
+# rerun: native CPU fallback after removing Triton-only FLA path
 target_step=1
 previous_run_id=0
