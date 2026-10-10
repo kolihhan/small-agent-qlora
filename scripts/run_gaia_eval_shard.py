@@ -40,7 +40,7 @@ def main() -> int:
     work_root.mkdir(parents=True, exist_ok=True)
     build_protected_question_hashes(dataset, work_root / "protected-question-hashes.json")
 
-    tool_names = sorted(default_tools())
+    tool_names = [tool.name for tool in default_tools()]
 
     def factory() -> AgentRuntime:
         model = OllamaModel(
