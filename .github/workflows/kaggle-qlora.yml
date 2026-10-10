@@ -1,0 +1,129 @@
+name: TinyAgent QLoRA on Kaggle GPU
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/KAGGLE_QLORA_TRIGGER"
+
+permissions:
+  contents: read
+
+env:
+  KERNEL_SLUG: small-agent-qlora-tinyagent-v1
+
+jobs:
+  launch-and-collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Require Kaggle credentials
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+        run: |
+          test -n "$KAGGLE_API_TOKEN" || { echo "Missing KAGGLE_API_TOKEN secret"; exit 2; }
+          test -n "$KAGGLE_USERNAME" || { echo "Missing KAGGLE_USERNAME secret"; exit 2; }
+
+      - name: Install Kaggle CLI
+        run: python -m pip install -U kaggle
+
+      - name: Prepare Kaggle kernel
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+        run: |
+          rm -rf /tmp/kaggle-kernel
+          mkdir -p /tmp/kaggle-kernel
+          cp scripts/kaggle_qlora_v1.py /tmp/kaggle-kernel/kaggle_qlora_v1.py
+          cat > /tmp/kaggle-kernel/kernel-metadata.json <<JSON
+          {
+            "id": "${KAGGLE_USERNAME}/${KERNEL_SLUG}",
+            "title": "Small Agent TinyAgent QLoRA v1",
+            "code_file": "kaggle_qlora_v1.py",
+            "language": "python",
+            "kernel_type": "script",
+            "is_private": "true",
+            "enable_gpu": "true",
+            "enable_internet": "true",
+            "dataset_sources": [],
+            "competition_sources": [],
+            "kernel_sources": [],
+            "model_sources": []
+          }
+          JSON
+          cat /tmp/kaggle-kernel/kernel-metadata.json
+
+      - name: Launch Kaggle T4 run
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+        run: |
+          kaggle kernels push -p /tmp/kaggle-kernel --accelerator NvidiaTeslaT4 --timeout 18000
+
+      - name: Wait for Kaggle result
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+        run: |
+          KERNEL_ID="${KAGGLE_USERNAME}/${KERNEL_SLUG}"
+          for i in $(seq 1 330); do
+            STATUS="$(kaggle kernels status "$KERNEL_ID" 2>&1 || true)"
+            echo "[$i] $STATUS"
+            if echo "$STATUS" | grep -qi "complete"; then
+              exit 0
+            fi
+            if echo "$STATUS" | grep -Eqi "error|cancel|failed"; then
+              echo "Kaggle run failed"
+              kaggle kernels logs "$KERNEL_ID" || true
+              exit 1
+            fi
+            sleep 60
+          done
+          echo "Timed out waiting for Kaggle kernel"
+          kaggle kernels logs "$KERNEL_ID" || true
+          exit 1
+
+      - name: Download Kaggle outputs
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+        run: |
+          KERNEL_ID="${KAGGLE_USERNAME}/${KERNEL_SLUG}"
+          mkdir -p kaggle-output
+          kaggle kernels output "$KERNEL_ID" -p kaggle-output -o
+          find kaggle-output -maxdepth 3 -type f -printf '%p %s bytes\n' | sort
+          test -f kaggle-output/result/base-policy.json
+          test -f kaggle-output/result/adapter-policy.json
+          test -f kaggle-output/result/verdict.json
+          test -f kaggle-output/result/manifest.json
+
+      - name: Show aggregate verdict
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for name in ('base-policy.json', 'adapter-policy.json', 'verdict.json', 'manifest.json'):
+              p = Path('kaggle-output/result') / name
+              data = json.loads(p.read_text(encoding='utf-8'))
+              print(f'--- {name} ---')
+              if name.endswith('policy.json'):
+                  print(json.dumps({k: data.get(k) for k in ('total','correct','exact_success_rate','completed','completion_rate','stop_reasons')}, indent=2))
+              else:
+                  print(json.dumps(data, indent=2))
+          PY
+
+      - name: Upload matched Base-vs-QLoRA evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: tinyagent-qlora-kaggle-v1
+          path: |
+            kaggle-output/result/base-policy.json
+            kaggle-output/result/adapter-policy.json
+            kaggle-output/result/verdict.json
+            kaggle-output/result/manifest.json
+            kaggle-output/result/adapter
+          if-no-files-found: error
+          retention-days: 14
