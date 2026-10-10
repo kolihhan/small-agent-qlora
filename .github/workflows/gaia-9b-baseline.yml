@@ -1,5 +1,6 @@
 name: GAIA 9B baseline
 
+# Sequential validation rerun: isolate web-search behavior from sharded concurrency.
 on:
   workflow_dispatch:
   push:
