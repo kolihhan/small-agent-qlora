@@ -4,13 +4,14 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import tempfile
 
 from gaia_small_agent.agent.loop import AgentRuntime, MAX_TOOL_OBSERVATION_CHARS
 from gaia_small_agent.benchmark.gaia100 import GAIA_REVISION, LOCAL_PROTOCOL_SEED, load_validation, select_gaia_partition
 import gaia_small_agent.benchmark.runner as gaia_runner
 from gaia_small_agent.benchmark.sharding import shard_selected_rows
 from gaia_small_agent.model.ollama import OllamaModel
-from gaia_small_agent.tools import default_tools
+from gaia_small_agent.tools import default_tools, preflight_default_tools
 from gaia_small_agent.training.protection import build_protected_question_hashes
 
 
@@ -31,6 +32,9 @@ def main() -> int:
     parser.add_argument("--thinking", action="store_true")
     args = parser.parse_args()
 
+    with tempfile.TemporaryDirectory(prefix="small-agent-shard-preflight-") as workspace:
+        tool_preflight = preflight_default_tools(workspace)
+
     dataset = load_validation("gaia-benchmark/GAIA", token=args.hf_token, revision=GAIA_REVISION)
     full_selection = select_gaia_partition(dataset, partition="evaluation", seed=LOCAL_PROTOCOL_SEED)
     shard = shard_selected_rows(full_selection, shard_index=args.shard_index, shard_count=args.shard_count)
@@ -41,7 +45,7 @@ def main() -> int:
     work_root.mkdir(parents=True, exist_ok=True)
     build_protected_question_hashes(dataset, work_root / "protected-question-hashes.json")
 
-    tool_names = [tool.name for tool in default_tools()]
+    tool_names = tool_preflight["tool_names"]
 
     def factory() -> AgentRuntime:
         model = OllamaModel(
