@@ -2,6 +2,9 @@ name: Matched Transformers QLoRA policy experiment
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - ".github/QLORA_GPU_TRIGGER"
 
 permissions:
   contents: read
