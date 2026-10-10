@@ -28,6 +28,7 @@ def main() -> int:
     parser.add_argument("--shard-count", type=int, default=5)
     parser.add_argument("--work-root", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--thinking", action="store_true")
     args = parser.parse_args()
 
     dataset = load_validation("gaia-benchmark/GAIA", token=args.hf_token, revision=GAIA_REVISION)
@@ -47,7 +48,7 @@ def main() -> int:
             model=args.model,
             base_url=args.ollama_url,
             max_new_tokens=512,
-            enable_thinking=False,
+            enable_thinking=args.thinking,
         )
         return AgentRuntime(model, default_tools(), max_steps=12)
 
@@ -57,7 +58,7 @@ def main() -> int:
         "adapter": None,
         "max_steps": 12,
         "max_new_tokens": 512,
-        "thinking": False,
+        "thinking": args.thinking,
         "quantize_4bit": None,
         "seed": LOCAL_PROTOCOL_SEED,
         "dataset_revision": GAIA_REVISION,
@@ -96,6 +97,7 @@ def main() -> int:
         "dataset_revision": GAIA_REVISION,
         "seed": LOCAL_PROTOCOL_SEED,
         "model": args.model,
+        "thinking": args.thinking,
         "shard_index": args.shard_index,
         "shard_count": args.shard_count,
         "full_selection_sha256": _ids_hash(full_selection),
