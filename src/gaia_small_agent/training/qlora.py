@@ -55,12 +55,7 @@ def load_verified_rows(path: str | Path, protected_questions_path: str | Path | 
 
 
 def _render_turn_examples(processor, rows: list[dict]) -> list[dict[str, str]]:
-    """Turn verified trajectories into prompt/completion rows.
-
-    Every assistant decision becomes one supervised next-action example. This trains the
-    policy at the exact state -> next assistant action boundary while preserving tool
-    observations in the prompt history.
-    """
+    """Turn verified trajectories into prompt/completion rows."""
     examples: list[dict[str, str]] = []
     for row in rows:
         messages = row["messages"]
@@ -97,6 +92,42 @@ def _render_turn_examples(processor, rows: list[dict]) -> list[dict[str, str]]:
     return examples
 
 
+def _tokenize_completion_examples(processor, examples: list[dict[str, str]], max_length: int) -> list[dict[str, list[int]]]:
+    """Keep every supervised completion while left-trimming only old prompt context.
+
+    TRL's normal right truncation can remove the whole completion when the native tool
+    schema makes the prompt longer than ``max_length``. Here we tokenize explicitly,
+    reserve space for the complete next assistant action, and fill the remaining budget
+    with the most recent prompt tokens. Labels mask all prompt tokens, so the objective
+    remains completion-only.
+    """
+    if max_length <= 0:
+        raise ValueError("max_length must be positive")
+    tokenized: list[dict[str, list[int]]] = []
+    for index, example in enumerate(examples, 1):
+        prompt_ids = list(processor(example["prompt"], add_special_tokens=False)["input_ids"])
+        completion_ids = list(processor(example["completion"], add_special_tokens=False)["input_ids"])
+        if not completion_ids:
+            raise ValueError(f"example {index}: completion tokenization is empty")
+        if len(completion_ids) > max_length:
+            raise ValueError(
+                f"example {index}: completion exceeds max_length ({len(completion_ids)} > {max_length})"
+            )
+        prompt_budget = max_length - len(completion_ids)
+        kept_prompt = prompt_ids[-prompt_budget:] if prompt_budget else []
+        input_ids = kept_prompt + completion_ids
+        tokenized.append(
+            {
+                "input_ids": input_ids,
+                "attention_mask": [1] * len(input_ids),
+                "labels": [-100] * len(kept_prompt) + completion_ids,
+            }
+        )
+    if not tokenized:
+        raise ValueError("No tokenized training examples")
+    return tokenized
+
+
 def _cpu_safe_compute_loss(model, inputs: dict, *, return_outputs: bool = False):
     """Use the model's native causal-LM loss without TRL's Triton-only fused head."""
     outputs = model(**inputs)
@@ -105,13 +136,6 @@ def _cpu_safe_compute_loss(model, inputs: dict, *, return_outputs: bool = False)
 
 
 def _training_runtime_defaults(*, cuda_available: bool, cuda_bf16_supported: bool) -> dict[str, Any]:
-    """Return the small set of hardware-dependent training choices.
-
-    CPU uses bfloat16 for 4-bit matmul compute but does not enable Trainer AMP. More
-    importantly, CPU disables gradient checkpointing: on the 15 GiB GitHub runner the
-    quantized 4B backbone fits, while recomputation made a single optimizer step exceed
-    the old 45-minute smoke timeout.
-    """
     return {
         "compute_dtype_name": "bfloat16" if (not cuda_available or cuda_bf16_supported) else "float16",
         "use_gradient_checkpointing": bool(cuda_available),
@@ -199,10 +223,13 @@ def train_qlora(
             raise RuntimeError(f"Unexpected trainable non-LoRA parameter: {name}")
 
     examples = _render_turn_examples(tokenizer, rows)
-    dataset = Dataset.from_list(examples)
+    tokenized_examples = _tokenize_completion_examples(tokenizer, examples, max_length=max_length)
+    dataset = Dataset.from_list(tokenized_examples)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     resume_path = Path(resume_from_checkpoint).resolve() if resume_from_checkpoint else None
+    prompt_tokens_retained = [sum(1 for label in item["labels"] if label == -100) for item in tokenized_examples]
+    completion_tokens = [sum(1 for label in item["labels"] if label != -100) for item in tokenized_examples]
     run_config = {
         "model": model_name,
         "quantization": "4-bit NF4 + double quant",
@@ -218,8 +245,13 @@ def train_qlora(
         "save_steps": save_steps,
         "gradient_accumulation_steps": gradient_accumulation_steps,
         "resume_from_checkpoint": str(resume_path) if resume_path else None,
-        "training_examples": len(examples),
+        "training_examples": len(tokenized_examples),
         "policy": "turn-level state -> next assistant action; completion-only loss",
+        "truncation_policy": "preserve full completion; left-trim oldest prompt tokens",
+        "min_retained_prompt_tokens": min(prompt_tokens_retained),
+        "max_retained_prompt_tokens": max(prompt_tokens_retained),
+        "min_completion_tokens": min(completion_tokens),
+        "max_completion_tokens": max(completion_tokens),
         "scope": "text-only causal language model",
         "trainer_loss_path": runtime_defaults["trainer_loss_path"],
         "gradient_checkpointing": runtime_defaults["use_gradient_checkpointing"],
@@ -233,7 +265,7 @@ def train_qlora(
         "per_device_train_batch_size": 1,
         "gradient_accumulation_steps": gradient_accumulation_steps,
         "max_length": max_length,
-        "completion_only_loss": True,
+        "completion_only_loss": False,
         "loss_type": "nll",
         "logging_steps": 1,
         "save_total_limit": 2,
