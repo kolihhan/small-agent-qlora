@@ -87,16 +87,38 @@ def _render_turn_examples(processor, rows: list[dict]) -> list[dict[str, str]]:
 
 
 def _cpu_safe_compute_loss(model, inputs: dict, *, return_outputs: bool = False):
-    """Use the model's native causal-LM loss without TRL's Triton-only fused head.
-
-    TRL 1.15 routes SFT loss through ``fused_lm_head=True``. That path requires a
-    Triton device driver and therefore fails on CPU-only feasibility runners. The
-    CPU smoke still uses the exact same labels and completion-only masking; only
-    the loss implementation falls back to the model's native causal-LM loss.
-    """
+    """Use the model's native causal-LM loss without TRL's Triton-only fused head."""
     outputs = model(**inputs)
     loss = outputs.loss
     return (loss, outputs) if return_outputs else loss
+
+
+def _training_runtime_defaults(*, cuda_available: bool, cuda_bf16_supported: bool) -> dict[str, Any]:
+    """Return the small set of hardware-dependent training choices.
+
+    CPU uses bfloat16 for 4-bit matmul compute but does not enable Trainer AMP. More
+    importantly, CPU disables gradient checkpointing: on the 15 GiB GitHub runner the
+    quantized 4B backbone fits, while recomputation made a single optimizer step exceed
+    the old 45-minute smoke timeout.
+    """
+    return {
+        "compute_dtype_name": "bfloat16" if (not cuda_available or cuda_bf16_supported) else "float16",
+        "use_gradient_checkpointing": bool(cuda_available),
+        "trainer_loss_path": "trl-fused" if cuda_available else "native-cpu",
+    }
+
+
+def _normalize_lora_target_modules(value: str | list[str]) -> str | list[str]:
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped == "all-linear":
+            return stripped
+        modules = [item.strip() for item in stripped.split(",") if item.strip()]
+    else:
+        modules = [str(item).strip() for item in value if str(item).strip()]
+    if not modules:
+        raise ValueError("lora_target_modules must not be empty")
+    return modules
 
 
 def train_qlora(
@@ -110,6 +132,11 @@ def train_qlora(
     lora_alpha: int = 32,
     lora_dropout: float = 0.05,
     protected_questions_path: str | Path | None = None,
+    max_steps: int | None = None,
+    save_steps: int = 1,
+    gradient_accumulation_steps: int = 8,
+    resume_from_checkpoint: str | Path | None = None,
+    lora_target_modules: str | list[str] = "all-linear",
 ) -> None:
     rows = load_verified_rows(data_path, protected_questions_path=protected_questions_path)
     try:
@@ -123,7 +150,12 @@ def train_qlora(
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     cuda_available = torch.cuda.is_available()
-    compute_dtype = torch.bfloat16 if cuda_available and torch.cuda.is_bf16_supported() else torch.float16
+    cuda_bf16_supported = bool(cuda_available and torch.cuda.is_bf16_supported())
+    runtime_defaults = _training_runtime_defaults(
+        cuda_available=cuda_available,
+        cuda_bf16_supported=cuda_bf16_supported,
+    )
+    compute_dtype = torch.bfloat16 if runtime_defaults["compute_dtype_name"] == "bfloat16" else torch.float16
     bnb = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -136,19 +168,21 @@ def train_qlora(
         device_map="auto",
         trust_remote_code=True,
     )
-    language_model = prepare_model_for_kbit_training(language_model)
+    language_model = prepare_model_for_kbit_training(
+        language_model,
+        use_gradient_checkpointing=runtime_defaults["use_gradient_checkpointing"],
+    )
+    target_modules = _normalize_lora_target_modules(lora_target_modules)
     peft_cfg = LoraConfig(
         r=lora_r,
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules="all-linear",
+        target_modules=target_modules,
     )
     language_model = get_peft_model(language_model, peft_cfg)
 
-    # Hard boundary: the trainer receives only the language backbone, so LoRA cannot
-    # be injected into the vision encoder or other multimodal parent modules.
     for name, param in language_model.named_parameters():
         if param.requires_grad and "lora_" not in name:
             raise RuntimeError(f"Unexpected trainable non-LoRA parameter: {name}")
@@ -157,6 +191,7 @@ def train_qlora(
     dataset = Dataset.from_list(examples)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    resume_path = Path(resume_from_checkpoint).resolve() if resume_from_checkpoint else None
     run_config = {
         "model": model_name,
         "quantization": "4-bit NF4 + double quant",
@@ -164,31 +199,48 @@ def train_qlora(
         "lora_r": lora_r,
         "lora_alpha": lora_alpha,
         "lora_dropout": lora_dropout,
+        "lora_target_modules": target_modules,
         "learning_rate": learning_rate,
         "max_length": max_length,
         "epochs": epochs,
+        "max_steps": max_steps,
+        "save_steps": save_steps,
+        "gradient_accumulation_steps": gradient_accumulation_steps,
+        "resume_from_checkpoint": str(resume_path) if resume_path else None,
         "training_examples": len(examples),
         "policy": "turn-level state -> next assistant action; completion-only loss",
         "scope": "text-only causal language model",
-        "trainer_loss_path": "trl-fused" if cuda_available else "native-cpu",
+        "trainer_loss_path": runtime_defaults["trainer_loss_path"],
+        "gradient_checkpointing": runtime_defaults["use_gradient_checkpointing"],
     }
     (output_dir / "run_config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
 
-    config = SFTConfig(
-        output_dir=str(output_dir),
-        num_train_epochs=epochs,
-        learning_rate=learning_rate,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=8,
-        max_length=max_length,
-        completion_only_loss=True,
-        loss_type="nll",
-        logging_steps=5,
-        save_strategy="epoch",
-        report_to="none",
-        bf16=(compute_dtype == torch.bfloat16),
-        fp16=(compute_dtype == torch.float16),
-    )
+    config_kwargs: dict[str, Any] = {
+        "output_dir": str(output_dir),
+        "num_train_epochs": epochs,
+        "learning_rate": learning_rate,
+        "per_device_train_batch_size": 1,
+        "gradient_accumulation_steps": gradient_accumulation_steps,
+        "max_length": max_length,
+        "completion_only_loss": True,
+        "loss_type": "nll",
+        "logging_steps": 1,
+        "save_total_limit": 2,
+        "report_to": "none",
+        "bf16": bool(cuda_available and compute_dtype == torch.bfloat16),
+        "fp16": bool(cuda_available and compute_dtype == torch.float16),
+        "seed": 42,
+        "data_seed": 42,
+    }
+    if max_steps is not None:
+        config_kwargs.update({
+            "max_steps": max_steps,
+            "save_strategy": "steps",
+            "save_steps": save_steps,
+        })
+    else:
+        config_kwargs["save_strategy"] = "epoch"
+    config = SFTConfig(**config_kwargs)
 
     trainer_cls = SFTTrainer
     if not cuda_available:
@@ -204,6 +256,6 @@ def train_qlora(
         train_dataset=dataset,
         processing_class=tokenizer,
     )
-    trainer.train()
+    trainer.train(resume_from_checkpoint=str(resume_path) if resume_path else None)
     trainer.save_model(str(output_dir))
     tokenizer.save_pretrained(str(output_dir))
