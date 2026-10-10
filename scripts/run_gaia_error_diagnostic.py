@@ -32,17 +32,17 @@ def _aggregate_trace_counts(results_path: Path) -> dict:
         record = json.loads(line)
         for event in record.get("trace", []):
             kind = event.get("kind")
-            details = event.get("details") or {}
+            data = event.get("data") or {}
             if kind == "tool_call":
-                name = str(details.get("name") or "unknown")
+                name = str(data.get("name") or "unknown")
                 tool_calls_by_name[name] += 1
             elif kind == "tool_result":
-                name = str(details.get("name") or "unknown")
-                if bool(details.get("ok")):
+                name = str(data.get("name") or "unknown")
+                if bool(data.get("ok")):
                     tool_successes_by_name[name] += 1
                 else:
                     tool_errors_by_name[name] += 1
-                    code = str(details.get("error_code") or "UNKNOWN")
+                    code = str(data.get("error_code") or "UNKNOWN")
                     error_codes[code] += 1
                     error_codes_by_tool[name][code] += 1
 
