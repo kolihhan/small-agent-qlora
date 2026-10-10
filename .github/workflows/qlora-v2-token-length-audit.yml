@@ -1,0 +1,69 @@
+name: Audit QLoRA v2 token lengths
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/qlora-v2-token-length-audit.yml"
+
+permissions:
+  contents: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  EXPERIMENT_COMMIT: 26d8bc2d54b191baaaea57f4761e9bddbb3ed5ba
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch frozen experiment source
+        run: |
+          curl -fsSL "https://github.com/kolihhan/small-agent-qlora/archive/${EXPERIMENT_COMMIT}.tar.gz" -o /tmp/project.tar.gz
+          mkdir -p /tmp/project
+          tar -xzf /tmp/project.tar.gz -C /tmp/project --strip-components=1
+      - name: Install tokenizer dependencies
+        run: python -m pip install --quiet 'transformers>=5.15,<6'
+      - name: Measure turnified prompt/completion lengths
+        shell: bash
+        run: |
+          PYTHONPATH=/tmp/project/src python - <<'PY'
+          import json, os, statistics, tempfile
+          from pathlib import Path
+          from transformers import AutoTokenizer
+          from gaia_small_agent.training.oracle_policy_v2 import generate_oracle_policy_v2_dataset
+          from gaia_small_agent.training.qlora import load_verified_rows, _render_turn_examples
+
+          tok = AutoTokenizer.from_pretrained('Qwen/Qwen3.5-9B', token=os.environ.get('HF_TOKEN'), trust_remote_code=True)
+          with tempfile.TemporaryDirectory() as td:
+              paths = generate_oracle_policy_v2_dataset(Path(td)/'oracle', seed='small-agent-policy-v2')
+              rows = load_verified_rows(paths['train'])
+              examples = _render_turn_examples(tok, rows)
+          data=[]
+          for ex in examples:
+              p=len(tok(ex['prompt'], add_special_tokens=False)['input_ids'])
+              c=len(tok(ex['completion'], add_special_tokens=False)['input_ids'])
+              data.append((p,c,p+c))
+          def pct(xs, q):
+              ys=sorted(xs); return ys[min(len(ys)-1, round((len(ys)-1)*q))]
+          ps=[x[0] for x in data]; cs=[x[1] for x in data]; ts=[x[2] for x in data]
+          report={
+              'rows': len(rows), 'turn_examples': len(data),
+              'prompt_tokens': {'min':min(ps),'p50':pct(ps,.5),'p90':pct(ps,.9),'p95':pct(ps,.95),'max':max(ps)},
+              'completion_tokens': {'min':min(cs),'p50':pct(cs,.5),'p90':pct(cs,.9),'p95':pct(cs,.95),'max':max(cs)},
+              'total_tokens': {'min':min(ts),'p50':pct(ts,.5),'p90':pct(ts,.9),'p95':pct(ts,.95),'max':max(ts)},
+              'completion_visible_if_keep_start': {
+                  str(limit): sum(1 for p,c,t in data if p < limit) for limit in (512,768,1024,1280,1536,2048)
+              },
+              'completion_visible_fraction': {
+                  str(limit): sum(1 for p,c,t in data if p < limit)/len(data) for limit in (512,768,1024,1280,1536,2048)
+              },
+          }
+          print(json.dumps(report,indent=2,sort_keys=True))
+          Path('token-length-audit.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qlora-v2-token-length-audit
+          path: token-length-audit.json
+          if-no-files-found: error
