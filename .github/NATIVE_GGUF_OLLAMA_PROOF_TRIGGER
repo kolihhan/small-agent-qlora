@@ -1,0 +1,4 @@
+train_run_id=38018637246
+adapter=native-smoke-adapter.gguf
+base=Qwen_Qwen3.5-4B-Q4_K_M.gguf
+attempt=1
