@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - ".github/workflows/gaia-error-diagnostic.yml"
+      - "scripts/run_gaia_error_diagnostic.py"
 
 permissions:
   contents: read
