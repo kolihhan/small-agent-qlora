@@ -1,0 +1,156 @@
+name: Debug ZeroGPU Qwen3.5 9B QLoRA v2
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/hf-zero-gpu-debug-train-v2.yml"
+
+permissions:
+  contents: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  HF_SPACE_ID: kolihhan/small-agent-qlora-v2-train
+  EXPERIMENT_COMMIT: 26d8bc2d54b191baaaea57f4761e9bddbb3ed5ba
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Install clients and check quota
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'huggingface_hub>=1.0' 'gradio_client>=2,<3'
+          python - <<'PY'
+          import json, os
+          from huggingface_hub import HfApi
+          q=HfApi(token=os.environ['HF_TOKEN']).get_zero_gpu_quota()
+          print(json.dumps({'remaining': q.remaining}, indent=2))
+          if q.remaining < 90: raise SystemExit('insufficient diagnostic quota')
+          PY
+
+      - name: Deploy traceback-returning one-step diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/project /tmp/space-src
+          mkdir -p /tmp/project /tmp/space-src
+          curl -fsSL "https://github.com/kolihhan/small-agent-qlora/archive/${EXPERIMENT_COMMIT}.tar.gz" -o /tmp/project.tar.gz
+          tar -xzf /tmp/project.tar.gz -C /tmp/project --strip-components=1
+          cp -R /tmp/project/src/gaia_small_agent /tmp/space-src/gaia_small_agent
+          cat > /tmp/space-src/requirements.txt <<'EOF'
+          transformers>=5.15,<6
+          peft>=0.20,<1
+          trl>=1.10,<2
+          bitsandbytes>=0.50.1,<1
+          accelerate>=1.10,<2
+          datasets>=4
+          requests>=2.32
+          huggingface_hub>=1.0
+          gradio>=6,<7
+          EOF
+          cat > /tmp/space-src/README.md <<'EOF'
+          ---
+          title: Small Agent QLoRA v2 Debug
+          emoji: 🧪
+          colorFrom: gray
+          colorTo: blue
+          sdk: gradio
+          sdk_version: 6.0.1
+          app_file: app.py
+          pinned: false
+          private: true
+          hardware: zero-a10g
+          ---
+          Temporary private diagnostic Space.
+          EOF
+          cat > /tmp/space-src/app.py <<'PYAPP'
+          import json, os, shutil, traceback
+          from pathlib import Path
+          import gradio as gr
+          import spaces
+          from huggingface_hub import snapshot_download
+          from gaia_small_agent.training.oracle_policy_v2 import generate_oracle_policy_v2_dataset
+          from gaia_small_agent.training.qlora import train_qlora
+
+          MODEL='Qwen/Qwen3.5-9B'
+          ROOT=Path('/tmp/qlora-v2-debug')
+          MODEL_PATH=snapshot_download(repo_id=MODEL, token=os.environ.get('HF_TOKEN') or None)
+
+          @spaces.GPU(duration=90)
+          def diagnose():
+              try:
+                  if ROOT.exists(): shutil.rmtree(ROOT)
+                  ROOT.mkdir(parents=True)
+                  data=generate_oracle_policy_v2_dataset(ROOT/'oracle', seed='small-agent-policy-v2')
+                  train_qlora(
+                      data_path=data['train'], output_dir=ROOT/'adapter', model_name=MODEL_PATH,
+                      max_length=512, learning_rate=1e-4, lora_r=16, lora_alpha=32,
+                      lora_dropout=0.05, max_steps=1, save_steps=1,
+                      gradient_accumulation_steps=4, lora_target_modules='all-linear',
+                  )
+                  return {'ok': True}
+              except Exception as exc:
+                  return {'ok': False, 'type': type(exc).__name__, 'error': str(exc), 'traceback': traceback.format_exc()}
+
+          demo=gr.Interface(fn=diagnose, inputs=[], outputs=gr.JSON(), api_name='diagnose')
+          if __name__ == '__main__': demo.launch(show_error=True)
+          PYAPP
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi, SpaceHardware
+          api=HfApi(token=os.environ['HF_TOKEN']); rid=os.environ['HF_SPACE_ID']
+          api.upload_folder(folder_path='/tmp/space-src', repo_id=rid, repo_type='space',
+              delete_patterns=['*.py','requirements.txt','gaia_small_agent/**'],
+              commit_message='expose one-step QLoRA diagnostic traceback')
+          api.add_space_secret(repo_id=rid,key='HF_TOKEN',value=os.environ['HF_TOKEN'])
+          api.request_space_hardware(repo_id=rid,hardware=SpaceHardware.ZERO_A10G)
+          try: api.restart_space(repo_id=rid)
+          except Exception as exc: print(exc)
+          PY
+
+      - name: Wait and run diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, time
+          from huggingface_hub import HfApi
+          from gradio_client import Client
+          api=HfApi(token=os.environ['HF_TOKEN']); rid=os.environ['HF_SPACE_ID']
+          runtime=api.wait_for_space(repo_id=rid,timeout=1800); print(runtime)
+          deadline=time.time()+900
+          while time.time()<deadline:
+              try:
+                  c=Client(rid,token=os.environ['HF_TOKEN'],verbose=False); c.view_api(print_info=False); break
+              except Exception as exc: last=exc; time.sleep(10)
+          else: raise SystemExit(f'API not ready: {last}')
+          result=c.predict(api_name='/diagnose')
+          print(json.dumps(result,indent=2))
+          if not result.get('ok'):
+              raise SystemExit('DIAGNOSTIC_CAPTURED_EXPECTED_FAILURE')
+          PY
+
+      - name: Report remaining quota
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os
+          from huggingface_hub import HfApi
+          q=HfApi(token=os.environ['HF_TOKEN']).get_zero_gpu_quota()
+          print(json.dumps({'remaining':q.remaining,'resets_at':q.resets_at.isoformat() if q.resets_at else None},indent=2))
+          PY
+      - name: Pause Space
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          try: HfApi(token=os.environ['HF_TOKEN']).pause_space(repo_id=os.environ['HF_SPACE_ID'])
+          except Exception as exc: print(exc)
+          PY
