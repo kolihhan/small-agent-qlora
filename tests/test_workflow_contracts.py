@@ -4,6 +4,8 @@ from pathlib import Path
 WORKFLOW = Path(".github/workflows/gaia-shadow-gate.yml")
 TRIGGER = Path(".github/GAIA_SHADOW_TRIGGER")
 CPU_QLORA_WORKFLOW = Path(".github/workflows/qlora-cpu-batch.yml")
+GAIA_9B_THINKING_WORKFLOW = Path(".github/workflows/gaia-9b-thinking20.yml")
+GAIA_SHARD_RUNNER = Path("scripts/run_gaia_eval_shard.py")
 
 
 def test_shadow_workflow_is_matched_and_aggregate_only():
@@ -68,3 +70,21 @@ def test_cpu_qlora_batch_avoids_regressed_kernel_loader():
     text = CPU_QLORA_WORKFLOW.read_text(encoding="utf-8")
 
     assert 'python -m pip install "kernels>=0.11.1"' not in text
+
+
+def test_gaia_9b_thinking_baseline_is_isolated_and_matched():
+    workflow = GAIA_9B_THINKING_WORKFLOW.read_text(encoding="utf-8")
+    runner = GAIA_SHARD_RUNNER.read_text(encoding="utf-8")
+
+    assert 'parser.add_argument("--thinking", action="store_true")' in runner
+    assert "enable_thinking=args.thinking" in runner
+    assert '"thinking": args.thinking' in runner
+
+    assert "MODEL: qwen3.5:9b" in workflow
+    assert 'SHARD_COUNT: "20"' in workflow
+    assert "max-parallel: 20" in workflow
+    assert "--thinking" in workflow
+    assert "--shard-count \"$SHARD_COUNT\"" in workflow
+    assert "expected Evaluation100 total 100" in workflow
+    assert "name: gaia-9b-thinking-baseline-summary-20way" in workflow
+    assert "results.jsonl" not in workflow[workflow.index("Upload final sanitized aggregate only"):]
