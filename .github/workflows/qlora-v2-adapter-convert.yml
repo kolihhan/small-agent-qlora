@@ -11,7 +11,7 @@ permissions:
   actions: read
 
 env:
-  SOURCE_RUN_ID: "38067275216"
+  SOURCE_RUN_ID: "38067525779"
   LLAMA_CPP_COMMIT: aa94f2086147cd4bfbcff818ce998dffce5fcb39
   BASE_MODEL_ID: Qwen/Qwen3.5-9B
 
@@ -44,7 +44,7 @@ jobs:
       - name: Download adapter artifact
         uses: actions/download-artifact@v4
         with:
-          name: qwen35-9b-qlora-v2-zero-gpu
+          name: qwen35-9b-qlora-v2-zero-gpu-free
           path: runs/source
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
@@ -75,7 +75,7 @@ jobs:
           }, indent=2, sort_keys=True))
           if meta.get('cuda') is not True:
               raise SystemExit('training metadata does not confirm CUDA')
-          if meta.get('max_steps') != 40:
+          if meta.get('max_steps') != 12:
               raise SystemExit(f"unexpected max_steps: {meta.get('max_steps')}")
           PY
 
@@ -107,6 +107,7 @@ jobs:
           from pathlib import Path
           payload = {
               'source_training_run_id': os.environ['SOURCE_RUN_ID'],
+              'training_steps': 12,
               'llama_cpp_commit': os.environ['LLAMA_CPP_COMMIT'],
               'base_model_id': os.environ['BASE_MODEL_ID'],
               'adapter_gguf_bytes': Path('runs/qwen35-9b-qlora-v2-adapter.gguf').stat().st_size,
