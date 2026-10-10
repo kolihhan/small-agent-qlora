@@ -1,0 +1,35 @@
+name: HF Space build diagnostic
+
+on:
+  push:
+    paths:
+      - ".github/workflows/hf-space-build-diagnostic.yml"
+
+permissions:
+  contents: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch private Space build logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          python -m pip install --quiet 'huggingface_hub>=1.0'
+          python - <<'PY'
+          import os
+          from huggingface_hub import fetch_space_logs
+          for line in fetch_space_logs(
+              "kolihhan/small-agent-qlora-v2-train",
+              build=True,
+              follow=False,
+              token=os.environ["HF_TOKEN"],
+          ):
+              print(line, end="" if line.endswith("\n") else "\n")
+          PY
