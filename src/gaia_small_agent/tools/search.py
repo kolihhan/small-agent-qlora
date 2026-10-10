@@ -19,17 +19,23 @@ class SearchTool(Tool):
         "additionalProperties": False,
     }
 
+    def __init__(self, timeout_s: float = 5.0):
+        self.timeout_s = float(timeout_s)
+
     def run(self, arguments: dict[str, Any], workspace: Path) -> ToolResult:
         query = arguments.get("query")
         if not isinstance(query, str) or not query.strip():
             return ToolResult(False, "'query' must be a non-empty string", "BAD_ARGUMENTS")
         try:
             from ddgs import DDGS
+            from ddgs.exceptions import TimeoutException
         except ImportError:
             return ToolResult(False, "Install search support: pip install -e '.[search]'", "MISSING_DEPENDENCY")
         max_results = max(1, min(int(arguments.get("max_results", 5)), 10))
         try:
-            rows = list(DDGS().text(query, max_results=max_results))
+            rows = list(DDGS(timeout=self.timeout_s).text(query, max_results=max_results))
+        except TimeoutException as exc:
+            return ToolResult(False, f"Search timed out: {exc}", "SEARCH_TIMEOUT")
         except Exception as exc:
             return ToolResult(False, f"Search failed: {exc}", "SEARCH_ERROR")
         if not rows:
