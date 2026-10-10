@@ -1,0 +1,158 @@
+name: Resumable CPU QLoRA batch
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/QLORA_CPU_BATCH_TRIGGER"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  HF_MODEL: Qwen/Qwen3.5-4B
+  POLICY_SEED: tinyagent-policy-v1
+
+jobs:
+  train-batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Read batch trigger
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          values = {}
+          for line in Path('.github/QLORA_CPU_BATCH_TRIGGER').read_text(encoding='utf-8').splitlines():
+              if '=' not in line or line.lstrip().startswith('#'):
+                  continue
+              key, value = line.split('=', 1)
+              values[key.strip()] = value.strip()
+          target_step = int(values.get('target_step', '1'))
+          previous_run_id = int(values.get('previous_run_id', '0'))
+          if target_step < 1 or previous_run_id < 0:
+              raise SystemExit('invalid CPU batch trigger')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:
+              f.write(f'TARGET_STEP={target_step}\n')
+              f.write(f'PREVIOUS_RUN_ID={previous_run_id}\n')
+          print({'target_step': target_step, 'previous_run_id': previous_run_id})
+          PY
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install CPU training stack
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+          python -m pip install -e ".[train,files]"
+          python -m pip install "flash-linear-attention[cpu]" || echo "FLA CPU package unavailable; continuing with Transformers fallback"
+
+      - name: Verify CPU-only runtime
+        run: |
+          python - <<'PY'
+          import os, torch
+          print({
+              'torch': torch.__version__,
+              'cuda_available': torch.cuda.is_available(),
+              'cpu_count': os.cpu_count(),
+              'threads': torch.get_num_threads(),
+          })
+          if torch.cuda.is_available():
+              raise SystemExit('This workflow is intentionally CPU-only')
+          PY
+
+      - name: Generate frozen TinyAgent curriculum
+        run: |
+          small-agent generate-oracle-policy --output-dir runs/oracle --seed "$POLICY_SEED"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          Path('runs/empty-protected.json').write_text(
+              json.dumps({'algorithm': 'sha256-normalized-question-v1', 'hashes': []}) + '\n',
+              encoding='utf-8',
+          )
+          assert sum(1 for x in Path('runs/oracle/train.jsonl').read_text(encoding='utf-8').splitlines() if x.strip()) == 1600
+          PY
+
+      - name: Restore previous trainer checkpoint
+        if: env.PREVIOUS_RUN_ID != '0'
+        uses: actions/download-artifact@v4
+        with:
+          name: qlora-cpu-checkpoint
+          path: runs/resume
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ env.PREVIOUS_RUN_ID }}
+
+      - name: Resolve resume checkpoint
+        run: |
+          if [ "$PREVIOUS_RUN_ID" = "0" ]; then
+            echo "RESUME_ARGS=" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          CHECKPOINT=$(find runs/resume -type d -name 'checkpoint-*' | sort -V | tail -n1)
+          if [ -z "$CHECKPOINT" ]; then
+            echo "No checkpoint found in previous artifact" >&2
+            find runs/resume -maxdepth 4 -type f | head -100
+            exit 1
+          fi
+          echo "RESUME_ARGS=--resume-from-checkpoint $CHECKPOINT" >> "$GITHUB_ENV"
+          echo "resume=$CHECKPOINT"
+
+      - name: Run one resumable CPU QLoRA batch
+        run: |
+          START=$(date +%s)
+          small-agent train-qlora \
+            --data runs/oracle/train.jsonl \
+            --output runs/cpu-batch \
+            --hf-model "$HF_MODEL" \
+            --max-length 1024 \
+            --epochs 2.0 \
+            --max-steps "$TARGET_STEP" \
+            --save-steps 1 \
+            --gradient-accumulation-steps 1 \
+            --lora-target-modules q_proj,k_proj,v_proj,o_proj \
+            --protected-questions runs/empty-protected.json \
+            $RESUME_ARGS
+          END=$(date +%s)
+          echo "TRAIN_SECONDS=$((END-START))" >> "$GITHUB_ENV"
+
+      - name: Record batch evidence
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          checkpoints = sorted(Path('runs/cpu-batch').glob('checkpoint-*'), key=lambda p: int(p.name.split('-')[-1]))
+          if not checkpoints:
+              raise SystemExit('training finished without a checkpoint')
+          latest = checkpoints[-1]
+          payload = {
+              'schema_version': 'qlora-cpu-batch/v1',
+              'target_step': int(os.environ['TARGET_STEP']),
+              'previous_run_id': int(os.environ['PREVIOUS_RUN_ID']),
+              'train_seconds': int(os.environ['TRAIN_SECONDS']),
+              'checkpoint': latest.name,
+              'run_config': json.loads(Path('runs/cpu-batch/run_config.json').read_text(encoding='utf-8')),
+          }
+          Path('runs/cpu-batch-result.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload resumable checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: qlora-cpu-checkpoint
+          path: |
+            runs/cpu-batch/checkpoint-*/
+            runs/cpu-batch/run_config.json
+            runs/cpu-batch-result.json
+          if-no-files-found: error
+          retention-days: 30
