@@ -22,7 +22,7 @@ jobs:
           set -euo pipefail
           test -n "$HF_TOKEN"
           python -m pip install --quiet 'huggingface_hub>=1.0'
-          echo "diagnostic generation: python-3.11 retry"
+          echo "diagnostic generation: quoted-python-and-prefetch"
           python - <<'PY'
           import os
           from huggingface_hub import fetch_space_logs
