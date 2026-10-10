@@ -12,15 +12,16 @@ permissions:
 env:
   HF_TOKEN: ${{ secrets.HF_TOKEN }}
   HF_SPACE_ID: kolihhan/small-agent-qlora-v2-train
-  TRAIN_STEPS: "10"
-  DECLARED_GPU_SECONDS: "180"
+  TRAIN_STEPS: "1"
+  DECLARED_GPU_SECONDS: "120"
+  EXPECTED_EFFECTIVE_GPU_SECONDS: "180"
 
 jobs:
   train:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - name: Install HF clients and verify full free quota
+      - name: Install HF clients and verify available free quota
         shell: bash
         run: |
           set -euo pipefail
@@ -30,12 +31,13 @@ jobs:
           import json, os
           from huggingface_hub import HfApi
           q = HfApi(token=os.environ["HF_TOKEN"]).get_zero_gpu_quota()
-          print(json.dumps({"base": q.base, "remaining": q.remaining, "resets_at": q.resets_at.isoformat() if q.resets_at else None}, indent=2))
-          if q.remaining < 270:
-              raise SystemExit(f"Need >=270 free ZeroGPU seconds for calibrated run, only {q.remaining} remain")
+          required = float(os.environ["EXPECTED_EFFECTIVE_GPU_SECONDS"])
+          print(json.dumps({"base": q.base, "remaining": q.remaining, "required_effective": required, "resets_at": q.resets_at.isoformat() if q.resets_at else None}, indent=2))
+          if q.remaining < required:
+              raise SystemExit(f"Need >={required} free ZeroGPU seconds for calibrated run, only {q.remaining} remain")
           PY
 
-      - name: Patch Space duration below free-tier effective cap
+      - name: Patch Space duration below current free-tier quota
         shell: bash
         run: |
           set -euo pipefail
@@ -49,12 +51,15 @@ jobs:
           declared = int(os.environ["DECLARED_GPU_SECONDS"])
           path = Path(hf_hub_download(repo_id=repo_id, filename="app.py", repo_type="space", token=token))
           text = path.read_text(encoding="utf-8")
-          old = "@spaces.GPU(duration=280)"
+          candidates = ["@spaces.GPU(duration=280)", "@spaces.GPU(duration=180)"]
           new = f"@spaces.GPU(duration={declared})"
-          if old not in text and new not in text:
-              raise SystemExit("Could not locate expected ZeroGPU duration decorator in Space app.py")
-          if old in text:
-              text = text.replace(old, new, 1)
+          if new not in text:
+              for old in candidates:
+                  if old in text:
+                      text = text.replace(old, new, 1)
+                      break
+              else:
+                  raise SystemExit("Could not locate expected ZeroGPU duration decorator in Space app.py")
           out = Path("/tmp/app.py")
           out.write_text(text, encoding="utf-8")
           HfApi(token=token).upload_file(
@@ -62,7 +67,7 @@ jobs:
               path_in_repo="app.py",
               repo_id=repo_id,
               repo_type="space",
-              commit_message=f"lower free-tier ZeroGPU duration to {declared}s",
+              commit_message=f"calibrate free-tier ZeroGPU duration to {declared}s",
           )
           print(f"SPACE_DURATION_PATCHED={declared}")
           PY
@@ -135,6 +140,7 @@ jobs:
           meta = dict(meta or {})
           meta["client_wall_seconds"] = wall
           meta["declared_gpu_seconds"] = int(os.environ["DECLARED_GPU_SECONDS"])
+          meta["expected_effective_gpu_seconds"] = int(os.environ["EXPECTED_EFFECTIVE_GPU_SECONDS"])
           Path("runs/zero-gpu/training-meta.json").write_text(
               json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8"
           )
