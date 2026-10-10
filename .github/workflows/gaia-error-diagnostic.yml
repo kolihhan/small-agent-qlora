@@ -1,0 +1,200 @@
+name: GAIA 9B error diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/gaia-error-diagnostic.yml"
+
+permissions:
+  contents: read
+
+env:
+  MODEL: qwen3.5:9b
+  OLLAMA_URL: http://127.0.0.1:11434
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  SHARD_COUNT: "5"
+
+jobs:
+  diagnostic-shard:
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Verify gated GAIA credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$HF_TOKEN" ]; then echo "HF_TOKEN_NOT_CONFIGURED"; exit 42; fi
+      - name: Install evaluation dependencies
+        run: python -m pip install -e ".[eval,search,files]"
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+      - name: Start Ollama and pull Qwen3.5 9B
+        shell: bash
+        run: |
+          set -euo pipefail
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in {1..30}; do curl -fsS "$OLLAMA_URL/api/tags" >/dev/null && break; sleep 1; done
+          curl -fsS "$OLLAMA_URL/api/tags" >/dev/null
+          ollama pull "$MODEL"
+          model_id="$(ollama list | awk -v model="$MODEL" '$1 == model {print $2; exit}')"
+          test -n "$model_id"
+          echo "MODEL_ID=$model_id" >> "$GITHUB_ENV"
+      - name: Run frozen Diagnostic25 shard
+        shell: bash
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python scripts/run_gaia_error_diagnostic.py \
+            --model "$MODEL" \
+            --ollama-url "$OLLAMA_URL" \
+            --hf-token "$HF_TOKEN" \
+            --shard-index "$SHARD_INDEX" \
+            --shard-count "$SHARD_COUNT" \
+            --work-root "runs/gaia-error-diagnostic-$SHARD_INDEX" \
+            --output "runs/gaia-error-diagnostic-$SHARD_INDEX-summary.json"
+      - name: Attach model provenance
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(f"runs/gaia-error-diagnostic-{os.environ['SHARD_INDEX']}-summary.json")
+          data = json.loads(path.read_text(encoding="utf-8"))
+          data["model_id"] = os.environ["MODEL_ID"]
+          data["commit_sha"] = os.environ["COMMIT_SHA"]
+          path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+      - name: Upload sanitized diagnostic shard only
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaia-9b-error-diagnostic-shard-${{ matrix.shard }}
+          path: runs/gaia-error-diagnostic-${{ matrix.shard }}-summary.json
+          if-no-files-found: error
+          retention-days: 14
+
+  aggregate:
+    needs: diagnostic-shard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download sanitized diagnostic shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: gaia-9b-error-diagnostic-shard-*
+          path: runs/shards
+          merge-multiple: true
+      - name: Build sanitized Diagnostic25 aggregate
+        run: |
+          python - <<'PY'
+          import json
+          from collections import Counter, defaultdict
+          from pathlib import Path
+
+          paths = sorted(Path("runs/shards").glob("gaia-error-diagnostic-*-summary.json"))
+          if len(paths) != 5:
+              raise SystemExit(f"expected 5 diagnostic shard summaries, got {len(paths)}")
+          shards = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+          if {int(s["shard_index"]) for s in shards} != set(range(5)):
+              raise SystemExit("diagnostic shard indexes are incomplete or duplicated")
+          if len({s["full_selection_sha256"] for s in shards}) != 1:
+              raise SystemExit("Diagnostic25 identity differs across shards")
+          if len({s["model_id"] for s in shards}) != 1:
+              raise SystemExit("model identity differs across diagnostic shards")
+
+          summaries = [s["summary"] for s in shards]
+          total = sum(int(s["total"]) for s in summaries)
+          if total != 25:
+              raise SystemExit(f"expected Diagnostic25 total 25, got {total}")
+          expected_levels = {"1": 8, "2": 13, "3": 4}
+          levels = {}
+          for level, expected in expected_levels.items():
+              n = sum(int(s["levels"][level]["total"]) for s in summaries)
+              c = sum(int(s["levels"][level]["correct"]) for s in summaries)
+              if n != expected:
+                  raise SystemExit(f"diagnostic level {level}: expected {expected}, got {n}")
+              levels[level] = {"correct": c, "total": n, "accuracy": c / n if n else 0.0}
+
+          error_codes = Counter()
+          tool_calls = Counter()
+          tool_successes = Counter()
+          tool_errors = Counter()
+          by_tool = defaultdict(Counter)
+          failure_labels = Counter()
+          failure_signals = Counter()
+          stop_reasons = Counter()
+          for shard in shards:
+              error_codes.update(shard.get("error_codes") or {})
+              tool_calls.update(shard.get("tool_calls_by_name") or {})
+              tool_successes.update(shard.get("tool_successes_by_name") or {})
+              tool_errors.update(shard.get("tool_errors_by_name") or {})
+              for tool, counts in (shard.get("error_codes_by_tool") or {}).items():
+                  by_tool[tool].update(counts)
+              summary = shard["summary"]
+              failure_labels.update(summary.get("failure_labels") or {})
+              failure_signals.update(summary.get("failure_signals") or {})
+              stop_reasons.update(summary.get("stop_reasons") or {})
+
+          correct = sum(int(s["correct"]) for s in summaries)
+          completed = sum(int(s["completed"]) for s in summaries)
+          total_calls = sum(tool_calls.values())
+          total_successes = sum(tool_successes.values())
+          payload = {
+              "schema_version": "gaia-9b-error-diagnostic/v1",
+              "benchmark": "GAIA 2023 validation / frozen Diagnostic25",
+              "dataset_revision": shards[0]["dataset_revision"],
+              "seed": shards[0]["seed"],
+              "model": shards[0]["model"],
+              "model_id": shards[0]["model_id"],
+              "thinking": False,
+              "execution_shards": 5,
+              "full_selection_sha256": shards[0]["full_selection_sha256"],
+              "summary": {
+                  "correct": correct,
+                  "total": total,
+                  "accuracy": correct / total,
+                  "completed": completed,
+                  "completion_rate": completed / total,
+                  "levels": levels,
+                  "tool_calls": total_calls,
+                  "tool_successes": total_successes,
+                  "tool_errors": sum(tool_errors.values()),
+                  "tool_success_rate": total_successes / total_calls if total_calls else 1.0,
+                  "failure_labels": dict(sorted(failure_labels.items())),
+                  "failure_signals": dict(sorted(failure_signals.items())),
+                  "stop_reasons": dict(sorted(stop_reasons.items())),
+              },
+              "error_codes": dict(sorted(error_codes.items())),
+              "tool_calls_by_name": dict(sorted(tool_calls.items())),
+              "tool_successes_by_name": dict(sorted(tool_successes.items())),
+              "tool_errors_by_name": dict(sorted(tool_errors.items())),
+              "error_codes_by_tool": {
+                  tool: dict(sorted(counts.items()))
+                  for tool, counts in sorted(by_tool.items())
+              },
+          }
+          out = Path("runs/gaia-9b-error-diagnostic-summary.json")
+          out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+      - name: Upload final sanitized diagnostic only
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaia-9b-error-diagnostic-summary
+          path: runs/gaia-9b-error-diagnostic-summary.json
+          if-no-files-found: error
+          retention-days: 30
