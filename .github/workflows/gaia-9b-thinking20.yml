@@ -1,0 +1,206 @@
+name: GAIA 9B thinking baseline 20-way
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/gaia-9b-thinking20.yml"
+
+permissions:
+  contents: read
+
+env:
+  MODEL: qwen3.5:9b
+  OLLAMA_URL: http://127.0.0.1:11434
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  SHARD_COUNT: "20"
+
+jobs:
+  evaluate-shard:
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Verify gated GAIA credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$HF_TOKEN" ]; then echo "HF_TOKEN_NOT_CONFIGURED"; exit 42; fi
+      - name: Install evaluation dependencies
+        run: python -m pip install -e ".[eval,search,files]"
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+      - name: Start Ollama and pull Qwen3.5 9B
+        shell: bash
+        run: |
+          set -euo pipefail
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in {1..30}; do curl -fsS "$OLLAMA_URL/api/tags" >/dev/null && break; sleep 1; done
+          curl -fsS "$OLLAMA_URL/api/tags" >/dev/null
+          ollama pull "$MODEL"
+          model_id="$(ollama list | awk -v model="$MODEL" '$1 == model {print $2; exit}')"
+          test -n "$model_id"
+          echo "MODEL_ID=$model_id" >> "$GITHUB_ENV"
+      - name: Runtime readiness
+        run: small-agent doctor --model "$MODEL" --ollama-url "$OLLAMA_URL" --workspace "runs/doctor-thinking-${{ matrix.shard }}"
+      - name: Run frozen Evaluation100 thinking shard
+        shell: bash
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python scripts/run_gaia_eval_shard.py \
+            --model "$MODEL" \
+            --ollama-url "$OLLAMA_URL" \
+            --hf-token "$HF_TOKEN" \
+            --shard-index "$SHARD_INDEX" \
+            --shard-count "$SHARD_COUNT" \
+            --thinking \
+            --work-root "runs/gaia-9b-thinking-shard-$SHARD_INDEX" \
+            --output "runs/gaia-9b-thinking-shard-$SHARD_INDEX-summary.json"
+      - name: Attach model provenance
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(f"runs/gaia-9b-thinking-shard-{os.environ['SHARD_INDEX']}-summary.json")
+          data = json.loads(path.read_text(encoding="utf-8"))
+          if data.get("thinking") is not True:
+              raise SystemExit("thinking mode was not recorded as enabled")
+          data["model_id"] = os.environ["MODEL_ID"]
+          data["commit_sha"] = os.environ["COMMIT_SHA"]
+          path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+      - name: Upload sanitized shard aggregate only
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaia-9b-thinking-20-shard-${{ matrix.shard }}
+          path: runs/gaia-9b-thinking-shard-${{ matrix.shard }}-summary.json
+          if-no-files-found: error
+          retention-days: 14
+
+  aggregate:
+    needs: evaluate-shard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download shard aggregates
+        uses: actions/download-artifact@v4
+        with:
+          pattern: gaia-9b-thinking-20-shard-*
+          path: runs/shards
+          merge-multiple: true
+      - name: Build frozen Evaluation100 aggregate
+        run: |
+          python - <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          shard_count = 20
+          paths = sorted(Path("runs/shards").glob("gaia-9b-thinking-shard-*-summary.json"))
+          if len(paths) != shard_count:
+              raise SystemExit(f"expected {shard_count} shard summaries, got {len(paths)}")
+          shards = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+          if {int(s["shard_index"]) for s in shards} != set(range(shard_count)):
+              raise SystemExit("shard indexes are incomplete or duplicated")
+          if any(int(s["shard_count"]) != shard_count for s in shards):
+              raise SystemExit("shard_count mismatch")
+          if any(s.get("thinking") is not True for s in shards):
+              raise SystemExit("all shards must use thinking mode")
+          full_hashes = {s["full_selection_sha256"] for s in shards}
+          if len(full_hashes) != 1:
+              raise SystemExit("frozen Evaluation100 identity differs across shards")
+          model_ids = {s["model_id"] for s in shards}
+          if len(model_ids) != 1:
+              raise SystemExit("model identity differs across shards")
+
+          summaries = [s["summary"] for s in shards]
+          total = sum(int(s["total"]) for s in summaries)
+          correct = sum(int(s["correct"]) for s in summaries)
+          completed = sum(int(s["completed"]) for s in summaries)
+          if total != 100:
+              raise SystemExit(f"expected Evaluation100 total 100, got {total}")
+
+          levels = {}
+          for level, expected in (("1", 32), ("2", 52), ("3", 16)):
+              level_total = sum(int(s["levels"][level]["total"]) for s in summaries)
+              level_correct = sum(int(s["levels"][level]["correct"]) for s in summaries)
+              if level_total != expected:
+                  raise SystemExit(f"level {level}: expected {expected}, got {level_total}")
+              levels[level] = {"correct": level_correct, "total": level_total, "accuracy": level_correct / level_total}
+
+          failure_labels = Counter()
+          failure_signals = Counter()
+          stop_reasons = Counter()
+          for s in summaries:
+              failure_labels.update(s.get("failure_labels") or {})
+              failure_signals.update(s.get("failure_signals") or {})
+              stop_reasons.update(s.get("stop_reasons") or {})
+
+          def combine_population(key):
+              n = sum(int(s[key]["total"]) for s in summaries)
+              c = sum(int(s[key]["correct"]) for s in summaries)
+              return {"correct": c, "total": n, "accuracy": c / n if n else 0.0}
+
+          tool_calls = sum(int(s["tool_calls"]) for s in summaries)
+          tool_successes = sum(int(s["tool_successes"]) for s in summaries)
+          payload = {
+              "schema_version": "gaia-9b-thinking-baseline/v1",
+              "benchmark": "GAIA 2023 validation / frozen Evaluation100",
+              "partition": "evaluation",
+              "dataset_revision": shards[0]["dataset_revision"],
+              "seed": shards[0]["seed"],
+              "model": shards[0]["model"],
+              "model_id": shards[0]["model_id"],
+              "thinking": True,
+              "commit_sha": shards[0]["commit_sha"],
+              "full_selection_sha256": shards[0]["full_selection_sha256"],
+              "execution_shards": shard_count,
+              "summary": {
+                  "name": "GAIA local evaluation",
+                  "correct": correct,
+                  "total": total,
+                  "accuracy": correct / total,
+                  "completed": completed,
+                  "completion_rate": completed / total,
+                  "tool_calls": tool_calls,
+                  "tool_successes": tool_successes,
+                  "tool_errors": sum(int(s["tool_errors"]) for s in summaries),
+                  "duplicate_calls_blocked": sum(int(s["duplicate_calls_blocked"]) for s in summaries),
+                  "tool_success_rate": tool_successes / tool_calls if tool_calls else 1.0,
+                  "average_steps": sum(float(s["average_steps"]) * int(s["total"]) for s in summaries) / total,
+                  "model_calls": sum(int(s["model_calls"]) for s in summaries),
+                  "mean_latency_ms": sum(float(s["mean_latency_ms"]) * int(s["total"]) for s in summaries) / total,
+                  "levels": levels,
+                  "supported": combine_population("supported"),
+                  "capability_gap": combine_population("capability_gap"),
+                  "failure_labels": dict(sorted(failure_labels.items())),
+                  "failure_signals": dict(sorted(failure_signals.items())),
+                  "stop_reasons": dict(sorted(stop_reasons.items())),
+              },
+          }
+          out = Path("runs/gaia-9b-thinking-baseline-summary.json")
+          out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+      - name: Upload final sanitized aggregate only
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaia-9b-thinking-baseline-summary-20way
+          path: runs/gaia-9b-thinking-baseline-summary.json
+          if-no-files-found: error
+          retention-days: 30
