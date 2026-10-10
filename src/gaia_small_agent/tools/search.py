@@ -28,9 +28,13 @@ class SearchTool(Tool):
             return ToolResult(False, "'query' must be a non-empty string", "BAD_ARGUMENTS")
         try:
             from ddgs import DDGS
-            from ddgs.exceptions import TimeoutException
         except ImportError:
             return ToolResult(False, "Install search support: pip install -e '.[search]'", "MISSING_DEPENDENCY")
+        try:
+            from ddgs.exceptions import TimeoutException
+        except ImportError:
+            class TimeoutException(Exception):
+                pass
 
         max_results = max(1, min(int(arguments.get("max_results", 5)), 10))
         errors: list[str] = []
