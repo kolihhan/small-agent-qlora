@@ -22,9 +22,20 @@ def load_verified_rows(path: str | Path, protected_questions_path: str | Path | 
             if not isinstance(provenance, dict) or any(not str(provenance.get(key) or "") for key in required_provenance):
                 raise ValueError(f"line {line_no}: incomplete trajectory provenance")
             verification = row.get("verification")
-            required_checks = ("completed", "final_answer_correct", "zero_tool_errors", "zero_duplicate_blocks", "required_tools_satisfied", "provenance_complete")
+            required_checks = ("completed", "final_answer_correct", "zero_duplicate_blocks", "required_tools_satisfied", "provenance_complete")
             if not isinstance(verification, dict) or any(verification.get(key) is not True for key in required_checks):
                 raise ValueError(f"line {line_no}: trajectory policy verification is incomplete")
+            zero_tool_errors = verification.get("zero_tool_errors") is True
+            expected_failures_only = verification.get("expected_tool_failures_only") is True
+            if not zero_tool_errors and not expected_failures_only:
+                raise ValueError(f"line {line_no}: trajectory policy verification is incomplete")
+            if expected_failures_only:
+                error_codes = verification.get("expected_tool_error_codes")
+                metrics = row.get("metrics")
+                if not isinstance(error_codes, list) or not error_codes:
+                    raise ValueError(f"line {line_no}: expected tool failures must declare error codes")
+                if not isinstance(metrics, dict) or int(metrics.get("tool_errors", 0)) <= 0:
+                    raise ValueError(f"line {line_no}: expected tool failures must record tool_errors")
             if "gaia" in str(row.get("source", "")).casefold():
                 raise ValueError(f"line {line_no}: GAIA trajectories are forbidden for training")
             messages = row.get("messages")
