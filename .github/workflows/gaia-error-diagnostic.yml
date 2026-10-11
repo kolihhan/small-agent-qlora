@@ -1,3 +1,4 @@
+# Triggered after clean Base v2 to localize tool errors before the next QLoRA experiment.
 name: GAIA 9B error diagnostic
 
 on:
