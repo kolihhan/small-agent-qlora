@@ -52,3 +52,23 @@ def test_completion_preserving_tokenization_rejects_empty_completion():
             [{"prompt": "ab", "completion": ""}],
             max_length=4,
         )
+
+
+def test_strict_full_context_mode_rejects_prompt_truncation():
+    with pytest.raises(ValueError, match="full prompt does not fit"):
+        _tokenize_completion_examples(
+            FakeTokenizer(),
+            [{"prompt": "abcdefgh", "completion": "XYZ"}],
+            max_length=6,
+            require_full_prompt=True,
+        )
+
+
+def test_strict_full_context_mode_keeps_an_example_that_fits():
+    rows = _tokenize_completion_examples(
+        FakeTokenizer(),
+        [{"prompt": "ab", "completion": "CD"}],
+        max_length=8,
+        require_full_prompt=True,
+    )
+    assert rows[0]["input_ids"] == [ord(ch) for ch in "abCD"]
