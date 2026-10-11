@@ -18,6 +18,17 @@ _V3A_CAPABILITIES = (
     "duplicate_avoidance",
 )
 
+_V3B_EXPOSURE_QUOTAS = {
+    "evidence_to_final": {"final": 12, "tool_call": 8},
+    "multi_step": {"tool_call": 8, "final": 4},
+    "failure_recovery": {"tool_call": 5, "final": 3},
+    "strategy_switch": {"tool_call": 4, "final": 2},
+    "argument_grounding": {"tool_call": 4, "final": 2},
+    "tool_selection": {"tool_call": 4, "final": 2},
+    "duplicate_avoidance": {"tool_call": 2, "final": 2},
+    "no_tool_stop": {"final": 2},
+}
+
 
 def load_verified_rows(path: str | Path, protected_questions_path: str | Path | None = None) -> list[dict]:
     from .protection import load_protected_question_hashes, question_hash
@@ -125,21 +136,14 @@ def _stable_exposure_key(seed: str, namespace: str, example_id: str) -> str:
     return hashlib.sha256(f"{seed}\0{namespace}\0{example_id}".encode("utf-8")).hexdigest()
 
 
-def _select_balanced_exposure_examples(
+def _select_exposure_by_quotas(
     examples: list[dict[str, Any]],
     *,
-    count: int = 64,
-    seed: str = "qlora-v3a-exposure",
+    quotas_by_capability: dict[str, dict[str, int]],
+    count: int,
+    seed: str,
+    profile_name: str,
 ) -> list[dict[str, Any]]:
-    """Select the frozen v3A 64-turn exposure set without reusing a source task.
-
-    The seven tool-using capabilities contribute five tool calls and three finals each.
-    ``no_tool_stop`` contributes eight finals. This yields 35 tool calls / 29 finals,
-    closely matching the full v2 turn corpus while guaranteeing all eight capabilities.
-    """
-    if count != 64:
-        raise ValueError("v3A balanced exposure count must be exactly 64")
-
     by_capability_action: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
         lambda: defaultdict(list)
     )
@@ -155,10 +159,13 @@ def _select_balanced_exposure_examples(
             raise ValueError("training example has incomplete trace metadata")
         by_capability_action[capability][action_type].append(example)
 
+    expected_count = sum(sum(actions.values()) for actions in quotas_by_capability.values())
+    if count != expected_count:
+        raise ValueError(f"{profile_name} exposure count must be exactly {expected_count}")
+
     selected: list[dict[str, Any]] = []
     selected_tasks: set[str] = set()
-    for capability in _V3A_CAPABILITIES:
-        quotas = {"final": 8} if capability == "no_tool_stop" else {"tool_call": 5, "final": 3}
+    for capability, quotas in quotas_by_capability.items():
         for action_type, quota in quotas.items():
             candidates = sorted(
                 by_capability_action[capability][action_type],
@@ -184,11 +191,52 @@ def _select_balanced_exposure_examples(
                 )
 
     if len(selected) != count:
-        raise RuntimeError(f"balanced exposure selected {len(selected)} examples, expected {count}")
+        raise RuntimeError(f"{profile_name} exposure selected {len(selected)} examples, expected {count}")
     selected.sort(
         key=lambda item: _stable_exposure_key(seed, "training-order", str(item["metadata"]["example_id"]))
     )
     return selected
+
+
+def _select_balanced_exposure_examples(
+    examples: list[dict[str, Any]],
+    *,
+    count: int = 64,
+    seed: str = "qlora-v3a-exposure",
+) -> list[dict[str, Any]]:
+    """Select the frozen v3A 64-turn exposure set without reusing a source task."""
+    quotas = {
+        capability: ({"final": 8} if capability == "no_tool_stop" else {"tool_call": 5, "final": 3})
+        for capability in _V3A_CAPABILITIES
+    }
+    return _select_exposure_by_quotas(
+        examples,
+        quotas_by_capability=quotas,
+        count=count,
+        seed=seed,
+        profile_name="v3A balanced",
+    )
+
+
+def _select_diagnostic_exposure_examples(
+    examples: list[dict[str, Any]],
+    *,
+    count: int = 64,
+    seed: str = "qlora-v3b-exposure",
+) -> list[dict[str, Any]]:
+    """Select the Diagnostic25-driven v3B exposure mix.
+
+    Incorrect-after-tools dominated learnable diagnostic failures, so half of the
+    exposure is evidence-to-final plus multi-step decisions. Recovery remains present
+    but is not allowed to dominate tool/environment failures that QLoRA cannot fix.
+    """
+    return _select_exposure_by_quotas(
+        examples,
+        quotas_by_capability=_V3B_EXPOSURE_QUOTAS,
+        count=count,
+        seed=seed,
+        profile_name="v3B diagnostic",
+    )
 
 
 def _build_training_exposure_report(
@@ -221,16 +269,14 @@ def _build_training_exposure_report(
     }
 
 
-def _tokenize_completion_examples(processor, examples: list[dict[str, Any]], max_length: int) -> list[dict[str, list[int]]]:
-    """Keep every supervised completion while left-trimming only old prompt context.
-
-    TRL's normal right truncation can remove the whole completion when the native tool
-    schema makes the prompt longer than ``max_length``. Here we tokenize explicitly,
-    reserve space for the complete next assistant action, and fill the remaining budget
-    with the most recent prompt tokens. Labels mask all prompt tokens, so the objective
-    remains completion-only. Trace metadata is intentionally discarded here and never
-    enters the model input.
-    """
+def _tokenize_completion_examples(
+    processor,
+    examples: list[dict[str, Any]],
+    max_length: int,
+    *,
+    require_full_prompt: bool = False,
+) -> list[dict[str, list[int]]]:
+    """Tokenize next-action supervision while optionally failing closed on truncation."""
     if max_length <= 0:
         raise ValueError("max_length must be positive")
     tokenized: list[dict[str, list[int]]] = []
@@ -242,6 +288,11 @@ def _tokenize_completion_examples(processor, examples: list[dict[str, Any]], max
         if len(completion_ids) > max_length:
             raise ValueError(
                 f"example {index}: completion exceeds max_length ({len(completion_ids)} > {max_length})"
+            )
+        if require_full_prompt and len(prompt_ids) + len(completion_ids) > max_length:
+            raise ValueError(
+                f"example {index}: full prompt does not fit max_length "
+                f"({len(prompt_ids)} + {len(completion_ids)} > {max_length})"
             )
         prompt_budget = max_length - len(completion_ids)
         kept_prompt = prompt_ids[-prompt_budget:] if prompt_budget else []
@@ -304,6 +355,8 @@ def train_qlora(
     lora_target_modules: str | list[str] = "all-linear",
     exposure_count: int | None = None,
     exposure_seed: str = "qlora-v3a-exposure",
+    exposure_profile: str = "v3a-balanced",
+    require_full_prompt: bool = False,
 ) -> None:
     rows = load_verified_rows(data_path, protected_questions_path=protected_questions_path)
     try:
@@ -358,7 +411,13 @@ def train_qlora(
     examples = all_examples
     exposure_report = None
     if exposure_count is not None:
-        examples = _select_balanced_exposure_examples(
+        if exposure_profile == "v3a-balanced":
+            selector = _select_balanced_exposure_examples
+        elif exposure_profile == "v3b-diagnostic":
+            selector = _select_diagnostic_exposure_examples
+        else:
+            raise ValueError(f"unknown exposure_profile: {exposure_profile}")
+        examples = selector(
             all_examples,
             count=exposure_count,
             seed=exposure_seed,
@@ -369,11 +428,17 @@ def train_qlora(
             source_example_count=len(all_examples),
         )
 
-    tokenized_examples = _tokenize_completion_examples(tokenizer, examples, max_length=max_length)
+    tokenized_examples = _tokenize_completion_examples(
+        tokenizer,
+        examples,
+        max_length=max_length,
+        require_full_prompt=require_full_prompt,
+    )
     dataset = Dataset.from_list(tokenized_examples)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     if exposure_report is not None:
+        exposure_report["profile"] = exposure_profile
         (output_dir / "training-exposure.json").write_text(
             json.dumps(exposure_report, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -400,9 +465,15 @@ def train_qlora(
         "training_examples": len(tokenized_examples),
         "exposure_count": exposure_count,
         "exposure_seed": exposure_seed if exposure_count is not None else None,
+        "exposure_profile": exposure_profile if exposure_count is not None else None,
         "exposure_selection_sha256": exposure_report["selection_sha256"] if exposure_report else None,
         "policy": "turn-level state -> next assistant action; completion-only loss",
-        "truncation_policy": "preserve full completion; left-trim oldest prompt tokens",
+        "truncation_policy": (
+            "require full prompt and completion; fail closed on overflow"
+            if require_full_prompt
+            else "preserve full completion; left-trim oldest prompt tokens"
+        ),
+        "require_full_prompt": require_full_prompt,
         "min_retained_prompt_tokens": min(prompt_tokens_retained),
         "max_retained_prompt_tokens": max(prompt_tokens_retained),
         "min_completion_tokens": min(completion_tokens),
