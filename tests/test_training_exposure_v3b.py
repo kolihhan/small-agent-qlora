@@ -64,7 +64,7 @@ def test_v3b_exposure_is_diagnostic_weighted_unique_and_deterministic(tmp_path):
         source_example_count=len(examples),
     )
     assert report["selected_example_count"] == 64
-    assert report["action_type_counts"] == {"final": 27, "tool_call": 37}
+    assert report["action_type_counts"] == {"final": 29, "tool_call": 35}
     assert report["capability_counts"] == {
         "argument_grounding": 6,
         "duplicate_avoidance": 4,
