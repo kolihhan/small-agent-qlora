@@ -1,0 +1,73 @@
+{
+  "schema_version": "matched-gaia-9b-qlora-v2/final-summary-v1",
+  "benchmark": "GAIA 2023 validation / frozen Evaluation100",
+  "hard_gates": {
+    "base_unique_tasks": 100,
+    "qlora_unique_tasks": 100,
+    "task_id_sets_equal": true,
+    "level_mix": {"1": 32, "2": 52, "3": 16},
+    "invalid_in_final_ledger": 0,
+    "full_selection_sha256": "22ce65f410d45e2e84af5a0ad1eafeadb311b08bb1234c968a114174c29bb373"
+  },
+  "protocol": {
+    "frozen_evaluator_commit": "9840da3067eafe203b34869e679ed9b7b2f4158c",
+    "dataset_revision": "682dd723ee1e1697e00360edccf2366dc8418dd9",
+    "protocol_seed": "gaia-local-v2",
+    "base_gguf_sha256": "8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54",
+    "adapter_sha256": "8eab99e9cad4c73eb044c84a0cbb015d2835ace3e4f0159544dec23a6ef2cc4c",
+    "reasoning_budget": 0,
+    "context_tokens": 4096,
+    "max_new_tokens": 512,
+    "agent_max_steps": 12,
+    "adapter_training": {
+      "model": "Qwen/Qwen3.5-9B",
+      "training_examples": 3600,
+      "optimizer_steps": 12,
+      "gradient_accumulation_steps": 1,
+      "observed_epoch_fraction": 0.0033333333333333335
+    }
+  },
+  "base": {
+    "correct": 12,
+    "total": 100,
+    "accuracy": 0.12,
+    "completed": 31,
+    "completion_rate": 0.31,
+    "tool_errors": 355,
+    "tool_success_rate": 0.5183175033921302,
+    "duplicate_calls_blocked": 105,
+    "average_steps": 7.74,
+    "levels_correct": {"1": 6, "2": 6, "3": 0}
+  },
+  "qlora": {
+    "correct": 8,
+    "total": 100,
+    "accuracy": 0.08,
+    "completed": 12,
+    "completion_rate": 0.12,
+    "tool_errors": 467,
+    "tool_success_rate": 0.4544392523364486,
+    "duplicate_calls_blocked": 223,
+    "average_steps": 8.83,
+    "levels_correct": {"1": 3, "2": 5, "3": 0}
+  },
+  "paired": {
+    "both_correct": 7,
+    "both_wrong": 87,
+    "base_wrong_to_qlora_correct": 1,
+    "base_correct_to_qlora_wrong": 5,
+    "changed_model_answer_count": 24,
+    "mcnemar_exact_two_sided_p": 0.21875
+  },
+  "delta": {
+    "correct_absolute": -4,
+    "accuracy_pp": -4.0,
+    "completion_rate_pp": -19.0,
+    "tool_errors": 112,
+    "tool_success_rate_pp": -6.3878251055681625,
+    "duplicate_calls_blocked": 118
+  },
+  "verdict": "reject_current_adapter_for_promotion",
+  "evidence_run_id": 38106018279,
+  "evidence_artifact_id": 11689412227
+}
