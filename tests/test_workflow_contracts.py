@@ -4,6 +4,7 @@ from pathlib import Path
 WORKFLOW = Path(".github/workflows/gaia-shadow-gate.yml")
 TRIGGER = Path(".github/GAIA_SHADOW_TRIGGER")
 CPU_QLORA_WORKFLOW = Path(".github/workflows/qlora-cpu-batch.yml")
+CPU_V3A_WORKFLOW = Path(".github/workflows/qlora-cpu-v3a.yml")
 GAIA_9B_THINKING_WORKFLOW = Path(".github/workflows/gaia-9b-thinking20.yml")
 V3A_TRAIN_WORKFLOW = Path(".github/workflows/hf-zero-gpu-train-v3a.yml")
 GAIA_SHARD_RUNNER = Path("scripts/run_gaia_eval_shard.py")
@@ -71,6 +72,26 @@ def test_cpu_qlora_batch_avoids_regressed_kernel_loader():
     text = CPU_QLORA_WORKFLOW.read_text(encoding="utf-8")
 
     assert 'python -m pip install "kernels>=0.11.1"' not in text
+
+
+def test_cpu_v3a_keeps_same_9b_experiment_and_runs_smoke_before_full_train():
+    text = CPU_V3A_WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'HF_MODEL: "Qwen/Qwen3.5-9B"' in text
+    assert 'TRAIN_STEPS: "64"' in text
+    assert 'EXPOSURE_COUNT: "64"' in text
+    assert 'EXPOSURE_SEED: "qlora-v3a-exposure"' in text
+    assert 'GRAD_ACC: "1"' in text
+    assert 'MAX_LENGTH: "512"' in text
+    assert "generate_oracle_policy_v2_dataset" in text
+    assert "CPU feasibility smoke: one optimizer step" in text
+    assert "max_steps=1" in text
+    assert "Full CPU v3A train" in text
+    assert "max_steps=int(os.environ['TRAIN_STEPS'])" in text
+    assert "exposure_count=int(os.environ['EXPOSURE_COUNT'])" in text
+    assert "exposure_seed=os.environ['EXPOSURE_SEED']" in text
+    assert "training-exposure.json" in text
+    assert "qwen35-9b-qlora-v3a-cpu" in text
 
 
 def test_gaia_shard_runner_live_preflights_tools():
