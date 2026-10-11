@@ -1,4 +1,5 @@
 name: Convert Qwen3.5 9B QLoRA v3B adapter
+# Trigger after initial workflow creation so GitHub sees the workflow on the push event.
 
 on:
   workflow_dispatch:
