@@ -5,6 +5,7 @@ WORKFLOW = Path(".github/workflows/gaia-shadow-gate.yml")
 TRIGGER = Path(".github/GAIA_SHADOW_TRIGGER")
 CPU_QLORA_WORKFLOW = Path(".github/workflows/qlora-cpu-batch.yml")
 GAIA_9B_THINKING_WORKFLOW = Path(".github/workflows/gaia-9b-thinking20.yml")
+V3A_TRAIN_WORKFLOW = Path(".github/workflows/hf-zero-gpu-train-v3a.yml")
 GAIA_SHARD_RUNNER = Path("scripts/run_gaia_eval_shard.py")
 
 
@@ -96,3 +97,21 @@ def test_gaia_9b_thinking_baseline_is_isolated_and_matched():
     assert "expected Evaluation100 total 100" in workflow
     assert "name: gaia-9b-thinking-baseline-summary-20way" in workflow
     assert "results.jsonl" not in workflow[workflow.index("Upload final sanitized aggregate only"):]
+
+
+def test_v3a_training_workflow_locks_balanced_exposure_and_artifact_trace():
+    text = V3A_TRAIN_WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'TRAIN_STEPS: "64"' in text
+    assert 'EXPOSURE_COUNT: "64"' in text
+    assert 'GRAD_ACC: "1"' in text
+    assert 'EXPOSURE_SEED: "qlora-v3a-exposure"' in text
+    assert "exposure_count=int(os.environ['EXPOSURE_COUNT'])" in text
+    assert "exposure_seed=os.environ['EXPOSURE_SEED']" in text
+    assert "training-exposure.json" in text
+    assert "source_training_examples" in text
+    assert "selection_sha256" in text
+    assert "selected_example_count" in text
+    assert "action_type_counts" in text
+    assert "capability_counts" in text
+    assert "35" in text and "29" in text
