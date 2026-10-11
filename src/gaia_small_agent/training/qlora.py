@@ -1,8 +1,22 @@
 from __future__ import annotations
 
+from collections import Counter, defaultdict
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
+
+
+_V3A_CAPABILITIES = (
+    "tool_selection",
+    "argument_grounding",
+    "multi_step",
+    "evidence_to_final",
+    "no_tool_stop",
+    "failure_recovery",
+    "strategy_switch",
+    "duplicate_avoidance",
+)
 
 
 def load_verified_rows(path: str | Path, protected_questions_path: str | Path | None = None) -> list[dict]:
@@ -54,12 +68,14 @@ def load_verified_rows(path: str | Path, protected_questions_path: str | Path | 
     return rows
 
 
-def _render_turn_examples(processor, rows: list[dict]) -> list[dict[str, str]]:
-    """Turn verified trajectories into prompt/completion rows."""
-    examples: list[dict[str, str]] = []
-    for row in rows:
+def _render_turn_examples(processor, rows: list[dict]) -> list[dict[str, Any]]:
+    """Turn verified trajectories into prompt/completion rows plus non-tokenized trace metadata."""
+    examples: list[dict[str, Any]] = []
+    for row_index, row in enumerate(rows, 1):
         messages = row["messages"]
         tools = row.get("tools") or []
+        task_id = str(row.get("task_id") or f"row-{row_index}")
+        capability = str(row.get("capability") or "unspecified")
         for index, message in enumerate(messages):
             if not isinstance(message, dict) or message.get("role") != "assistant":
                 continue
@@ -86,20 +102,134 @@ def _render_turn_examples(processor, rows: list[dict]) -> list[dict[str, str]]:
                 )
             completion = full[len(prompt):]
             if completion.strip():
-                examples.append({"prompt": prompt, "completion": completion})
+                action_type = "tool_call" if message.get("tool_calls") else "final"
+                examples.append(
+                    {
+                        "prompt": prompt,
+                        "completion": completion,
+                        "metadata": {
+                            "example_id": f"{task_id}:{index}",
+                            "task_id": task_id,
+                            "capability": capability,
+                            "action_type": action_type,
+                            "assistant_message_index": index,
+                        },
+                    }
+                )
     if not examples:
         raise ValueError("No assistant turns available after turnification")
     return examples
 
 
-def _tokenize_completion_examples(processor, examples: list[dict[str, str]], max_length: int) -> list[dict[str, list[int]]]:
+def _stable_exposure_key(seed: str, namespace: str, example_id: str) -> str:
+    return hashlib.sha256(f"{seed}\0{namespace}\0{example_id}".encode("utf-8")).hexdigest()
+
+
+def _select_balanced_exposure_examples(
+    examples: list[dict[str, Any]],
+    *,
+    count: int = 64,
+    seed: str = "qlora-v3a-exposure",
+) -> list[dict[str, Any]]:
+    """Select the frozen v3A 64-turn exposure set without reusing a source task.
+
+    The seven tool-using capabilities contribute five tool calls and three finals each.
+    ``no_tool_stop`` contributes eight finals. This yields 35 tool calls / 29 finals,
+    closely matching the full v2 turn corpus while guaranteeing all eight capabilities.
+    """
+    if count != 64:
+        raise ValueError("v3A balanced exposure count must be exactly 64")
+
+    by_capability_action: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for example in examples:
+        metadata = example.get("metadata")
+        if not isinstance(metadata, dict):
+            raise ValueError("training example is missing trace metadata")
+        capability = str(metadata.get("capability") or "")
+        action_type = str(metadata.get("action_type") or "")
+        example_id = str(metadata.get("example_id") or "")
+        task_id = str(metadata.get("task_id") or "")
+        if not capability or action_type not in {"tool_call", "final"} or not example_id or not task_id:
+            raise ValueError("training example has incomplete trace metadata")
+        by_capability_action[capability][action_type].append(example)
+
+    selected: list[dict[str, Any]] = []
+    selected_tasks: set[str] = set()
+    for capability in _V3A_CAPABILITIES:
+        quotas = {"final": 8} if capability == "no_tool_stop" else {"tool_call": 5, "final": 3}
+        for action_type, quota in quotas.items():
+            candidates = sorted(
+                by_capability_action[capability][action_type],
+                key=lambda item: _stable_exposure_key(
+                    seed,
+                    f"{capability}:{action_type}",
+                    str(item["metadata"]["example_id"]),
+                ),
+            )
+            chosen = 0
+            for item in candidates:
+                task_id = str(item["metadata"]["task_id"])
+                if task_id in selected_tasks:
+                    continue
+                selected.append(item)
+                selected_tasks.add(task_id)
+                chosen += 1
+                if chosen == quota:
+                    break
+            if chosen != quota:
+                raise ValueError(
+                    f"not enough unique {capability}/{action_type} examples for quota {quota}: found {chosen}"
+                )
+
+    if len(selected) != count:
+        raise RuntimeError(f"balanced exposure selected {len(selected)} examples, expected {count}")
+    selected.sort(
+        key=lambda item: _stable_exposure_key(seed, "training-order", str(item["metadata"]["example_id"]))
+    )
+    return selected
+
+
+def _build_training_exposure_report(
+    selected: list[dict[str, Any]],
+    *,
+    seed: str,
+    source_example_count: int,
+) -> dict[str, Any]:
+    metadata = [dict(item["metadata"]) for item in selected]
+    example_ids = [str(item["example_id"]) for item in metadata]
+    selection_bytes = json.dumps(example_ids, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    capability_counts = Counter(str(item["capability"]) for item in metadata)
+    action_type_counts = Counter(str(item["action_type"]) for item in metadata)
+    capability_action_counts: dict[str, Counter] = defaultdict(Counter)
+    for item in metadata:
+        capability_action_counts[str(item["capability"])][str(item["action_type"])] += 1
+    return {
+        "schema_version": "small-agent-training-exposure/v1",
+        "seed": seed,
+        "source_example_count": int(source_example_count),
+        "selected_example_count": len(selected),
+        "selection_sha256": hashlib.sha256(selection_bytes).hexdigest(),
+        "capability_counts": dict(sorted(capability_counts.items())),
+        "action_type_counts": dict(sorted(action_type_counts.items())),
+        "capability_action_counts": {
+            capability: dict(sorted(counts.items()))
+            for capability, counts in sorted(capability_action_counts.items())
+        },
+        "examples": metadata,
+    }
+
+
+def _tokenize_completion_examples(processor, examples: list[dict[str, Any]], max_length: int) -> list[dict[str, list[int]]]:
     """Keep every supervised completion while left-trimming only old prompt context.
 
     TRL's normal right truncation can remove the whole completion when the native tool
     schema makes the prompt longer than ``max_length``. Here we tokenize explicitly,
     reserve space for the complete next assistant action, and fill the remaining budget
     with the most recent prompt tokens. Labels mask all prompt tokens, so the objective
-    remains completion-only.
+    remains completion-only. Trace metadata is intentionally discarded here and never
+    enters the model input.
     """
     if max_length <= 0:
         raise ValueError("max_length must be positive")
@@ -172,6 +302,8 @@ def train_qlora(
     gradient_accumulation_steps: int = 8,
     resume_from_checkpoint: str | Path | None = None,
     lora_target_modules: str | list[str] = "all-linear",
+    exposure_count: int | None = None,
+    exposure_seed: str = "qlora-v3a-exposure",
 ) -> None:
     rows = load_verified_rows(data_path, protected_questions_path=protected_questions_path)
     try:
@@ -222,11 +354,30 @@ def train_qlora(
         if param.requires_grad and "lora_" not in name:
             raise RuntimeError(f"Unexpected trainable non-LoRA parameter: {name}")
 
-    examples = _render_turn_examples(tokenizer, rows)
+    all_examples = _render_turn_examples(tokenizer, rows)
+    examples = all_examples
+    exposure_report = None
+    if exposure_count is not None:
+        examples = _select_balanced_exposure_examples(
+            all_examples,
+            count=exposure_count,
+            seed=exposure_seed,
+        )
+        exposure_report = _build_training_exposure_report(
+            examples,
+            seed=exposure_seed,
+            source_example_count=len(all_examples),
+        )
+
     tokenized_examples = _tokenize_completion_examples(tokenizer, examples, max_length=max_length)
     dataset = Dataset.from_list(tokenized_examples)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if exposure_report is not None:
+        (output_dir / "training-exposure.json").write_text(
+            json.dumps(exposure_report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     resume_path = Path(resume_from_checkpoint).resolve() if resume_from_checkpoint else None
     prompt_tokens_retained = [sum(1 for label in item["labels"] if label == -100) for item in tokenized_examples]
     completion_tokens = [sum(1 for label in item["labels"] if label != -100) for item in tokenized_examples]
@@ -245,7 +396,11 @@ def train_qlora(
         "save_steps": save_steps,
         "gradient_accumulation_steps": gradient_accumulation_steps,
         "resume_from_checkpoint": str(resume_path) if resume_path else None,
+        "source_training_examples": len(all_examples),
         "training_examples": len(tokenized_examples),
+        "exposure_count": exposure_count,
+        "exposure_seed": exposure_seed if exposure_count is not None else None,
+        "exposure_selection_sha256": exposure_report["selection_sha256"] if exposure_report else None,
         "policy": "turn-level state -> next assistant action; completion-only loss",
         "truncation_policy": "preserve full completion; left-trim oldest prompt tokens",
         "min_retained_prompt_tokens": min(prompt_tokens_retained),
