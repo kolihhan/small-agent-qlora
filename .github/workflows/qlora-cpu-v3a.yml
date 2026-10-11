@@ -20,6 +20,7 @@ env:
   HF_HUB_DISABLE_TELEMETRY: "1"
   TOKENIZERS_PARALLELISM: "false"
   MALLOC_ARENA_MAX: "2"
+  OMP_NUM_THREADS: "4"
 
 jobs:
   train:
