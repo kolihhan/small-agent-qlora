@@ -1,0 +1,242 @@
+name: CPU Qwen3.5 9B QLoRA v3A
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/qlora-cpu-v3a.yml"
+
+permissions:
+  contents: read
+
+env:
+  HF_MODEL: "Qwen/Qwen3.5-9B"
+  TRAIN_STEPS: "64"
+  EXPOSURE_COUNT: "64"
+  EXPOSURE_SEED: "qlora-v3a-exposure"
+  GRAD_ACC: "1"
+  MAX_LENGTH: "512"
+  POLICY_SEED: "small-agent-policy-v2"
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  TOKENIZERS_PARALLELISM: "false"
+  MALLOC_ARENA_MAX: "2"
+
+jobs:
+  train:
+    name: CPU 9B v3A train
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install CPU training stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+          python -m pip install -e ".[train,files]"
+
+      - name: Verify CPU-only runtime and memory
+        shell: bash
+        run: |
+          set -euo pipefail
+          free -h
+          df -h .
+          python - <<'PY'
+          import json, os, platform, torch
+          payload = {
+              'torch': torch.__version__,
+              'cuda_available': torch.cuda.is_available(),
+              'cpu_count': os.cpu_count(),
+              'threads': torch.get_num_threads(),
+              'platform': platform.platform(),
+          }
+          print(json.dumps(payload, indent=2))
+          if torch.cuda.is_available():
+              raise SystemExit('This workflow is intentionally CPU-only')
+          PY
+
+      - name: Generate frozen v2 curriculum and validate exposure
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runs/cpu-v3a
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from transformers import AutoTokenizer
+          from gaia_small_agent.training.oracle_policy_v2 import generate_oracle_policy_v2_dataset
+          from gaia_small_agent.training.qlora import (
+              _build_training_exposure_report,
+              _render_turn_examples,
+              _select_balanced_exposure_examples,
+              load_verified_rows,
+          )
+
+          root = Path('runs/cpu-v3a')
+          paths = generate_oracle_policy_v2_dataset(root / 'oracle', seed=os.environ['POLICY_SEED'])
+          protected = root / 'empty-protected.json'
+          protected.write_text(json.dumps({'algorithm':'sha256-normalized-question-v1','hashes':[]})+'\n', encoding='utf-8')
+
+          rows = load_verified_rows(paths['train'], protected_questions_path=protected)
+          tokenizer = AutoTokenizer.from_pretrained(os.environ['HF_MODEL'], trust_remote_code=True)
+          all_examples = _render_turn_examples(tokenizer, rows)
+          selected = _select_balanced_exposure_examples(
+              all_examples,
+              count=int(os.environ['EXPOSURE_COUNT']),
+              seed=os.environ['EXPOSURE_SEED'],
+          )
+          report = _build_training_exposure_report(
+              selected,
+              seed=os.environ['EXPOSURE_SEED'],
+              source_example_count=len(all_examples),
+          )
+          assert report['selected_example_count'] == 64, report
+          assert report['action_type_counts'] == {'final': 29, 'tool_call': 35}, report
+          assert set(report['capability_counts'].values()) == {8}, report
+          assert len({x['task_id'] for x in report['examples']}) == 64, report
+          (root / 'preflight-exposure.json').write_text(json.dumps(report, indent=2, sort_keys=True)+'\n', encoding='utf-8')
+          print(json.dumps({
+              'rows': len(rows),
+              'source_training_examples': len(all_examples),
+              'selected_example_count': report['selected_example_count'],
+              'selection_sha256': report['selection_sha256'],
+              'action_type_counts': report['action_type_counts'],
+              'capability_counts': report['capability_counts'],
+          }, indent=2, sort_keys=True))
+          PY
+
+      - name: CPU feasibility smoke: one optimizer step
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, time
+          from pathlib import Path
+          from gaia_small_agent.training.qlora import train_qlora
+
+          root = Path('runs/cpu-v3a')
+          start = time.time()
+          train_qlora(
+              data_path=root/'oracle'/'train.jsonl',
+              output_dir=root/'adapter',
+              model_name=os.environ['HF_MODEL'],
+              max_length=int(os.environ['MAX_LENGTH']),
+              learning_rate=1e-4,
+              lora_r=16,
+              lora_alpha=32,
+              lora_dropout=0.05,
+              protected_questions_path=root/'empty-protected.json',
+              max_steps=1,
+              save_steps=1,
+              gradient_accumulation_steps=int(os.environ['GRAD_ACC']),
+              lora_target_modules='all-linear',
+              exposure_count=int(os.environ['EXPOSURE_COUNT']),
+              exposure_seed=os.environ['EXPOSURE_SEED'],
+          )
+          print({'cpu_smoke_seconds': time.time() - start})
+          checkpoint = root/'adapter'/'checkpoint-1'
+          if not checkpoint.is_dir():
+              raise SystemExit('CPU smoke completed without checkpoint-1')
+          PY
+
+      - name: Full CPU v3A train
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import gc, json, os, time
+          from pathlib import Path
+          from gaia_small_agent.training.qlora import train_qlora
+
+          root = Path('runs/cpu-v3a')
+          out = root/'adapter'
+          checkpoint = out/'checkpoint-1'
+          gc.collect()
+          start = time.time()
+          train_qlora(
+              data_path=root/'oracle'/'train.jsonl',
+              output_dir=out,
+              model_name=os.environ['HF_MODEL'],
+              max_length=int(os.environ['MAX_LENGTH']),
+              learning_rate=1e-4,
+              lora_r=16,
+              lora_alpha=32,
+              lora_dropout=0.05,
+              protected_questions_path=root/'empty-protected.json',
+              max_steps=int(os.environ['TRAIN_STEPS']),
+              save_steps=int(os.environ['TRAIN_STEPS']),
+              gradient_accumulation_steps=int(os.environ['GRAD_ACC']),
+              resume_from_checkpoint=checkpoint,
+              lora_target_modules='all-linear',
+              exposure_count=int(os.environ['EXPOSURE_COUNT']),
+              exposure_seed=os.environ['EXPOSURE_SEED'],
+          )
+          elapsed = time.time() - start
+          cfg = json.loads((out/'run_config.json').read_text(encoding='utf-8'))
+          exposure = json.loads((out/'training-exposure.json').read_text(encoding='utf-8'))
+          meta = {
+              'ok': True,
+              'backend': 'cpu',
+              'model': os.environ['HF_MODEL'],
+              'max_steps': int(os.environ['TRAIN_STEPS']),
+              'gradient_accumulation_steps': int(os.environ['GRAD_ACC']),
+              'elapsed_seconds_after_smoke': elapsed,
+              'training_examples': cfg.get('training_examples'),
+              'source_training_examples': cfg.get('source_training_examples'),
+              'selection_sha256': exposure.get('selection_sha256'),
+          }
+          (root/'training-meta.json').write_text(json.dumps(meta, indent=2, sort_keys=True)+'\n', encoding='utf-8')
+          print(json.dumps(meta, indent=2, sort_keys=True))
+          PY
+
+      - name: Verify final CPU adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s runs/cpu-v3a/adapter/adapter_config.json
+          test -s runs/cpu-v3a/adapter/adapter_model.safetensors
+          test -s runs/cpu-v3a/adapter/run_config.json
+          test -s runs/cpu-v3a/adapter/training-exposure.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('runs/cpu-v3a/adapter')
+          cfg=json.loads((root/'run_config.json').read_text())
+          exp=json.loads((root/'training-exposure.json').read_text())
+          assert cfg['model']=='Qwen/Qwen3.5-9B', cfg
+          assert cfg['max_steps']==64, cfg
+          assert cfg['training_examples']==64, cfg
+          assert cfg['exposure_count']==64, cfg
+          assert exp['selected_example_count']==64, exp
+          assert exp['action_type_counts']=={'final':29,'tool_call':35}, exp
+          print(json.dumps({'run_config':cfg,'selection_sha256':exp['selection_sha256']}, indent=2, sort_keys=True))
+          PY
+          cp runs/cpu-v3a/adapter/run_config.json runs/cpu-v3a/run_config.json
+          cp runs/cpu-v3a/adapter/training-exposure.json runs/cpu-v3a/training-exposure.json
+          python - <<'PY'
+          import shutil
+          shutil.make_archive('runs/cpu-v3a/qwen35-9b-qlora-v3a-cpu', 'zip', 'runs/cpu-v3a/adapter')
+          PY
+
+      - name: Upload CPU v3A adapter and evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen35-9b-qlora-v3a-cpu
+          path: |
+            runs/cpu-v3a/qwen35-9b-qlora-v3a-cpu.zip
+            runs/cpu-v3a/training-meta.json
+            runs/cpu-v3a/run_config.json
+            runs/cpu-v3a/training-exposure.json
+            runs/cpu-v3a/preflight-exposure.json
+          if-no-files-found: warn
+          retention-days: 30
