@@ -1,0 +1,120 @@
+name: Audit QLoRA v3B token lengths
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/qlora-v3b-token-length-audit.yml"
+      - "src/gaia_small_agent/training/oracle_policy_v3.py"
+      - "src/gaia_small_agent/training/qlora.py"
+      - "tests/test_training_exposure_v3b.py"
+
+permissions:
+  contents: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install tokenizer dependencies
+        run: python -m pip install -e ".[dev,files]" "transformers>=5.15,<6"
+      - name: Measure frozen v3B exposure lengths
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import tempfile
+          from collections import Counter
+          from pathlib import Path
+
+          from transformers import AutoTokenizer
+          from gaia_small_agent.training.oracle_policy_v3 import generate_oracle_policy_v3_dataset
+          from gaia_small_agent.training.qlora import (
+              _render_turn_examples,
+              _select_diagnostic_exposure_examples,
+              _tokenize_completion_examples,
+              load_verified_rows,
+          )
+
+          model = "Qwen/Qwen3.5-9B"
+          tokenizer = AutoTokenizer.from_pretrained(
+              model,
+              token=os.environ.get("HF_TOKEN") or None,
+              trust_remote_code=True,
+          )
+          with tempfile.TemporaryDirectory() as td:
+              paths = generate_oracle_policy_v3_dataset(Path(td) / "oracle", seed="small-agent-policy-v3")
+              rows = load_verified_rows(paths["train"])
+              examples = _render_turn_examples(tokenizer, rows)
+              selected = _select_diagnostic_exposure_examples(
+                  examples,
+                  count=64,
+                  seed="qlora-v3b-exposure",
+              )
+
+          lengths = []
+          for item in selected:
+              prompt = len(tokenizer(item["prompt"], add_special_tokens=False)["input_ids"])
+              completion = len(tokenizer(item["completion"], add_special_tokens=False)["input_ids"])
+              lengths.append((prompt, completion, prompt + completion))
+
+          limits = (512, 768, 1024, 1280, 1536, 2048)
+          capability_counts = Counter(item["metadata"]["capability"] for item in selected)
+          action_counts = Counter(item["metadata"]["action_type"] for item in selected)
+          max_total = max(total for _, _, total in lengths)
+          _tokenize_completion_examples(
+              tokenizer,
+              selected,
+              max_length=max_total,
+              require_full_prompt=True,
+          )
+          report = {
+              "schema_version": "small-agent-v3b-token-audit/v1",
+              "model": model,
+              "selected_examples": len(selected),
+              "capability_counts": dict(sorted(capability_counts.items())),
+              "action_type_counts": dict(sorted(action_counts.items())),
+              "prompt_tokens": {
+                  "min": min(prompt for prompt, _, _ in lengths),
+                  "max": max(prompt for prompt, _, _ in lengths),
+              },
+              "completion_tokens": {
+                  "min": min(completion for _, completion, _ in lengths),
+                  "max": max(completion for _, completion, _ in lengths),
+              },
+              "total_tokens": {
+                  "min": min(total for _, _, total in lengths),
+                  "max": max_total,
+              },
+              "minimum_safe_context": max_total,
+              "full_context_fit_count": {
+                  str(limit): sum(1 for _, _, total in lengths if total <= limit)
+                  for limit in limits
+              },
+              "full_context_fit_fraction": {
+                  str(limit): sum(1 for _, _, total in lengths if total <= limit) / len(lengths)
+                  for limit in limits
+              },
+          }
+          print(json.dumps(report, indent=2, sort_keys=True))
+          Path("qlora-v3b-token-length-audit.json").write_text(
+              json.dumps(report, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qlora-v3b-token-length-audit
+          path: qlora-v3b-token-length-audit.json
+          if-no-files-found: error
