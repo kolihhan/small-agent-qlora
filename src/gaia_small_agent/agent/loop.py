@@ -20,7 +20,6 @@ When you have enough evidence, return the final answer concisely.
 Do not reveal hidden chain-of-thought; tool calls and short factual status are sufficient.
 """
 MAX_TOOL_OBSERVATION_CHARS = 2000
-_TOOL_OBSERVATION_TRUNCATION = "\n...[truncated from {count} characters; request a narrower result or use another tool call to inspect only what is needed]"
 _RETRYABLE_TOOL_ERRORS = frozenset({
     "SEARCH_TIMEOUT",
     "SEARCH_ERROR",
@@ -30,13 +29,6 @@ _RETRYABLE_TOOL_ERRORS = frozenset({
     "TIMEOUT",
     "TOOL_EXCEPTION",
 })
-
-
-def _bound_tool_observation(observation: str) -> str:
-    if len(observation) <= MAX_TOOL_OBSERVATION_CHARS:
-        return observation
-    marker = _TOOL_OBSERVATION_TRUNCATION.format(count=len(observation))
-    return observation[: MAX_TOOL_OBSERVATION_CHARS - len(marker)] + marker
 
 
 def _looks_like_textual_tool_call(content: str) -> bool:
@@ -145,13 +137,13 @@ class AgentRuntime:
                                 metrics.tool_errors += 1
                     seen[key] = result
 
-                obs = _bound_tool_observation(result.observation())
+                obs, delivered_metadata = result.bounded_observation(MAX_TOOL_OBSERVATION_CHARS)
                 trace.append(TraceEvent("tool_result", step, {
                     "id": call.id,
                     "name": call.name,
                     "ok": result.ok,
                     "error_code": result.error_code,
-                    "metadata": result.metadata,
+                    "metadata": delivered_metadata,
                     "content": obs,
                 }))
                 messages.append({"role": "tool", "tool_call_id": call.id, "name": call.name, "content": obs})
