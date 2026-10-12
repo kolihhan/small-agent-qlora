@@ -64,9 +64,9 @@ def test_read_supports_offset_chars_and_reports_next_offset(tmp_path):
     assert "TARGET" in result.content
     assert result.metadata == {
         "offset_chars": 2000,
-        "returned_chars": 306,
+        "returned_chars": 300,
         "total_chars": len(text),
-        "next_offset_chars": None,
+        "next_offset_chars": 2300,
     }
 
 
