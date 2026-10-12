@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import re
 import socket
 from html import unescape
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -107,6 +109,18 @@ def _read_bounded_response(response, *, max_bytes: int = MAX_REMOTE_BYTES) -> tu
     return b"".join(chunks), None
 
 
+def _extract_pdf_text(reader, max_chars: int) -> str:
+    parts: list[str] = []
+    chars = 0
+    for page in reader.pages:
+        part = page.extract_text() or ""
+        parts.append(part)
+        chars += len(part) + 2
+        if chars >= max_chars:
+            break
+    return "\n\n".join(parts)[:max_chars]
+
+
 class ReadTool(Tool):
     name = "read"
     description = "Read a public URL or a file inside the workspace. Supports common text plus PDF/XLSX when optional dependencies are installed."
@@ -121,13 +135,83 @@ class ReadTool(Tool):
     }
     _UNSUPPORTED_BINARY_MESSAGE = "Cannot read binary or unsupported file as text. Use inspect for supported metadata; this file format is not readable by the available tools."
 
+    def __init__(self, timeout_s: float = 20.0, endpoint: str = "https://search.parallel.ai/mcp"):
+        self.timeout_s = float(timeout_s)
+        self.endpoint = endpoint
+
+    async def _fetch_parallel(self, url: str) -> ToolResult:
+        try:
+            from mcp import Client
+            from mcp.types import TextContent
+        except ImportError:
+            return ToolResult(False, "Parallel fetch dependency unavailable", "MISSING_DEPENDENCY")
+
+        try:
+            async with Client(self.endpoint) as client:
+                result = await client.call_tool(
+                    "web_fetch",
+                    {"urls": [url], "objective": "Full page content"},
+                )
+        except Exception as exc:
+            return ToolResult(False, f"Parallel fetch failed: {exc}", "FETCH_ERROR")
+
+        text = "\n\n".join(
+            block.text for block in result.content if isinstance(block, TextContent)
+        ).strip()
+        if result.is_error:
+            return ToolResult(False, text or "Parallel fetch failed", "FETCH_ERROR")
+        if not text:
+            return ToolResult(False, "Parallel fetch returned no content", "FETCH_ERROR")
+
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return ToolResult(True, text)
+        if not isinstance(payload, dict):
+            return ToolResult(False, "Parallel fetch returned an unexpected payload", "FETCH_ERROR")
+
+        for raw in payload.get("results") or []:
+            if not isinstance(raw, dict):
+                continue
+            content = raw.get("full_content") or raw.get("content")
+            if not content:
+                excerpts = raw.get("excerpts") or []
+                if isinstance(excerpts, str):
+                    content = excerpts
+                elif isinstance(excerpts, list):
+                    content = "\n\n".join(str(item) for item in excerpts if item)
+            if content:
+                return ToolResult(True, str(content))
+
+        errors = payload.get("errors") or []
+        if errors and isinstance(errors[0], dict):
+            error = errors[0]
+            detail = error.get("content") or error.get("error_type") or "extraction failed"
+            return ToolResult(False, str(detail), "FETCH_ERROR")
+        return ToolResult(False, "Parallel fetch returned no content", "FETCH_ERROR")
+
     def run(self, arguments: dict[str, Any], workspace: Path) -> ToolResult:
         source = arguments.get("source")
         if not isinstance(source, str) or not source.strip():
             return ToolResult(False, "'source' must be a non-empty string", "BAD_ARGUMENTS")
+        source = source.strip()
         max_chars = max(500, min(int(arguments.get("max_chars", 12000)), 30000))
         if urlparse(source).scheme in {"http", "https"}:
-            response, error = _get_public_url(source)
+            public_error = _public_url_error(source)
+            if public_error:
+                code = "PRIVATE_URL_BLOCKED" if "private" in public_error.casefold() else "HTTP_ERROR"
+                return ToolResult(False, public_error, code)
+
+            try:
+                fetched = asyncio.run(
+                    asyncio.wait_for(self._fetch_parallel(source), timeout=self.timeout_s)
+                )
+            except (TimeoutError, RuntimeError):
+                fetched = ToolResult(False, "Parallel fetch unavailable", "FETCH_ERROR")
+            if fetched.ok:
+                return ToolResult(True, fetched.content[:max_chars])
+
+            response, error = _get_public_url(source, timeout=self.timeout_s)
             if response is None:
                 code = "PRIVATE_URL_BLOCKED" if error and "private" in error.casefold() else "HTTP_ERROR"
                 return ToolResult(False, error or "HTTP read failed", code)
@@ -135,9 +219,16 @@ class ReadTool(Tool):
                 data, size_error = _read_bounded_response(response)
                 if size_error:
                     return ToolResult(False, size_error, "CONTENT_TOO_LARGE")
+                data = data or b""
+                ctype = response.headers.get("content-type", "").casefold()
+                if "pdf" in ctype or data.startswith(b"%PDF-"):
+                    try:
+                        from pypdf import PdfReader
+                    except ImportError as exc:
+                        return ToolResult(False, f"Missing file-reader dependency: {exc}. Install -e '.[files]'", "MISSING_DEPENDENCY")
+                    return ToolResult(True, _extract_pdf_text(PdfReader(BytesIO(data)), max_chars))
                 encoding = getattr(response, "encoding", None) or "utf-8"
-                text = (data or b"").decode(encoding, errors="replace")
-                ctype = response.headers.get("content-type", "")
+                text = data.decode(encoding, errors="replace")
                 if "html" in ctype:
                     text = _strip_html(text)
                 return ToolResult(True, text[:max_chars])
@@ -159,15 +250,7 @@ class ReadTool(Tool):
         try:
             if detected_type == "pdf":
                 from pypdf import PdfReader
-                parts: list[str] = []
-                chars = 0
-                for page in PdfReader(path).pages:
-                    part = page.extract_text() or ""
-                    parts.append(part)
-                    chars += len(part) + 2
-                    if chars >= max_chars:
-                        break
-                text = "\n\n".join(parts)
+                text = _extract_pdf_text(PdfReader(path), max_chars)
             elif detected_type == "xlsx":
                 import openpyxl
                 wb = openpyxl.load_workbook(path.open("rb"), read_only=True, data_only=True)
