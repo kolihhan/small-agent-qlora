@@ -34,7 +34,11 @@ def _public_url_error(url: str) -> str | None:
         return "Local/private URLs are blocked"
     try:
         addresses = [hostname] if _is_ip_literal(hostname) else [
-            item[4][0] for item in socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+            item[4][0] for item in socket.getaddrinfo(
+                hostname,
+                parsed.port or (443 if parsed.scheme == "https" else 80),
+                type=socket.SOCK_STREAM,
+            )
         ]
     except OSError as exc:
         return f"URL hostname resolution failed: {exc}"
@@ -109,26 +113,43 @@ def _read_bounded_response(response, *, max_bytes: int = MAX_REMOTE_BYTES) -> tu
     return b"".join(chunks), None
 
 
-def _extract_pdf_text(reader, max_chars: int) -> str:
-    parts: list[str] = []
-    chars = 0
-    for page in reader.pages:
-        part = page.extract_text() or ""
-        parts.append(part)
-        chars += len(part) + 2
-        if chars >= max_chars:
-            break
-    return "\n\n".join(parts)[:max_chars]
+def _extract_pdf_text(reader) -> str:
+    return "\n\n".join((page.extract_text() or "") for page in reader.pages)
+
+
+def _slice_read_content(text: str, *, offset_chars: int, max_chars: int) -> ToolResult:
+    total_chars = len(text)
+    start = min(offset_chars, total_chars)
+    end = min(start + max_chars, total_chars)
+    content = text[start:end]
+    return ToolResult(
+        True,
+        content,
+        metadata={
+            "offset_chars": start,
+            "returned_chars": len(content),
+            "total_chars": total_chars,
+            "next_offset_chars": end if end < total_chars else None,
+        },
+    )
 
 
 class ReadTool(Tool):
     name = "read"
-    description = "Read a public URL or a file inside the workspace. Supports common text plus PDF/XLSX when optional dependencies are installed."
+    description = (
+        "Read a public URL or a file inside the workspace. Supports common text plus PDF/XLSX when optional "
+        "dependencies are installed. Use offset_chars to continue reading long content."
+    )
     schema = {
         "type": "object",
         "properties": {
             "source": {"type": "string", "description": "URL or workspace-relative file path"},
             "max_chars": {"type": "integer", "minimum": 500, "maximum": 30000},
+            "offset_chars": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Character offset for continuing a previously truncated read",
+            },
         },
         "required": ["source"],
         "additionalProperties": False,
@@ -195,7 +216,18 @@ class ReadTool(Tool):
         if not isinstance(source, str) or not source.strip():
             return ToolResult(False, "'source' must be a non-empty string", "BAD_ARGUMENTS")
         source = source.strip()
-        max_chars = max(500, min(int(arguments.get("max_chars", 12000)), 30000))
+
+        raw_max_chars = arguments.get("max_chars", 12000)
+        raw_offset_chars = arguments.get("offset_chars", 0)
+        if not isinstance(raw_max_chars, int) or isinstance(raw_max_chars, bool):
+            return ToolResult(False, "'max_chars' must be an integer", "BAD_ARGUMENTS")
+        if not isinstance(raw_offset_chars, int) or isinstance(raw_offset_chars, bool):
+            return ToolResult(False, "'offset_chars' must be an integer", "BAD_ARGUMENTS")
+        if raw_offset_chars < 0:
+            return ToolResult(False, "'offset_chars' must be >= 0", "BAD_ARGUMENTS")
+        max_chars = max(500, min(raw_max_chars, 30000))
+        offset_chars = raw_offset_chars
+
         if urlparse(source).scheme in {"http", "https"}:
             public_error = _public_url_error(source)
             if public_error:
@@ -209,7 +241,7 @@ class ReadTool(Tool):
             except (TimeoutError, RuntimeError):
                 fetched = ToolResult(False, "Parallel fetch unavailable", "FETCH_ERROR")
             if fetched.ok:
-                return ToolResult(True, fetched.content[:max_chars])
+                return _slice_read_content(fetched.content, offset_chars=offset_chars, max_chars=max_chars)
 
             response, error = _get_public_url(source, timeout=self.timeout_s)
             if response is None:
@@ -226,12 +258,13 @@ class ReadTool(Tool):
                         from pypdf import PdfReader
                     except ImportError as exc:
                         return ToolResult(False, f"Missing file-reader dependency: {exc}. Install -e '.[files]'", "MISSING_DEPENDENCY")
-                    return ToolResult(True, _extract_pdf_text(PdfReader(BytesIO(data)), max_chars))
+                    text = _extract_pdf_text(PdfReader(BytesIO(data)))
+                    return _slice_read_content(text, offset_chars=offset_chars, max_chars=max_chars)
                 encoding = getattr(response, "encoding", None) or "utf-8"
                 text = data.decode(encoding, errors="replace")
                 if "html" in ctype:
                     text = _strip_html(text)
-                return ToolResult(True, text[:max_chars])
+                return _slice_read_content(text, offset_chars=offset_chars, max_chars=max_chars)
             except Exception as exc:
                 return ToolResult(False, f"HTTP read failed: {exc}", "HTTP_ERROR")
             finally:
@@ -250,27 +283,16 @@ class ReadTool(Tool):
         try:
             if detected_type == "pdf":
                 from pypdf import PdfReader
-                text = _extract_pdf_text(PdfReader(path), max_chars)
+                text = _extract_pdf_text(PdfReader(path))
             elif detected_type == "xlsx":
                 import openpyxl
                 wb = openpyxl.load_workbook(path.open("rb"), read_only=True, data_only=True)
                 try:
                     parts = []
-                    chars = 0
-                    stop = False
                     for ws in wb.worksheets:
-                        heading = f"# Sheet: {ws.title}"
-                        parts.append(heading)
-                        chars += len(heading) + 1
+                        parts.append(f"# Sheet: {ws.title}")
                         for row in ws.iter_rows(values_only=True):
-                            line = "\t".join("" if v is None else str(v) for v in row)
-                            parts.append(line)
-                            chars += len(line) + 1
-                            if chars >= max_chars:
-                                stop = True
-                                break
-                        if stop:
-                            break
+                            parts.append("\t".join("" if v is None else str(v) for v in row))
                     text = "\n".join(parts)
                 finally:
                     wb.close()
@@ -295,4 +317,4 @@ class ReadTool(Tool):
             return ToolResult(False, f"Missing file-reader dependency: {exc}. Install -e '.[files]'", "MISSING_DEPENDENCY")
         except Exception as exc:
             return ToolResult(False, f"Read failed: {exc}", "READ_ERROR")
-        return ToolResult(True, text[:max_chars])
+        return _slice_read_content(text, offset_chars=offset_chars, max_chars=max_chars)
