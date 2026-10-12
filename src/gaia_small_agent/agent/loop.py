@@ -52,7 +52,14 @@ class AgentRuntime:
             metrics.steps = step
             final_only = step == self.max_steps
             try:
-                turn = self.model.complete(messages, [] if final_only else tool_definitions)
+                if final_only:
+                    complete_final = getattr(self.model, "complete_final", None)
+                    if callable(complete_final):
+                        turn = complete_final(messages, tool_definitions)
+                    else:
+                        turn = self.model.complete(messages, [])
+                else:
+                    turn = self.model.complete(messages, tool_definitions)
             except ModelCapacityError:
                 trace.append(TraceEvent("model_capacity", step, {}))
                 return AgentResult("", False, "model_capacity", trace, metrics)
