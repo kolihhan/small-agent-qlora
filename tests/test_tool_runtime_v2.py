@@ -1,3 +1,5 @@
+import json
+
 from gaia_small_agent.agent.loop import AgentRuntime
 from gaia_small_agent.agent.types import AssistantTurn, ToolCall
 from gaia_small_agent.tools.base import Tool, ToolResult
@@ -134,3 +136,46 @@ def test_search_falls_back_when_parallel_search_fails(monkeypatch, tmp_path):
 
     assert result.ok is True
     assert "Fallback result" in result.content
+
+
+def test_runtime_truncation_keeps_pagination_metadata_actionable(tmp_path):
+    class LongPageTool(Tool):
+        name = "long_page"
+        description = "return a long paginated page"
+        schema = {"type": "object", "properties": {}, "additionalProperties": False}
+
+        def run(self, arguments, workspace):
+            return ToolResult(
+                True,
+                "x" * 3000,
+                metadata={
+                    "offset_chars": 0,
+                    "returned_chars": 3000,
+                    "total_chars": 3000,
+                    "next_offset_chars": None,
+                },
+            )
+
+    class CapturingModel(ScriptedModel):
+        def __init__(self, turns):
+            super().__init__(turns)
+            self.snapshots = []
+
+        def complete(self, messages, tools):
+            self.snapshots.append(list(messages))
+            return super().complete(messages, tools)
+
+    model = CapturingModel([
+        AssistantTurn("", [ToolCall("c1", "long_page", {})]),
+        AssistantTurn("done", []),
+    ])
+    result = AgentRuntime(model, [LongPageTool()], max_steps=4).run("page", tmp_path)
+
+    delivered = model.snapshots[1][-1]["content"]
+    assert len(delivered) <= 2000
+    meta_line = delivered.splitlines()[0]
+    assert meta_line.startswith("ToolMeta: ")
+    metadata = json.loads(meta_line.removeprefix("ToolMeta: "))
+    assert 0 < metadata["returned_chars"] < 3000
+    assert metadata["next_offset_chars"] == metadata["returned_chars"]
+    assert result.trace[1].data["metadata"] == metadata
