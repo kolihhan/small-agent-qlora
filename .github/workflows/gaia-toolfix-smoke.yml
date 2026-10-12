@@ -66,26 +66,29 @@ jobs:
               {"query": "NASA APOD 2015 August 21 Sprites from Space", "max_results": 2},
               workspace,
           )
-          numbered = re.findall(r"(?m)^\d+\. ", search.content or "")
+          # A compacted result block always has its numbered title immediately followed by its URL.
+          # This avoids mistaking numbered text inside an excerpt for another result.
+          result_blocks = re.findall(r"(?m)^\d+\. [^\n]+\nhttps?://", search.content or "")
           out["search_max_results"] = {
               "ok": search.ok,
               "error_code": search.error_code,
-              "numbered_result_blocks": len(numbered),
-              "raw_json_results_marker": '"results"' in (search.content or ""),
+              "result_blocks": len(result_blocks),
+              "raw_json_results_marker": '\"results\"' in (search.content or ""),
               "contains_expected": "Sprites from Space".casefold() in (search.content or "").casefold(),
               "preview": (search.content or "")[:1200],
           }
 
-          # Force Parallel fetch to be unavailable so the public-HTTP PDF fallback is exercised.
-          pdf_url = "https://arxiv.org/pdf/1706.03762"
-          read = ReadTool(timeout_s=5, endpoint="http://127.0.0.1:9").run(
+          # Force Parallel fetch to be unavailable so the bounded public-HTTP PDF fallback is exercised.
+          # Use a deliberately small public PDF so this check tests PDF parsing rather than the 2 MiB safety limit.
+          pdf_url = "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"
+          read = ReadTool(timeout_s=10, endpoint="http://127.0.0.1:9").run(
               {"source": pdf_url, "max_chars": 5000},
               workspace,
           )
           out["remote_pdf_http_fallback"] = {
               "ok": read.ok,
               "error_code": read.error_code,
-              "contains_expected": "Attention Is All You Need".casefold() in (read.content or "").casefold(),
+              "contains_expected": "Dummy PDF file".casefold() in (read.content or "").casefold(),
               "looks_like_pdf_bytes": (read.content or "").lstrip().startswith("%PDF-"),
               "preview": (read.content or "")[:1200],
           }
@@ -129,15 +132,18 @@ jobs:
           echo "$code" > runs/toolfix-smoke/pdf.exit
           exit 0
 
-      - name: Run search-heavy max_steps boundary case
+      - name: Run final-step synthesis boundary case
         shell: bash
         run: |
           set +e
+          # With max_steps=2 this case has exactly one tool-capable turn followed by the
+          # boundary turn. A correct runtime must expose tools=[] on that second turn and
+          # let the model synthesize instead of attempting another tool call / hitting max_steps.
           python -m gaia_small_agent run \
-            "Use three separate web search tool calls, in this order: NASA APOD 2015 August 20, NASA APOD 2015 August 21, NASA APOD 2015 August 22. After those three searches, return only the exact title for August 21." \
+            "Use the web search tool to answer this historical lookup: What was the exact title of NASA's Astronomy Picture of the Day on 2015 August 21? Return only the title." \
             --model "$MODEL" \
             --ollama-url "$OLLAMA_URL" \
-            --max-steps 4 \
+            --max-steps 2 \
             --max-new-tokens 256 \
             --workspace runs/toolfix-smoke/maxsteps-workspace \
             --output runs/toolfix-smoke/maxsteps.json
@@ -163,6 +169,7 @@ jobs:
               data = json.loads(path.read_text(encoding="utf-8"))
               calls = [e for e in data.get("trace", []) if e.get("kind") == "tool_call"]
               results = [e for e in data.get("trace", []) if e.get("kind") == "tool_result"]
+              finals = [e for e in data.get("trace", []) if e.get("kind") == "final"]
               return {
                   "missing": False,
                   "exit_code": int((root / f"{name}.exit").read_text()),
@@ -170,8 +177,10 @@ jobs:
                   "completed": bool(data.get("completed")),
                   "stop_reason": data.get("stop_reason"),
                   "metrics": data.get("metrics", {}),
+                  "run_config": data.get("run_config", {}),
                   "tool_calls": [{"step": e.get("step"), "name": e.get("data", {}).get("name"), "arguments": e.get("data", {}).get("arguments", {})} for e in calls],
                   "tool_results": [{"step": e.get("step"), "name": e.get("data", {}).get("name"), "ok": e.get("data", {}).get("ok"), "error_code": e.get("data", {}).get("error_code"), "preview": str(e.get("data", {}).get("content", ""))[:500]} for e in results],
+                  "final_steps": [e.get("step") for e in finals],
               }
 
           cases = {name: load_case(name) for name in ("apod", "pdf", "maxsteps")}
@@ -180,16 +189,31 @@ jobs:
 
           direct_search = direct["search_max_results"]
           direct_pdf = direct["remote_pdf_http_fallback"]
+          boundary = cases["maxsteps"]
           checks = {
-              "search_compaction_live": bool(direct_search["ok"] and not direct_search["raw_json_results_marker"] and direct_search["numbered_result_blocks"] <= 2),
+              "search_compaction_live": bool(direct_search["ok"] and not direct_search["raw_json_results_marker"] and 1 <= direct_search["result_blocks"] <= 2 and direct_search["contains_expected"]),
               "remote_pdf_http_fallback": bool(direct_pdf["ok"] and direct_pdf["contains_expected"] and not direct_pdf["looks_like_pdf_bytes"]),
               "apod_agent": bool(not cases["apod"].get("missing") and cases["apod"]["completed"] and expected_apod in cases["apod"]["answer"].casefold() and any(c["name"] == "search" for c in cases["apod"]["tool_calls"])),
               "pdf_agent": bool(not cases["pdf"].get("missing") and cases["pdf"]["completed"] and expected_pdf in cases["pdf"]["answer"].casefold() and any(c["name"] == "read" for c in cases["pdf"]["tool_calls"])),
-              "maxsteps_final_synthesis": bool(not cases["maxsteps"].get("missing") and cases["maxsteps"]["completed"] and cases["maxsteps"]["stop_reason"] != "max_steps" and expected_apod in cases["maxsteps"]["answer"].casefold()),
-              "maxsteps_exercised_three_tool_turns": bool(not cases["maxsteps"].get("missing") and len(cases["maxsteps"]["tool_calls"]) == 3),
+              "maxsteps_final_synthesis": bool(
+                  not boundary.get("missing")
+                  and boundary["run_config"].get("max_steps") == 2
+                  and boundary["completed"]
+                  and boundary["stop_reason"] == "final"
+                  and boundary["metrics"].get("steps") == 2
+                  and boundary["final_steps"] == [2]
+                  and expected_apod in boundary["answer"].casefold()
+              ),
+              "maxsteps_one_tool_before_boundary": bool(
+                  not boundary.get("missing")
+                  and len(boundary["tool_calls"]) == 1
+                  and boundary["tool_calls"][0]["step"] == 1
+                  and boundary["tool_calls"][0]["name"] == "search"
+                  and all(result["ok"] for result in boundary["tool_results"])
+              ),
           }
           payload = {
-              "schema_version": "gaia-toolfix-smoke/v1",
+              "schema_version": "gaia-toolfix-smoke/v2",
               "model": "qwen3.5:9b",
               "scope": "cheap real-case gate before any GAIA100 rerun",
               "direct_tool_checks": direct,
@@ -199,6 +223,18 @@ jobs:
           }
           (root / "summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
           print(json.dumps(payload, indent=2, ensure_ascii=False))
+          PY
+
+      - name: Enforce smoke gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("runs/toolfix-smoke/summary.json").read_text(encoding="utf-8"))
+          if not data.get("all_checks_pass"):
+              raise SystemExit("ToolFix smoke gate failed; inspect uploaded evidence")
           PY
 
       - name: Upload smoke evidence
