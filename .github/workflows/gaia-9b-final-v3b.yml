@@ -1,0 +1,416 @@
+name: Final Qwen3.5 9B QLoRA v3B frozen GAIA100
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/gaia-9b-final-v3b.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  TEST_GATE_RUN_ID: "38196393026"
+  CONVERT_RUN_ID: "38156235327"
+  CONVERT_ARTIFACT: "qwen35-9b-qlora-v3b-gguf"
+  FROZEN_EVAL_COMMIT: "9840da3067eafe203b34869e679ed9b7b2f4158c"
+  ORIGINAL_BASE_RUN_ID: "38068816559"
+  BASE5_RUN_ID: "38073818520"
+  FULL_SELECTION_SHA256: "22ce65f410d45e2e84af5a0ad1eafeadb311b08bb1234c968a114174c29bb373"
+  DATASET_REVISION: "682dd723ee1e1697e00360edccf2366dc8418dd9"
+  PROTOCOL_SEED: "gaia-local-v2"
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA256: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_RELEASE_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_RELEASE_SHA256: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  MODEL_ALIAS: qwen3.5-9b
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Verify independent held-out test gate passed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          payload="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${TEST_GATE_RUN_ID}")"
+          status="$(python -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], d.get("conclusion"))' <<<"$payload")"
+          echo "test gate $status"
+          [ "$status" = "completed success" ] || { echo "held-out test gate did not pass"; exit 1; }
+
+      - name: Download and require test promote true
+        uses: actions/download-artifact@v4
+        with:
+          name: policy-v3b-test-gate
+          path: test-gate
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.TEST_GATE_RUN_ID }}
+
+      - name: Validate test gate verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          v = json.loads(Path('test-gate/test-verdict.json').read_text())
+          assert v['promote'] is True, v
+          assert float(v['exact_pp_delta']) >= float(v['minimum_exact_pp']), v
+          assert not v['catastrophic_regressions'], v
+          print(json.dumps(v, indent=2, sort_keys=True))
+          PY
+
+      - name: Verify successful v3B adapter conversion
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          payload="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${CONVERT_RUN_ID}")"
+          status="$(python -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], d.get("conclusion"))' <<<"$payload")"
+          echo "conversion $status"
+          [ "$status" = "completed success" ] || { echo "v3B conversion is not successful"; exit 1; }
+
+      - name: Download converted v3B adapter
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.CONVERT_ARTIFACT }}
+          path: matched-input
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.CONVERT_RUN_ID }}
+
+      - name: Validate v3B provenance and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s matched-input/qwen35-9b-qlora-v3b-adapter.gguf
+          test -s matched-input/adapter-conversion-meta.json
+          test -s matched-input/source/training-meta.json
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          adapter = Path('matched-input/qwen35-9b-qlora-v3b-adapter.gguf')
+          conv = json.loads(Path('matched-input/adapter-conversion-meta.json').read_text())
+          train = json.loads(Path('matched-input/source/training-meta.json').read_text())
+          assert conv['source_training_run_id'] == '38152689194', conv
+          assert conv['training_steps'] == 64, conv
+          assert train['ok'] is True and train['cuda'] is True, train
+          assert train['model'] == 'Qwen/Qwen3.5-9B', train
+          assert train['max_steps'] == 64, train
+          assert train['gradient_accumulation_steps'] == 1, train
+          assert train['training_examples'] == 64, train
+          assert train['max_length'] == 1024, train
+          assert train['require_full_prompt'] is True, train
+          assert train['exposure_profile'] == 'v3b-diagnostic', train
+          sha = hashlib.sha256(adapter.read_bytes()).hexdigest()
+          Path('matched-input/v3b-adapter.sha256').write_text(sha + '\n')
+          print(json.dumps({'adapter_sha256': sha, 'conversion': conv, 'training': train}, indent=2, sort_keys=True))
+          PY
+
+      - name: Freeze v3B adapter for this GAIA run
+        uses: actions/upload-artifact@v4
+        with:
+          name: matched-qwen35-9b-qlora-v3b-gaia
+          path: matched-input
+          if-no-files-found: error
+          retention-days: 30
+
+  eval:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_EVAL_COMMIT }}
+
+      - name: Install frozen evaluation dependencies
+        run: python -m pip install --quiet -e '.[search,files,eval]'
+
+      - name: Download and verify frozen base GGUF
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model
+          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf
+          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
+
+      - name: Download and verify llama-server
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-delay 3 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
+          mkdir -p /tmp/llama-bin
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+          "$SERVER" --version
+
+      - name: Download frozen v3B adapter
+        uses: actions/download-artifact@v4
+        with:
+          name: matched-qwen35-9b-qlora-v3b-gaia
+          path: matched-input
+
+      - name: Record adapter checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          ADAPTER_SHA256="$(cat matched-input/v3b-adapter.sha256)"
+          echo "ADAPTER_SHA256=$ADAPTER_SHA256" >> "$GITHUB_ENV"
+          echo "$ADAPTER_SHA256  matched-input/qwen35-9b-qlora-v3b-adapter.gguf" | sha256sum -c -
+
+      - name: Start frozen llama-server protocol with v3B adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "runs/qlora/shard-${{ matrix.shard }}"
+          "$LLAMA_SERVER" \
+            -m model/Qwen3.5-9B-Q4_K_M.gguf \
+            --lora matched-input/qwen35-9b-qlora-v3b-adapter.gguf \
+            --alias "$MODEL_ALIAS" \
+            --host 127.0.0.1 --port 8080 \
+            --ctx-size 4096 --threads 4 --parallel 1 \
+            --jinja --reasoning-budget 0 --temperature 0 \
+            > "runs/qlora/shard-${{ matrix.shard }}/llama-server.log" 2>&1 &
+          echo $! > "runs/qlora/shard-${{ matrix.shard }}/llama-server.pid"
+          for i in {1..180}; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          tail -200 "runs/qlora/shard-${{ matrix.shard }}/llama-server.log" >&2
+          exit 1
+
+      - name: OpenAI API smoke test
+        shell: bash
+        run: |
+          python - <<'PY'
+          import requests
+          body = {'model':'qwen3.5-9b','messages':[{'role':'user','content':'Reply with exactly READY.'}],'temperature':0,'max_tokens':32}
+          r = requests.post('http://127.0.0.1:8080/v1/chat/completions', json=body, timeout=180)
+          r.raise_for_status()
+          data = r.json()
+          assert data.get('choices') and isinstance(data['choices'][0].get('message'), dict), data
+          print(data['choices'][0]['message'])
+          PY
+
+      - name: Run frozen GAIA Evaluation100 shard
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/run_gaia_eval_shard.py \
+            --backend openai_compat \
+            --model "$MODEL_ALIAS" \
+            --openai-base-url http://127.0.0.1:8080 \
+            --hf-token "$HF_TOKEN" \
+            --shard-index "${{ matrix.shard }}" \
+            --shard-count 20 \
+            --work-root "runs/qlora/shard-${{ matrix.shard }}" \
+            --output "runs/qlora/shard-${{ matrix.shard }}/shard.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path('runs/qlora/shard-${{ matrix.shard }}/shard.json')
+          d = json.loads(p.read_text())
+          d['v3b_adapter_sha256'] = os.environ['ADAPTER_SHA256']
+          d['test_gate_run_id'] = os.environ['TEST_GATE_RUN_ID']
+          d['conversion_run_id'] = os.environ['CONVERT_RUN_ID']
+          p.write_text(json.dumps(d, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f "runs/qlora/shard-${{ matrix.shard }}/llama-server.pid" ]; then
+            kill "$(cat "runs/qlora/shard-${{ matrix.shard }}/llama-server.pid")" || true
+          fi
+
+      - name: Upload v3B GAIA shard evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3b-gaia-qlora-shard-${{ matrix.shard }}
+          path: runs/qlora/shard-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 30
+
+  summarize:
+    needs: eval
+    if: ${{ always() && needs.eval.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_EVAL_COMMIT }}
+
+      - name: Install frozen evaluator
+        run: python -m pip install --quiet -e .
+
+      - name: Download v3B candidate shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v3b-gaia-qlora-shard-*
+          path: evidence/v3b
+
+      - name: Download frozen canonical Base evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/base-original evidence/base5
+          gh run download "$ORIGINAL_BASE_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir evidence/base-original
+          gh run download "$BASE5_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir evidence/base5
+
+      - name: Build strict paired v3B final ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, math, os
+          from collections import Counter
+          from pathlib import Path
+          from gaia_small_agent.benchmark.gaia100 import summarize_results
+
+          EXPECTED_LEVELS = {1: 32, 2: 52, 3: 16}
+          FULL_HASH = os.environ['FULL_SELECTION_SHA256']
+          BASE_ORIGINAL = [0,1,2,3,4,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+          BASE5_CASES = [5,25,45,65,85]
+
+          def load_rows(artifact_dir, expected_n, arm):
+              rp = artifact_dir/'results.jsonl'; sp = artifact_dir/'shard.json'
+              if not rp.is_file() or not sp.is_file():
+                  raise SystemExit(f'missing evidence in {artifact_dir}')
+              shard = json.loads(sp.read_text())
+              if shard.get('full_selection_sha256') != FULL_HASH:
+                  raise SystemExit(f'full selection hash mismatch: {artifact_dir}')
+              if shard.get('dataset_revision') != os.environ['DATASET_REVISION']:
+                  raise SystemExit(f'dataset revision mismatch: {artifact_dir}')
+              if shard.get('seed') != os.environ['PROTOCOL_SEED']:
+                  raise SystemExit(f'protocol seed mismatch: {artifact_dir}')
+              if shard.get('backend') != 'openai_compat' or shard.get('model') != 'qwen3.5-9b' or shard.get('thinking') is not False:
+                  raise SystemExit(f'protocol mismatch: {artifact_dir}: {shard}')
+              rows = [json.loads(x) for x in rp.read_text().splitlines() if x.strip()]
+              if len(rows) != expected_n:
+                  raise SystemExit(f'{artifact_dir}: expected {expected_n}, got {len(rows)}')
+              for r in rows: r['_arm'] = arm
+              return rows, shard
+
+          base = []
+          for s in BASE_ORIGINAL:
+              rows,_ = load_rows(Path('evidence/base-original')/f'finalv2-gaia-base-shard-{s}', 5, 'base')
+              base += rows
+          for i in BASE5_CASES:
+              rows,_ = load_rows(Path('evidence/base5')/f'base5v2-gaia-base-case-{i}', 1, 'base')
+              base += rows
+
+          qlora = []
+          adapter_hashes = set()
+          files = sorted(Path('evidence/v3b').glob('v3b-gaia-qlora-shard-*/shard.json'))
+          if len(files) != 20:
+              raise SystemExit(f'expected 20 v3B shard summaries, found {len(files)}')
+          for sp in files:
+              artifact_dir = sp.parent
+              rows, shard = load_rows(artifact_dir, 5, 'qlora_v3b')
+              adapter_hashes.add(shard.get('v3b_adapter_sha256'))
+              qlora += rows
+          if len(adapter_hashes) != 1 or None in adapter_hashes:
+              raise SystemExit(f'adapter checksum mismatch across shards: {adapter_hashes}')
+
+          def validate(name, rows):
+              ids = [r['task_id'] for r in rows]
+              if len(rows) != 100 or len(set(ids)) != 100:
+                  raise SystemExit(f'{name}: expected 100 unique rows, got rows={len(rows)} unique={len(set(ids))}')
+              levels = Counter(int(r['level']) for r in rows)
+              if dict(levels) != EXPECTED_LEVELS:
+                  raise SystemExit(f'{name}: level mix {dict(levels)} != {EXPECTED_LEVELS}')
+              return set(ids)
+
+          base_ids = validate('base', base); q_ids = validate('qlora_v3b', qlora)
+          if base_ids != q_ids:
+              raise SystemExit('Base and v3B task-ID sets differ')
+
+          b_by = {r['task_id']:r for r in base}; q_by = {r['task_id']:r for r in qlora}
+          gains = regressions = both_correct = both_wrong = 0
+          per_case = []
+          for tid in sorted(base_ids):
+              b,q = b_by[tid], q_by[tid]
+              bc,qc = bool(b['correct']), bool(q['correct'])
+              if not bc and qc: gains += 1
+              elif bc and not qc: regressions += 1
+              elif bc and qc: both_correct += 1
+              else: both_wrong += 1
+              per_case.append({'task_id':tid,'level':int(b['level']),'base_correct':bc,'qlora_v3b_correct':qc})
+          discordant = gains + regressions
+          if discordant:
+              k = min(gains, regressions)
+              tail = sum(math.comb(discordant,i) for i in range(k+1))/(2**discordant)
+              p = min(1.0, 2*tail)
+          else: p = 1.0
+
+          bsum = summarize_results(base); qsum = summarize_results(qlora)
+          verdict = 'accuracy_improved' if qsum['correct'] > bsum['correct'] else ('tied' if qsum['correct'] == bsum['correct'] else 'accuracy_regressed')
+          payload = {
+              'schema_version':'matched-gaia-9b-qlora-v3b/final-ledger-v1',
+              'protocol':{
+                  'benchmark':'GAIA 2023 validation / frozen Evaluation100',
+                  'dataset_revision':os.environ['DATASET_REVISION'],
+                  'protocol_seed':os.environ['PROTOCOL_SEED'],
+                  'frozen_evaluator_commit':os.environ['FROZEN_EVAL_COMMIT'],
+                  'full_selection_sha256':FULL_HASH,
+                  'base_gguf_sha256':os.environ['MODEL_SHA256'],
+                  'v3b_adapter_sha256':next(iter(adapter_hashes)),
+                  'reasoning_budget':0,'context_tokens':4096,'max_new_tokens':512,'agent_max_steps':12,
+                  'training':{'model':'Qwen/Qwen3.5-9B','training_examples':64,'optimizer_steps':64,'exposure_profile':'v3b-diagnostic'},
+                  'gates':{'dev_run_id':'38156609875','test_run_id':os.environ['TEST_GATE_RUN_ID'],'conversion_run_id':os.environ['CONVERT_RUN_ID']},
+              },
+              'hard_gates':{'base_unique_tasks':len(base_ids),'qlora_v3b_unique_tasks':len(q_ids),'task_id_sets_equal':base_ids==q_ids,'level_mix':EXPECTED_LEVELS,'full_selection_hash_consistent':True},
+              'base':bsum,'qlora_v3b':qsum,
+              'paired':{'both_correct':both_correct,'both_wrong':both_wrong,'base_wrong_to_v3b_correct':gains,'base_correct_to_v3b_wrong':regressions,'discordant_pairs':discordant,'mcnemar_exact_two_sided_p':p},
+              'delta':{'correct_absolute':qsum['correct']-bsum['correct'],'accuracy_pp':(qsum['accuracy']-bsum['accuracy'])*100,'completion_rate_pp':(qsum['completion_rate']-bsum['completion_rate'])*100,'tool_success_rate_pp':(qsum['tool_success_rate']-bsum['tool_success_rate'])*100,'tool_errors':qsum['tool_errors']-bsum['tool_errors'],'duplicate_calls_blocked':qsum['duplicate_calls_blocked']-bsum['duplicate_calls_blocked']},
+              'verdict':verdict,
+              'per_case':per_case,
+          }
+          Path('final-gaia-v3b-ledger.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+          md = [
+              '# Final GAIA v3B ledger','',
+              f"- Frozen Base: **{bsum['correct']}/100 ({bsum['accuracy']*100:.1f}%)**",
+              f"- QLoRA v3B: **{qsum['correct']}/100 ({qsum['accuracy']*100:.1f}%)**",
+              f"- Delta: **{(qsum['accuracy']-bsum['accuracy'])*100:+.1f} pp** ({qsum['correct']-bsum['correct']:+d} correct)",
+              f"- Completion: {bsum['completion_rate']*100:.1f}% -> {qsum['completion_rate']*100:.1f}%",
+              f"- Tool errors: {bsum['tool_errors']} -> {qsum['tool_errors']}",
+              f"- Duplicate calls blocked: {bsum['duplicate_calls_blocked']} -> {qsum['duplicate_calls_blocked']}",
+              f"- Paired gains/regressions: {gains}/{regressions}; exact McNemar p={p:.4f}",
+              f"- Verdict: **{verdict}**",
+          ]
+          Path('final-gaia-v3b-ledger.md').write_text('\n'.join(md)+'\n')
+          print('\n'.join(md))
+          print(json.dumps({'base':bsum,'qlora_v3b':qsum,'paired':payload['paired'],'delta':payload['delta'],'verdict':verdict},indent=2,sort_keys=True))
+          PY
+
+      - name: Upload final v3B GAIA ledger
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-gaia-v3b-evidence-ledger
+          path: |
+            final-gaia-v3b-ledger.json
+            final-gaia-v3b-ledger.md
+          if-no-files-found: error
+          retention-days: 30
