@@ -50,6 +50,8 @@ class RunMetrics:
     tool_successes: int = 0
     tool_errors: int = 0
     duplicate_calls_blocked: int = 0
+    invalid_tool_calls: int = 0
+    tool_retries: int = 0
 
 
 @dataclass
