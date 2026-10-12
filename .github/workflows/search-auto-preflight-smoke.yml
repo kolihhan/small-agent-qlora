@@ -1,4 +1,4 @@
-name: Search auto preflight smoke
+name: Parallel MCP search smoke
 
 on:
   workflow_dispatch:
@@ -17,14 +17,15 @@ jobs:
           python-version: "3.11"
       - name: Install search support
         run: python -m pip install --quiet -e '.[search]'
-      - name: Run exact live search preflight
+      - name: Run live Parallel MCP search
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
           from gaia_small_agent.tools.search import SearchTool
 
-          result = SearchTool().run({"query": "OpenAI official", "max_results": 1}, Path("."))
-          print({"ok": result.ok, "error_code": result.error_code, "content": result.content[:500]})
+          result = SearchTool(timeout_s=30).run({"query": "OpenAI official", "max_results": 1}, Path("."))
+          print({"ok": result.ok, "error_code": result.error_code, "content": result.content[:1000]})
           assert result.ok, result.observation()
+          assert "http" in result.content.lower(), result.content
           PY
