@@ -21,6 +21,15 @@ Do not reveal hidden chain-of-thought; tool calls and short factual status are s
 """
 MAX_TOOL_OBSERVATION_CHARS = 2000
 _TOOL_OBSERVATION_TRUNCATION = "\n...[truncated from {count} characters; request a narrower result or use another tool call to inspect only what is needed]"
+_RETRYABLE_TOOL_ERRORS = frozenset({
+    "SEARCH_TIMEOUT",
+    "SEARCH_ERROR",
+    "FETCH_ERROR",
+    "HTTP_ERROR",
+    "READ_ERROR",
+    "TIMEOUT",
+    "TOOL_EXCEPTION",
+})
 
 
 def _bound_tool_observation(observation: str) -> str:
@@ -49,7 +58,8 @@ class AgentRuntime:
         ]
         trace: list[TraceEvent] = []
         metrics = RunMetrics()
-        seen: set[str] = set()
+        seen: dict[str, ToolResult] = {}
+        retry_counts: dict[str, int] = {}
         tool_definitions = [tool.definition() for tool in self.tools.values()]
 
         for step in range(1, self.max_steps + 1):
@@ -100,25 +110,40 @@ class AgentRuntime:
                 trace.append(TraceEvent("tool_call", step, {"id": call.id, "name": call.name, "arguments": call.arguments}))
                 key = json.dumps([call.name, call.arguments], sort_keys=True, ensure_ascii=False, default=str)
 
-                if key in seen:
+                previous = seen.get(key)
+                can_retry = (
+                    previous is not None
+                    and not previous.ok
+                    and previous.error_code in _RETRYABLE_TOOL_ERRORS
+                    and retry_counts.get(key, 0) < 1
+                )
+                if previous is not None and not can_retry:
                     metrics.duplicate_calls_blocked += 1
-                    metrics.tool_errors += 1
                     result = ToolResult(False, "Exact duplicate tool call blocked; choose a different action.", "DUPLICATE_CALL")
                 else:
-                    seen.add(key)
+                    if can_retry:
+                        retry_counts[key] = retry_counts.get(key, 0) + 1
+                        metrics.tool_retries += 1
+
                     tool = self.tools.get(call.name)
                     if tool is None:
-                        metrics.tool_errors += 1
+                        metrics.invalid_tool_calls += 1
                         result = ToolResult(False, f"Unknown tool: {call.name}", "UNKNOWN_TOOL")
                     else:
-                        try:
-                            result = tool.run(call.arguments, workspace)
-                        except Exception as exc:  # runtime boundary: tool exceptions become observations
-                            result = ToolResult(False, f"{type(exc).__name__}: {exc}", "TOOL_EXCEPTION")
-                        if result.ok:
-                            metrics.tool_successes += 1
+                        argument_error = tool.validate_arguments(call.arguments)
+                        if argument_error is not None:
+                            metrics.invalid_tool_calls += 1
+                            result = ToolResult(False, argument_error, "BAD_ARGUMENTS")
                         else:
-                            metrics.tool_errors += 1
+                            try:
+                                result = tool.run(call.arguments, workspace)
+                            except Exception as exc:  # runtime boundary: tool exceptions become observations
+                                result = ToolResult(False, f"{type(exc).__name__}: {exc}", "TOOL_EXCEPTION")
+                            if result.ok:
+                                metrics.tool_successes += 1
+                            else:
+                                metrics.tool_errors += 1
+                    seen[key] = result
 
                 obs = _bound_tool_observation(result.observation())
                 trace.append(TraceEvent("tool_result", step, {
@@ -126,6 +151,7 @@ class AgentRuntime:
                     "name": call.name,
                     "ok": result.ok,
                     "error_code": result.error_code,
+                    "metadata": result.metadata,
                     "content": obs,
                 }))
                 messages.append({"role": "tool", "tool_call_id": call.id, "name": call.name, "content": obs})
