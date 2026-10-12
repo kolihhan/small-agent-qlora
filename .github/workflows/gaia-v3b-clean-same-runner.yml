@@ -1,0 +1,238 @@
+name: Clean same-runner Qwen3.5 9B Base vs QLoRA v3B GAIA100
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - debug/qlora-clean-eval
+    paths:
+      - ".github/workflows/gaia-v3b-clean-same-runner.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  ADAPTER_RUN_ID: "38156235327"
+  ADAPTER_ARTIFACT: qwen35-9b-qlora-v3b-gguf
+  ADAPTER_SHA256: e7caec609a905d21e056b107519d78916d3ef79e7bdc70db916e40d801d2187d
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA256: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_RELEASE_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_RELEASE_SHA256: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  MODEL_ALIAS: qwen3.5-9b
+
+jobs:
+  paired-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - name: Checkout current clean evaluator
+        uses: actions/checkout@v4
+
+      - name: Install evaluation dependencies
+        run: python -m pip install --quiet -e '.[search,files,eval]'
+
+      - name: Verify GAIA credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN_NOT_CONFIGURED"; exit 42; }
+
+      - name: Download and verify frozen base GGUF
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model matched-input /tmp/llama-bin
+          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf
+          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
+          curl -fL --retry 5 --retry-delay 3 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+
+      - name: Download and verify frozen v3B adapter
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ADAPTER_ARTIFACT }}
+          path: matched-input
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.ADAPTER_RUN_ID }}
+
+      - name: Verify adapter checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s matched-input/qwen35-9b-qlora-v3b-adapter.gguf
+          echo "$ADAPTER_SHA256  matched-input/qwen35-9b-qlora-v3b-adapter.gguf" | sha256sum -c -
+
+      - name: Run matched Base then QLoRA on the same runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          shard="${{ matrix.shard }}"
+
+          run_arm() {
+            arm="$1"
+            out="runs/${arm}/shard-${shard}"
+            mkdir -p "$out"
+            extra=()
+            if [ "$arm" = "qlora-v3b" ]; then
+              extra=(--lora matched-input/qwen35-9b-qlora-v3b-adapter.gguf)
+            fi
+
+            "$LLAMA_SERVER" \
+              -m model/Qwen3.5-9B-Q4_K_M.gguf \
+              "${extra[@]}" \
+              --alias "$MODEL_ALIAS" \
+              --host 127.0.0.1 --port 8080 \
+              --ctx-size 16384 --threads 4 --parallel 1 \
+              --jinja --reasoning-budget 0 --temperature 0 \
+              > "$out/llama-server.log" 2>&1 &
+            pid=$!
+            echo "$pid" > "$out/llama-server.pid"
+            cleanup() {
+              kill "$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+            }
+            trap cleanup RETURN
+
+            for i in {1..180}; do
+              if curl -fsS http://127.0.0.1:8080/health >/dev/null; then break; fi
+              sleep 2
+            done
+            curl -fsS http://127.0.0.1:8080/health >/dev/null
+
+            python scripts/run_gaia_eval_shard.py \
+              --backend openai_compat \
+              --model "$MODEL_ALIAS" \
+              --openai-base-url http://127.0.0.1:8080 \
+              --hf-token "$HF_TOKEN" \
+              --shard-index "$shard" \
+              --shard-count 20 \
+              --work-root "$out" \
+              --output "$out/shard.json"
+
+            cleanup
+            trap - RETURN
+            sleep 2
+          }
+
+          run_arm base
+          run_arm qlora-v3b
+
+      - name: Upload paired shard evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-paired-v3b-shard-${{ matrix.shard }}
+          path: runs
+          if-no-files-found: error
+          retention-days: 14
+
+  summarize:
+    needs: paired-eval
+    if: ${{ always() && needs.paired-eval.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current evaluator
+        uses: actions/checkout@v4
+
+      - name: Install package
+        run: python -m pip install --quiet -e .
+
+      - name: Download all paired shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: clean-paired-v3b-shard-*
+          path: evidence
+
+      - name: Build clean matched GAIA100 summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from gaia_small_agent.benchmark.gaia100 import summarize_results
+
+          summaries = {}
+          ids_by_arm = {}
+          for arm in ("base", "qlora-v3b"):
+              rows = []
+              ids = set()
+              files = sorted(Path("evidence").glob(f"clean-paired-v3b-shard-*/{arm}/shard-*/results.jsonl"))
+              if len(files) != 20:
+                  raise SystemExit(f"{arm}: expected 20 results.jsonl, got {len(files)}")
+              for path in files:
+                  for line in path.read_text(encoding="utf-8").splitlines():
+                      if not line.strip():
+                          continue
+                      row = json.loads(line)
+                      tid = str(row["task_id"])
+                      if tid in ids:
+                          raise SystemExit(f"{arm}: duplicate task {tid}")
+                      ids.add(tid)
+                      rows.append(row)
+              if len(rows) != 100:
+                  raise SystemExit(f"{arm}: expected 100 rows, got {len(rows)}")
+              summaries[arm] = summarize_results(rows)
+              ids_by_arm[arm] = ids
+
+          if ids_by_arm["base"] != ids_by_arm["qlora-v3b"]:
+              raise SystemExit("Base and QLoRA task identities differ")
+
+          b = summaries["base"]
+          q = summaries["qlora-v3b"]
+          payload = {
+              "schema_version": "clean-same-runner-v3b/v1",
+              "protocol": {
+                  "benchmark": "GAIA 2023 validation / frozen Evaluation100",
+                  "pairing": "same GitHub runner per shard, sequential Base then QLoRA",
+                  "context_tokens": 16384,
+                  "max_new_tokens": 512,
+                  "agent_max_steps": 12,
+                  "model_timeout_s": 180,
+                  "reasoning_budget": 0,
+                  "temperature": 0,
+                  "base_gguf_sha256": "8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54",
+                  "adapter_sha256": "e7caec609a905d21e056b107519d78916d3ef79e7bdc70db916e40d801d2187d",
+              },
+              "base": b,
+              "qlora_v3b": q,
+              "delta": {
+                  "correct_absolute": q["correct"] - b["correct"],
+                  "accuracy_pp": (q["accuracy"] - b["accuracy"]) * 100,
+                  "completion_rate_pp": (q["completion_rate"] - b["completion_rate"]) * 100,
+                  "mean_latency_ms": q["mean_latency_ms"] - b["mean_latency_ms"],
+                  "tool_errors": q["tool_errors"] - b["tool_errors"],
+                  "duplicate_calls_blocked": q["duplicate_calls_blocked"] - b["duplicate_calls_blocked"],
+              },
+              "target": {
+                  "accuracy": 0.1875,
+                  "passes": q["accuracy"] >= 0.1875,
+              },
+          }
+          Path("clean-same-runner-v3b-summary.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload clean matched summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-same-runner-v3b-summary
+          path: clean-same-runner-v3b-summary.json
+          if-no-files-found: error
+          retention-days: 30
