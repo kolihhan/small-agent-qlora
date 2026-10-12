@@ -26,6 +26,12 @@ class OpenAICompatModel:
         self._ids = itertools.count(1)
 
     def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        return self._complete(messages, tools, tool_choice="auto")
+
+    def complete_final(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        return self._complete(messages, tools, tool_choice="none")
+
+    def _complete(self, messages: list[dict], tools: list[dict], *, tool_choice: str) -> AssistantTurn:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -34,7 +40,7 @@ class OpenAICompatModel:
         }
         if tools:
             payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+            payload["tool_choice"] = tool_choice
 
         try:
             response = requests.post(
