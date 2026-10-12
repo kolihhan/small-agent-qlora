@@ -4,15 +4,18 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - qlora/gaia-9b-v2
+      - main
+      - debug/qlora-clean-eval
     paths:
       - ".github/workflows/final-tool-choice-cache-probe.yml"
+      - "src/gaia_small_agent/agent/loop.py"
+      - "src/gaia_small_agent/model/openai_compat.py"
+      - "tests/test_final_tool_choice_cache_regression.py"
 
 permissions:
   contents: read
 
 env:
-  FROZEN_FIX_COMMIT: "2d086378533a07e6c1d3d8f423147c34037c1948"
   MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
   MODEL_SHA256: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
   LLAMA_RELEASE_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
@@ -24,10 +27,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - name: Checkout cache-preserving fix
+      - name: Checkout current revision
         uses: actions/checkout@v4
-        with:
-          ref: ${{ env.FROZEN_FIX_COMMIT }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -177,7 +178,6 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json
-          import re
           from pathlib import Path
 
           payload = {"schema_version": "final-tool-choice-cache-probe/v1", "modes": {}}
