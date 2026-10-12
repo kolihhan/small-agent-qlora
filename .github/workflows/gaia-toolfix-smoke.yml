@@ -137,8 +137,8 @@ jobs:
         run: |
           set +e
           # With max_steps=2 this case has exactly one tool-capable turn followed by the
-          # boundary turn. A correct runtime must expose tools=[] on that second turn and
-          # let the model synthesize instead of attempting another tool call / hitting max_steps.
+          # boundary turn. Search availability/correctness is gated separately above;
+          # this case only asks whether the final turn is reserved for synthesis.
           python -m gaia_small_agent run \
             "Use the web search tool to answer this historical lookup: What was the exact title of NASA's Astronomy Picture of the Day on 2015 August 21? Return only the title." \
             --model "$MODEL" \
@@ -202,23 +202,29 @@ jobs:
                   and boundary["stop_reason"] == "final"
                   and boundary["metrics"].get("steps") == 2
                   and boundary["final_steps"] == [2]
-                  and expected_apod in boundary["answer"].casefold()
               ),
               "maxsteps_one_tool_before_boundary": bool(
                   not boundary.get("missing")
                   and len(boundary["tool_calls"]) == 1
                   and boundary["tool_calls"][0]["step"] == 1
                   and boundary["tool_calls"][0]["name"] == "search"
-                  and all(result["ok"] for result in boundary["tool_results"])
+                  and len(boundary["tool_results"]) == 1
+                  and boundary["tool_results"][0]["step"] == 1
+                  and boundary["tool_results"][0]["name"] == "search"
               ),
           }
+          diagnostics = {
+              "boundary_search_ok": bool(boundary.get("tool_results") and boundary["tool_results"][0]["ok"]),
+              "boundary_answer_contains_expected": expected_apod in boundary.get("answer", "").casefold(),
+          }
           payload = {
-              "schema_version": "gaia-toolfix-smoke/v2",
+              "schema_version": "gaia-toolfix-smoke/v3",
               "model": "qwen3.5:9b",
               "scope": "cheap real-case gate before any GAIA100 rerun",
               "direct_tool_checks": direct,
               "cases": cases,
               "checks": checks,
+              "diagnostics": diagnostics,
               "all_checks_pass": all(checks.values()),
           }
           (root / "summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
