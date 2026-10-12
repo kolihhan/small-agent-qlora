@@ -94,12 +94,13 @@ def test_cpu_v3a_keeps_same_9b_experiment_and_runs_smoke_before_full_train():
     assert "qwen35-9b-qlora-v3a-cpu" in text
 
 
-def test_gaia_shard_runner_live_preflights_tools():
+def test_gaia_shard_runner_preflight_is_offline():
     runner = GAIA_SHARD_RUNNER.read_text(encoding="utf-8")
 
-    assert "preflight_default_tools" in runner
     assert "with tempfile.TemporaryDirectory" in runner
-    assert "preflight_default_tools(workspace)" in runner
+    assert "preflight_eval_tools(workspace)" in runner
+    assert "check_default_tools(workspace, live_search=False)" in runner
+    assert "preflight_default_tools" not in runner
 
 
 def test_gaia_9b_thinking_baseline_is_isolated_and_matched():
