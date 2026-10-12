@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,7 @@ from .base import Tool, ToolResult
 
 class SearchTool(Tool):
     name = "search"
-    description = "Search the public web and return titles, URLs, and snippets."
+    description = "Search the public web and return source links and excerpts."
     schema = {
         "type": "object",
         "properties": {
@@ -19,51 +20,50 @@ class SearchTool(Tool):
         "additionalProperties": False,
     }
 
-    def __init__(self, timeout_s: float = 5.0):
+    def __init__(self, timeout_s: float = 20.0, endpoint: str = "https://search.parallel.ai/mcp"):
         self.timeout_s = float(timeout_s)
+        self.endpoint = endpoint
 
-    def _client(self, ddgs_cls):
+    async def _search_parallel(self, query: str) -> ToolResult:
         try:
-            return ddgs_cls(timeout=self.timeout_s)
-        except TypeError:
-            # Keep compatibility with simple injected clients while real DDGS gets a hard timeout.
-            return ddgs_cls()
+            from mcp import Client
+            from mcp.types import TextContent
+        except ImportError:
+            return ToolResult(False, "Install search support: pip install -e '.[search]'", "MISSING_DEPENDENCY")
+
+        try:
+            async with Client(self.endpoint) as client:
+                result = await client.call_tool(
+                    "web_search",
+                    {
+                        "objective": query,
+                        "search_queries": [query],
+                    },
+                )
+        except Exception as exc:
+            return ToolResult(False, f"Search failed: {exc}", "SEARCH_ERROR")
+
+        text = "\n\n".join(
+            block.text for block in result.content if isinstance(block, TextContent)
+        ).strip()
+        if result.is_error:
+            return ToolResult(False, text or "Parallel search failed", "SEARCH_ERROR")
+        if not text:
+            return ToolResult(False, "Search failed: no results", "SEARCH_ERROR")
+        return ToolResult(True, text)
 
     def run(self, arguments: dict[str, Any], workspace: Path) -> ToolResult:
         query = arguments.get("query")
         if not isinstance(query, str) or not query.strip():
             return ToolResult(False, "'query' must be a non-empty string", "BAD_ARGUMENTS")
-        try:
-            from ddgs import DDGS
-        except ImportError:
-            return ToolResult(False, "Install search support: pip install -e '.[search]'", "MISSING_DEPENDENCY")
-        try:
-            from ddgs.exceptions import TimeoutException
-        except ImportError:
-            class TimeoutException(Exception):
-                pass
 
-        max_results = max(1, min(int(arguments.get("max_results", 5)), 10))
+        # Keep max_results in the public schema for trained-model compatibility.
+        # Parallel's anonymous MCP endpoint controls result count server-side.
         try:
-            rows = list(
-                self._client(DDGS).text(
-                    query,
-                    backend="auto",
-                    max_results=max_results,
-                )
+            return asyncio.run(
+                asyncio.wait_for(self._search_parallel(query.strip()), timeout=self.timeout_s)
             )
-        except TimeoutException as exc:
-            return ToolResult(False, f"Search timed out: {exc}", "SEARCH_TIMEOUT")
-        except Exception as exc:
+        except TimeoutError:
+            return ToolResult(False, "Search timed out", "SEARCH_TIMEOUT")
+        except RuntimeError as exc:
             return ToolResult(False, f"Search failed: {exc}", "SEARCH_ERROR")
-
-        if not rows:
-            return ToolResult(False, "Search failed: no results", "SEARCH_ERROR")
-
-        lines = []
-        for i, row in enumerate(rows, 1):
-            title = row.get("title", "")
-            url = row.get("href") or row.get("url") or ""
-            body = row.get("body") or row.get("snippet") or ""
-            lines.append(f"[{i}] {title}\nURL: {url}\n{body}")
-        return ToolResult(True, "\n\n".join(lines))
