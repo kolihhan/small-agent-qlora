@@ -12,7 +12,7 @@ import gaia_small_agent.benchmark.runner as gaia_runner
 from gaia_small_agent.benchmark.sharding import shard_selected_rows
 from gaia_small_agent.model.ollama import OllamaModel
 from gaia_small_agent.model.openai_compat import OpenAICompatModel
-from gaia_small_agent.tools import default_tools, preflight_default_tools
+from gaia_small_agent.tools import check_default_tools, default_tools
 from gaia_small_agent.training.protection import build_protected_question_hashes
 
 
@@ -51,11 +51,27 @@ def build_model(args):
     )
 
 
+def preflight_eval_tools(workspace: str | Path) -> dict:
+    report = check_default_tools(workspace, live_search=False)
+    if not report["ready"]:
+        failed = [
+            f"{name}: {check.get('error_code') or check.get('detail') or 'failed'}"
+            for name, check in report["checks"].items()
+            if not check.get("ok")
+        ]
+        raise RuntimeError("evaluation tool preflight failed: " + "; ".join(failed))
+    return {
+        "tool_names": report["tool_names"],
+        "dependencies": report["dependencies"],
+        "smokes": report["smokes"],
+    }
+
+
 def main() -> int:
     args = build_parser().parse_args()
 
     with tempfile.TemporaryDirectory(prefix="small-agent-shard-preflight-") as workspace:
-        tool_preflight = preflight_default_tools(workspace)
+        tool_preflight = preflight_eval_tools(workspace)
 
     dataset = load_validation("gaia-benchmark/GAIA", token=args.hf_token, revision=GAIA_REVISION)
     full_selection = select_gaia_partition(dataset, partition="evaluation", seed=LOCAL_PROTOCOL_SEED)
