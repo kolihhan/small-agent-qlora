@@ -9,7 +9,7 @@ from .search import SearchTool
 
 
 _DEFAULT_TOOL_NAMES = ["search", "read", "inspect", "python"]
-_DEPENDENCIES = ("requests", "mcp", "pypdf", "openpyxl")
+_DEPENDENCIES = ("requests", "mcp", "ddgs", "pypdf", "openpyxl")
 
 
 def default_tools():
@@ -19,8 +19,8 @@ def default_tools():
 def check_default_tools(workspace: str | Path, *, live_search: bool = False) -> dict:
     """Check the default tool surface without requiring model inference.
 
-    Doctor mode checks that the MCP search client is installed without making a
-    live web query. Callers may opt into the live search smoke explicitly.
+    Doctor mode checks both primary MCP search and DDGS fallback dependencies without
+    making a live web query. Callers may opt into the live search smoke explicitly.
     """
     workspace = Path(workspace).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
@@ -53,10 +53,11 @@ def check_default_tools(workspace: str | Path, *, live_search: bool = False) -> 
             checks[name] = {"ok": False, "detail": "tool missing from default surface", "error_code": "TOOL_MISSING"}
             continue
         if name == "search" and not live_search:
-            ok = dependencies.get("mcp") is not None
+            missing = [package for package in ("mcp", "ddgs") if dependencies.get(package) is None]
+            ok = not missing
             checks[name] = {
                 "ok": ok,
-                "detail": "dependency available" if ok else "mcp dependency missing",
+                "detail": "dependencies available" if ok else f"search dependencies missing: {', '.join(missing)}",
                 "error_code": None if ok else "MISSING_DEPENDENCY",
             }
             continue
