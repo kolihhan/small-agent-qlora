@@ -1,0 +1,190 @@
+name: Tool-policy Transformers held-out baseline
+
+on:
+  push:
+    paths:
+      - ".github/POLICY_TRANSFORMERS_BASE_TRIGGER"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  HF_MODEL: Qwen/Qwen3.5-4B
+  HF_REVISION: 851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a
+  POLICY_SEED: tinyagent-policy-v1
+  SHARD_COUNT: "10"
+
+jobs:
+  baseline-shard:
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install runtime
+        run: python -m pip install -e ".[train,files]"
+
+      - name: Download frozen Transformers snapshot
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import snapshot_download
+          path = snapshot_download(
+              repo_id=os.environ["HF_MODEL"],
+              revision=os.environ["HF_REVISION"],
+          )
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write(f"HF_MODEL_PATH={path}\n")
+          print(path)
+          PY
+
+      - name: Generate frozen oracle dataset
+        run: small-agent generate-oracle-policy --output-dir runs/oracle --seed "$POLICY_SEED"
+
+      - name: Select deterministic held-out shard
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          rows = [line for line in Path("runs/oracle/test.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+          shard = int(os.environ["SHARD_INDEX"])
+          count = int(os.environ["SHARD_COUNT"])
+          selected = [line for i, line in enumerate(rows) if i % count == shard]
+          if len(selected) != 20:
+              raise SystemExit(f"expected 20 rows, got {len(selected)}")
+          Path("runs/oracle/test-shard.jsonl").write_text("\n".join(selected) + "\n", encoding="utf-8")
+          print(f"shard={shard} rows={len(selected)}")
+          PY
+
+      - name: Evaluate frozen Transformers Base
+        run: |
+          small-agent eval-policy \
+            --tasks runs/oracle/test-shard.jsonl \
+            --work-root "runs/policy-transformers-base-${{ matrix.shard }}" \
+            --output "runs/base-${{ matrix.shard }}.json" \
+            --backend transformers \
+            --hf-model "$HF_MODEL_PATH" \
+            --max-steps 12 \
+            --max-new-tokens 512
+
+      - name: Attach provenance
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(f"runs/base-{os.environ['SHARD_INDEX']}.json")
+          summary = json.loads(path.read_text(encoding="utf-8"))
+          summary["provenance"] = {
+              "commit_sha": os.environ["COMMIT_SHA"],
+              "backend": "transformers",
+              "model": os.environ["HF_MODEL"],
+              "model_revision": os.environ["HF_REVISION"],
+              "policy_seed": os.environ["POLICY_SEED"],
+              "quantize_4bit": True,
+              "shard_index": int(os.environ["SHARD_INDEX"]),
+              "shard_count": int(os.environ["SHARD_COUNT"]),
+          }
+          path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload shard aggregate only
+        uses: actions/upload-artifact@v4
+        with:
+          name: policy-transformers-base-${{ matrix.shard }}
+          path: runs/base-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 14
+
+  aggregate:
+    needs: baseline-shard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download shard aggregates
+        uses: actions/download-artifact@v4
+        with:
+          pattern: policy-transformers-base-*
+          path: runs/summaries
+          merge-multiple: true
+
+      - name: Build Transformers Base aggregate
+        run: |
+          python - <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          paths = sorted(Path("runs/summaries").glob("base-*.json"))
+          if len(paths) != 10:
+              raise SystemExit(f"expected 10 shard summaries, got {len(paths)}")
+          rows = [json.loads(p.read_text(encoding="utf-8")) for p in paths]
+          total = sum(r["total"] for r in rows)
+          if total != 200:
+              raise SystemExit(f"expected 200 held-out tasks, got {total}")
+          stops = Counter()
+          by_capability = {}
+          for row in rows:
+              stops.update(row.get("stop_reasons") or {})
+              for capability, metrics in (row.get("by_capability") or {}).items():
+                  bucket = by_capability.setdefault(capability, {"total": 0, "correct": 0, "completed": 0, "required_tools_satisfied": 0})
+                  for key in bucket:
+                      bucket[key] += int(metrics.get(key, 0))
+          first = rows[0]["provenance"]
+          for row in rows:
+              prov = row["provenance"]
+              for key in ("backend", "model", "model_revision", "policy_seed", "quantize_4bit", "shard_count"):
+                  if prov[key] != first[key]:
+                      raise SystemExit(f"provenance mismatch: {key}")
+          correct = sum(r["correct"] for r in rows)
+          completed = sum(r["completed"] for r in rows)
+          payload = {
+              "schema_version": "tool-policy-eval/v1",
+              "total": total,
+              "correct": correct,
+              "completed": completed,
+              "exact_success_rate": correct * 100.0 / total,
+              "completion_rate": completed * 100.0 / total,
+              "required_tools_satisfied": sum(r["required_tools_satisfied"] for r in rows),
+              "tool_calls": sum(r["tool_calls"] for r in rows),
+              "tool_errors": sum(r["tool_errors"] for r in rows),
+              "duplicate_calls_blocked": sum(r["duplicate_calls_blocked"] for r in rows),
+              "stop_reasons": dict(stops),
+              "by_capability": by_capability,
+              "provenance": {
+                  "backend": first["backend"],
+                  "model": first["model"],
+                  "model_revision": first["model_revision"],
+                  "policy_seed": first["policy_seed"],
+                  "quantize_4bit": first["quantize_4bit"],
+                  "shard_count": 10,
+              },
+          }
+          Path("runs/policy-transformers-base-heldout.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload held-out aggregate
+        uses: actions/upload-artifact@v4
+        with:
+          name: policy-transformers-base-heldout
+          path: runs/policy-transformers-base-heldout.json
+          if-no-files-found: error
+          retention-days: 30

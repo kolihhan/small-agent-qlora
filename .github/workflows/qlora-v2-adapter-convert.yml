@@ -1,0 +1,121 @@
+name: Convert Qwen3.5 9B QLoRA v2 adapter
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/qlora-v2-adapter-convert.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  # AAS evaluation/debugging contract: only convert the verified successful final training run.
+  SOURCE_RUN_ID: "38068245793"
+  LLAMA_CPP_COMMIT: aa94f2086147cd4bfbcff818ce998dffce5fcb39
+  BASE_MODEL_ID: Qwen/Qwen3.5-9B
+  EXPERIMENT_COMMIT: 9c0836080eebd57f47d223fde53715d9ed243d00
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Verify training run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          payload="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}")"
+          status="$(python -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], d.get("conclusion"))' <<<"$payload")"
+          echo "training $status"
+          [ "$status" = "completed success" ] || { echo "verified training run is not successful"; exit 1; }
+
+      - name: Download adapter artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: qwen35-9b-qlora-v2-final
+          path: runs/source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Validate training artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f runs/source/qwen35-9b-qlora-v2-adapter.zip
+          test -f runs/source/training-meta.json
+          mkdir -p runs/adapter
+          unzip -q runs/source/qwen35-9b-qlora-v2-adapter.zip -d runs/adapter
+          test -s runs/adapter/adapter_config.json
+          test -s runs/adapter/adapter_model.safetensors
+          test -s runs/adapter/run_config.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          cfg = json.loads(Path('runs/adapter/adapter_config.json').read_text())
+          run_cfg = json.loads(Path('runs/adapter/run_config.json').read_text())
+          meta = json.loads(Path('runs/source/training-meta.json').read_text())
+          print(json.dumps({'base_model_name_or_path': cfg.get('base_model_name_or_path'), 'r': cfg.get('r'), 'lora_alpha': cfg.get('lora_alpha'), 'target_modules': cfg.get('target_modules'), 'training_meta': meta, 'truncation_policy': run_cfg.get('truncation_policy')}, indent=2, sort_keys=True))
+          assert meta.get('ok') is True, meta
+          assert meta.get('cuda') is True, meta
+          assert meta.get('max_steps') == 12, meta
+          assert meta.get('experiment_commit') == os.environ['EXPERIMENT_COMMIT'], meta
+          assert run_cfg.get('training_examples') == 3600, run_cfg
+          assert run_cfg.get('truncation_policy') == 'preserve full completion; left-trim oldest prompt tokens', run_cfg
+          assert int(run_cfg.get('min_completion_tokens', 0)) > 0, run_cfg
+          PY
+
+      - name: Pin llama.cpp converter and install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
+          git -C /tmp/llama.cpp checkout "$LLAMA_CPP_COMMIT"
+          python -m pip install --quiet -r /tmp/llama.cpp/requirements/requirements-convert_lora_to_gguf.txt
+          python -m pip install --quiet --upgrade 'transformers>=5.15,<6'
+          python - <<'PY'
+          from transformers import AutoConfig, __version__
+          cfg = AutoConfig.from_pretrained('Qwen/Qwen3.5-9B')
+          print('transformers', __version__, 'model_type', cfg.model_type)
+          assert cfg.model_type == 'qwen3_5'
+          PY
+
+      - name: Convert PEFT adapter to GGUF
+        shell: bash
+        run: |
+          set -euo pipefail
+          python /tmp/llama.cpp/convert_lora_to_gguf.py \
+            --base-model-id "$BASE_MODEL_ID" \
+            --outfile runs/qwen35-9b-qlora-v2-adapter.gguf \
+            --outtype f16 \
+            runs/adapter
+          test -s runs/qwen35-9b-qlora-v2-adapter.gguf
+          sha256sum runs/qwen35-9b-qlora-v2-adapter.gguf | tee runs/qwen35-9b-qlora-v2-adapter.sha256
+
+      - name: Save conversion provenance
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          payload = {'source_training_run_id': os.environ['SOURCE_RUN_ID'], 'experiment_commit': os.environ['EXPERIMENT_COMMIT'], 'training_steps': 12, 'llama_cpp_commit': os.environ['LLAMA_CPP_COMMIT'], 'base_model_id': os.environ['BASE_MODEL_ID'], 'adapter_gguf_bytes': Path('runs/qwen35-9b-qlora-v2-adapter.gguf').stat().st_size, 'adapter_sha256': Path('runs/qwen35-9b-qlora-v2-adapter.sha256').read_text().split()[0]}
+          Path('runs/adapter-conversion-meta.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload converted adapter
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen35-9b-qlora-v2-gguf
+          path: |
+            runs/qwen35-9b-qlora-v2-adapter.gguf
+            runs/qwen35-9b-qlora-v2-adapter.sha256
+            runs/adapter-conversion-meta.json
+            runs/source/training-meta.json
+          if-no-files-found: error
+          retention-days: 30

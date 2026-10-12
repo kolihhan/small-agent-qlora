@@ -1,0 +1,200 @@
+name: Tool-policy held-out baseline
+
+on:
+  push:
+    paths:
+      - ".github/POLICY_BASELINE_TRIGGER"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MODEL: qwen3.5:4b
+  OLLAMA_URL: http://127.0.0.1:11434
+  POLICY_SEED: tinyagent-policy-v1
+  SHARD_COUNT: "10"
+
+jobs:
+  baseline-shard:
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install runtime
+        run: python -m pip install -e ".[search,files]"
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+
+      - name: Start Ollama and pull frozen Base Qwen
+        shell: bash
+        run: |
+          set -euo pipefail
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in {1..30}; do
+            if curl -fsS "$OLLAMA_URL/api/tags" >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS "$OLLAMA_URL/api/tags" >/dev/null
+          ollama pull "$MODEL"
+          model_id="$(ollama list | awk -v model="$MODEL" '$1 == model {print $2; exit}')"
+          test -n "$model_id"
+          echo "MODEL_ID=$model_id" >> "$GITHUB_ENV"
+
+      - name: Generate frozen oracle dataset
+        run: small-agent generate-oracle-policy --output-dir runs/oracle --seed "$POLICY_SEED"
+
+      - name: Select deterministic held-out shard
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          source = Path("runs/oracle/test.jsonl")
+          rows = [line for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
+          shard_index = int(os.environ["SHARD_INDEX"])
+          shard_count = int(os.environ["SHARD_COUNT"])
+          selected = [line for i, line in enumerate(rows) if i % shard_count == shard_index]
+          if len(selected) != 20:
+              raise SystemExit(f"expected 20 rows in shard, got {len(selected)}")
+          out = Path("runs/oracle/test-shard.jsonl")
+          out.write_text("\n".join(selected) + "\n", encoding="utf-8")
+          print(f"shard={shard_index} rows={len(selected)}")
+          PY
+
+      - name: Evaluate frozen Base Qwen
+        run: |
+          small-agent eval-policy \
+            --tasks runs/oracle/test-shard.jsonl \
+            --work-root "runs/policy-base-${{ matrix.shard }}" \
+            --output "runs/base-${{ matrix.shard }}.json" \
+            --backend ollama \
+            --model "$MODEL" \
+            --ollama-url "$OLLAMA_URL" \
+            --max-steps 12 \
+            --max-new-tokens 512
+
+      - name: Attach provenance to aggregate shard
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(f"runs/base-{os.environ['SHARD_INDEX']}.json")
+          summary = json.loads(path.read_text(encoding="utf-8"))
+          summary["provenance"] = {
+              "commit_sha": os.environ["COMMIT_SHA"],
+              "model": os.environ["MODEL"],
+              "model_id": os.environ["MODEL_ID"],
+              "policy_seed": os.environ["POLICY_SEED"],
+              "shard_index": int(os.environ["SHARD_INDEX"]),
+              "shard_count": int(os.environ["SHARD_COUNT"]),
+          }
+          path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload aggregate shard only
+        uses: actions/upload-artifact@v4
+        with:
+          name: policy-baseline-${{ matrix.shard }}
+          path: runs/base-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 14
+
+  aggregate:
+    needs: baseline-shard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download aggregate shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: policy-baseline-*
+          path: runs/summaries
+          merge-multiple: true
+
+      - name: Build held-out Base aggregate
+        run: |
+          python - <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          paths = sorted(Path("runs/summaries").glob("base-*.json"))
+          if len(paths) != 10:
+              raise SystemExit(f"expected 10 shard summaries, got {len(paths)}")
+          rows = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+          total = sum(row["total"] for row in rows)
+          correct = sum(row["correct"] for row in rows)
+          completed = sum(row["completed"] for row in rows)
+          required = sum(row["required_tools_satisfied"] for row in rows)
+          tool_calls = sum(row["tool_calls"] for row in rows)
+          tool_errors = sum(row["tool_errors"] for row in rows)
+          duplicate = sum(row["duplicate_calls_blocked"] for row in rows)
+          stops = Counter()
+          by_capability = {}
+          for row in rows:
+              stops.update(row.get("stop_reasons") or {})
+              for capability, metrics in (row.get("by_capability") or {}).items():
+                  bucket = by_capability.setdefault(capability, {"total": 0, "correct": 0, "completed": 0, "required_tools_satisfied": 0})
+                  for key in bucket:
+                      bucket[key] += int(metrics.get(key, 0))
+          if total != 200:
+              raise SystemExit(f"expected 200 held-out tasks, got {total}")
+          first_prov = rows[0]["provenance"]
+          if any(row["provenance"]["model_id"] != first_prov["model_id"] for row in rows):
+              raise SystemExit("model IDs differ across shards")
+          payload = {
+              "schema_version": "tool-policy-eval/v1",
+              "total": total,
+              "correct": correct,
+              "completed": completed,
+              "exact_success_rate": correct * 100.0 / total,
+              "completion_rate": completed * 100.0 / total,
+              "required_tools_satisfied": required,
+              "tool_calls": tool_calls,
+              "tool_errors": tool_errors,
+              "duplicate_calls_blocked": duplicate,
+              "stop_reasons": dict(stops),
+              "by_capability": by_capability,
+              "provenance": {
+                  "commit_sha": first_prov["commit_sha"],
+                  "model": first_prov["model"],
+                  "model_id": first_prov["model_id"],
+                  "policy_seed": first_prov["policy_seed"],
+                  "shard_count": 10,
+              },
+          }
+          out = Path("runs/policy-base-heldout.json")
+          out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload held-out Base aggregate only
+        uses: actions/upload-artifact@v4
+        with:
+          name: policy-base-heldout
+          path: runs/policy-base-heldout.json
+          if-no-files-found: error
+          retention-days: 30

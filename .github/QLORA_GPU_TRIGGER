@@ -1,0 +1,8 @@
+experiment=tinyagent-qlora-v1
+backend=transformers
+model=Qwen/Qwen3.5-4B
+revision=851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a
+train_rows=1600
+epochs=2.0
+heldout=200
+run=2026-10-10T13:43+08:00

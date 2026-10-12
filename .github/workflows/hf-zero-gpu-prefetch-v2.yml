@@ -1,0 +1,121 @@
+name: Patch ZeroGPU v2 prefetch
+
+on:
+  push:
+    paths:
+      - ".github/workflows/hf-zero-gpu-prefetch-v2.yml"
+
+permissions:
+  contents: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  HF_SPACE_ID: kolihhan/small-agent-qlora-v2-train
+
+jobs:
+  patch-space:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Upload app that prefetches 9B weights before GPU allocation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          python -m pip install --quiet 'huggingface_hub>=1.0'
+          cat > /tmp/app.py <<'PYAPP'
+          from __future__ import annotations
+
+          import os
+          import shutil
+          import time
+          from pathlib import Path
+
+          import gradio as gr
+          import spaces
+          import torch
+          from huggingface_hub import snapshot_download
+
+          from gaia_small_agent.training.oracle_policy_v2 import generate_oracle_policy_v2_dataset
+          from gaia_small_agent.training.qlora import train_qlora
+
+          MODEL = "Qwen/Qwen3.5-9B"
+          ROOT = Path("/tmp/qlora-v2")
+
+          # This runs on the normal Space CPU before a ZeroGPU request, so the daily
+          # GPU allocation is spent on QLoRA rather than downloading ~19 GB of weights.
+          MODEL_PATH = snapshot_download(
+              repo_id=MODEL,
+              token=os.environ.get("HF_TOKEN") or None,
+          )
+
+
+          @spaces.GPU(duration=280)
+          def train(max_steps: int = 60):
+              max_steps = int(max_steps)
+              if max_steps < 1 or max_steps > 80:
+                  raise gr.Error("max_steps must be between 1 and 80")
+              if ROOT.exists():
+                  shutil.rmtree(ROOT)
+              ROOT.mkdir(parents=True)
+              data = generate_oracle_policy_v2_dataset(ROOT / "oracle", seed="small-agent-policy-v2")
+              out = ROOT / "adapter"
+              start = time.time()
+              train_qlora(
+                  data_path=data["train"],
+                  output_dir=out,
+                  model_name=MODEL_PATH,
+                  max_length=768,
+                  learning_rate=1e-4,
+                  lora_r=16,
+                  lora_alpha=32,
+                  lora_dropout=0.05,
+                  max_steps=max_steps,
+                  save_steps=max(10, max_steps // 2),
+                  gradient_accumulation_steps=8,
+                  lora_target_modules="all-linear",
+              )
+              elapsed = time.time() - start
+              required = [out / "adapter_config.json", out / "adapter_model.safetensors", out / "run_config.json"]
+              missing = [str(p) for p in required if not p.is_file()]
+              if missing:
+                  raise RuntimeError(f"missing adapter outputs: {missing}")
+              archive = shutil.make_archive(str(ROOT / "qwen35-9b-qlora-v2-adapter"), "zip", out)
+              meta = {
+                  "model": MODEL,
+                  "model_path": MODEL_PATH,
+                  "max_steps": max_steps,
+                  "elapsed_seconds": elapsed,
+                  "cuda": torch.cuda.is_available(),
+                  "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+                  "adapter_bytes": (out / "adapter_model.safetensors").stat().st_size,
+              }
+              return archive, meta
+
+
+          demo = gr.Interface(
+              fn=train,
+              inputs=gr.Number(value=60, precision=0, label="Optimizer steps"),
+              outputs=[gr.File(label="Adapter archive"), gr.JSON(label="Training metadata")],
+              api_name="train",
+              title="Small Agent QLoRA v2 trainer",
+          )
+
+          if __name__ == "__main__":
+              demo.launch()
+          PYAPP
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          api.upload_file(
+              path_or_fileobj="/tmp/app.py",
+              path_in_repo="app.py",
+              repo_id=os.environ["HF_SPACE_ID"],
+              repo_type="space",
+          )
+          try:
+              api.restart_space(repo_id=os.environ["HF_SPACE_ID"])
+          except Exception as exc:
+              print(f"restart request: {exc}")
+          PY

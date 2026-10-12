@@ -1,0 +1,187 @@
+from pathlib import Path
+
+
+WORKFLOW = Path(".github/workflows/gaia-shadow-gate.yml")
+TRIGGER = Path(".github/GAIA_SHADOW_TRIGGER")
+CPU_QLORA_WORKFLOW = Path(".github/workflows/qlora-cpu-batch.yml")
+CPU_V3A_WORKFLOW = Path(".github/workflows/qlora-cpu-v3a.yml")
+GAIA_9B_THINKING_WORKFLOW = Path(".github/workflows/gaia-9b-thinking20.yml")
+GAIA_9B_PARALLEL_BASE_WORKFLOW = Path(".github/workflows/gaia-9b-base-parallel-mcp.yml")
+GAIA_9B_CTX16K_BASE_WORKFLOW = Path(".github/workflows/gaia-9b-base-ctx16k.yml")
+GAIA_9B_CTX16K_V3B_WORKFLOW = Path(".github/workflows/gaia-9b-v3b-ctx16k.yml")
+V3A_TRAIN_WORKFLOW = Path(".github/workflows/hf-zero-gpu-train-v3a.yml")
+GAIA_SHARD_RUNNER = Path("scripts/run_gaia_eval_shard.py")
+
+
+def test_shadow_workflow_is_matched_and_aggregate_only():
+    text = WORKFLOW.read_text(encoding="utf-8")
+
+    credential_gate = text.index("Verify gated dataset credential")
+    model_pull = text.index("Start Ollama and pull model")
+    assert credential_gate < model_pull
+
+    assert "baseline_sha=" in text
+    assert "exposure=" in text
+    assert "candidate_name=" in text
+    assert "exposure must be 1, 2, or 3" in text
+    assert "path: baseline" in text
+    assert text.count("--partition shadow") == 2
+    assert text.count("--max-steps 12") == 2
+    assert text.count("--max-new-tokens 512") == 2
+    assert "evaluate_shadow_promotion" in text
+
+    assert "name: gaia-shadow-gate-summary" in text
+    assert "path: runs/shadow-gate-summary.json" in text
+    assert "path: runs/\n" not in text
+    assert "path: runs/**" not in text
+    assert "path: runs/*" not in text
+
+    upload_block = text[text.index("Upload sanitized aggregate only"):]
+    forbidden = (
+        "results.jsonl",
+        "manifest.json",
+        "protected-question",
+        "trace",
+        "workspace",
+        "gaia-baseline-shadow/",
+        "gaia-candidate-shadow/",
+    )
+    for token in forbidden:
+        assert token not in upload_block
+
+
+def test_shadow_trigger_has_explicit_bounded_exposure_metadata():
+    values = {}
+    for line in TRIGGER.read_text(encoding="utf-8").splitlines():
+        if line.strip() and "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = value
+
+    assert set(values) == {"baseline_sha", "exposure", "candidate_name"}
+    assert len(values["baseline_sha"]) == 40
+    assert all(ch in "0123456789abcdef" for ch in values["baseline_sha"])
+    assert values["exposure"] in {"1", "2", "3"}
+    assert values["candidate_name"]
+
+
+def test_cpu_qlora_batch_keeps_frozen_max_length():
+    text = CPU_QLORA_WORKFLOW.read_text(encoding="utf-8")
+
+    assert '--max-length 1536' in text
+    assert '--max-length 1024' not in text
+
+
+def test_cpu_qlora_batch_avoids_regressed_kernel_loader():
+    text = CPU_QLORA_WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'python -m pip install "kernels>=0.11.1"' not in text
+
+
+def test_cpu_v3a_keeps_same_9b_experiment_and_runs_smoke_before_full_train():
+    text = CPU_V3A_WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'HF_MODEL: "Qwen/Qwen3.5-9B"' in text
+    assert 'TRAIN_STEPS: "64"' in text
+    assert 'EXPOSURE_COUNT: "64"' in text
+    assert 'EXPOSURE_SEED: "qlora-v3a-exposure"' in text
+    assert 'GRAD_ACC: "1"' in text
+    assert 'MAX_LENGTH: "512"' in text
+    assert "generate_oracle_policy_v2_dataset" in text
+    assert "CPU feasibility smoke: one optimizer step" in text
+    assert "max_steps=1" in text
+    assert "Full CPU v3A train" in text
+    assert "max_steps=int(os.environ['TRAIN_STEPS'])" in text
+    assert "exposure_count=int(os.environ['EXPOSURE_COUNT'])" in text
+    assert "exposure_seed=os.environ['EXPOSURE_SEED']" in text
+    assert "training-exposure.json" in text
+    assert "qwen35-9b-qlora-v3a-cpu" in text
+
+
+def test_gaia_shard_runner_preflight_is_offline():
+    runner = GAIA_SHARD_RUNNER.read_text(encoding="utf-8")
+
+    assert "with tempfile.TemporaryDirectory" in runner
+    assert "preflight_eval_tools(workspace)" in runner
+    assert "check_default_tools(workspace, live_search=False)" in runner
+    assert "preflight_default_tools" not in runner
+
+
+def test_gaia_9b_thinking_baseline_is_isolated_and_matched():
+    workflow = GAIA_9B_THINKING_WORKFLOW.read_text(encoding="utf-8")
+    runner = GAIA_SHARD_RUNNER.read_text(encoding="utf-8")
+
+    assert 'parser.add_argument("--thinking", action="store_true")' in runner
+    assert "enable_thinking=args.thinking" in runner
+    assert '"thinking": args.thinking' in runner
+
+    assert "MODEL: qwen3.5:9b" in workflow
+    assert 'SHARD_COUNT: "20"' in workflow
+    assert "max-parallel: 20" in workflow
+    assert "--thinking" in workflow
+    assert "--shard-count \"$SHARD_COUNT\"" in workflow
+    assert "expected Evaluation100 total 100" in workflow
+    assert "name: gaia-9b-thinking-baseline-summary-20way" in workflow
+    assert "results.jsonl" not in workflow[workflow.index("Upload final sanitized aggregate only"):]
+
+
+def test_gaia_9b_parallel_base_matches_v3b_harness_without_adapter():
+    workflow = GAIA_9B_PARALLEL_BASE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'FROZEN_EVAL_COMMIT: "59d807d343039f6462beea8f996c4f9666045796"' in workflow
+    assert 'FULL_SELECTION_SHA256: "22ce65f410d45e2e84af5a0ad1eafeadb311b08bb1234c968a114174c29bb373"' in workflow
+    assert 'DATASET_REVISION: "682dd723ee1e1697e00360edccf2366dc8418dd9"' in workflow
+    assert 'PROTOCOL_SEED: "gaia-local-v2"' in workflow
+    assert 'MODEL_ALIAS: qwen3.5-9b' in workflow
+    assert "max-parallel: 20" in workflow
+    assert "--shard-count 20" in workflow
+    assert "--backend openai_compat" in workflow
+    assert "--reasoning-budget 0 --temperature 0" in workflow
+    assert "--ctx-size 4096 --threads 4 --parallel 1" in workflow
+    assert "--lora" not in workflow
+    assert "adapter.gguf" not in workflow
+    assert "expected Evaluation100 total 100" in workflow
+    assert "name: gaia-9b-base-parallel-mcp-summary" in workflow
+
+
+def test_gaia_9b_ctx16k_corrected_harness_is_matched():
+    base = GAIA_9B_CTX16K_BASE_WORKFLOW.read_text(encoding="utf-8")
+    qlora = GAIA_9B_CTX16K_V3B_WORKFLOW.read_text(encoding="utf-8")
+
+    for workflow in (base, qlora):
+        assert 'FROZEN_EVAL_COMMIT: "59d807d343039f6462beea8f996c4f9666045796"' in workflow
+        assert 'FULL_SELECTION_SHA256: "22ce65f410d45e2e84af5a0ad1eafeadb311b08bb1234c968a114174c29bb373"' in workflow
+        assert 'DATASET_REVISION: "682dd723ee1e1697e00360edccf2366dc8418dd9"' in workflow
+        assert 'PROTOCOL_SEED: "gaia-local-v2"' in workflow
+        assert 'MODEL_ALIAS: qwen3.5-9b' in workflow
+        assert "max-parallel: 20" in workflow
+        assert "--shard-count 20" in workflow
+        assert "--backend openai_compat" in workflow
+        assert "--reasoning-budget 0 --temperature 0" in workflow
+        assert "--ctx-size 16384 --threads 4 --parallel 1" in workflow
+        assert "--ctx-size 4096" not in workflow
+        assert "expected Evaluation100 total 100" in workflow
+
+    assert "--lora" not in base
+    assert "adapter.gguf" not in base
+    assert "--lora matched-input/qwen35-9b-qlora-v3b-adapter.gguf" in qlora
+    assert "e7caec609a905d21e056b107519d78916d3ef79e7bdc70db916e40d801d2187d" in qlora
+    assert "name: gaia-9b-base-ctx16k-summary" in base
+    assert "name: gaia-9b-v3b-ctx16k-summary" in qlora
+
+
+def test_v3a_training_workflow_locks_balanced_exposure_and_artifact_trace():
+    text = V3A_TRAIN_WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'TRAIN_STEPS: "64"' in text
+    assert 'EXPOSURE_COUNT: "64"' in text
+    assert 'GRAD_ACC: "1"' in text
+    assert 'EXPOSURE_SEED: "qlora-v3a-exposure"' in text
+    assert "exposure_count=int(os.environ['EXPOSURE_COUNT'])" in text
+    assert "exposure_seed=os.environ['EXPOSURE_SEED']" in text
+    assert "training-exposure.json" in text
+    assert "source_training_examples" in text
+    assert "selection_sha256" in text
+    assert "selected_example_count" in text
+    assert "action_type_counts" in text
+    assert "capability_counts" in text
+    assert "35" in text and "29" in text

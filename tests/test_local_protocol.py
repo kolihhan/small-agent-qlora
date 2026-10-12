@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -23,14 +24,41 @@ def test_local_partitions_are_deterministic_stratified_and_disjoint():
 
     rows = _rows()
     diagnostic = select_gaia_partition(rows, "diagnostic", seed="local-v2")
+    shadow = select_gaia_partition(list(reversed(rows)), "shadow", seed="local-v2")
     evaluation = select_gaia_partition(list(reversed(rows)), "evaluation", seed="local-v2")
 
     assert len(diagnostic) == 25
     assert [sum(int(r["Level"]) == level for r in diagnostic) for level in (1, 2, 3)] == [8, 13, 4]
+    assert len(shadow) == 25
+    assert Counter(int(r["Level"]) for r in shadow) == {1: 8, 2: 13, 3: 4}
     assert len(evaluation) == 100
     assert [sum(int(r["Level"]) == level for r in evaluation) for level in (1, 2, 3)] == [32, 52, 16]
-    assert {r["task_id"] for r in diagnostic}.isdisjoint({r["task_id"] for r in evaluation})
-    assert [r["task_id"] for r in evaluation] == [r["task_id"] for r in select_gaia_partition(rows, "evaluation", seed="local-v2")]
+
+    diagnostic_ids = {r["task_id"] for r in diagnostic}
+    shadow_ids = {r["task_id"] for r in shadow}
+    evaluation_ids = {r["task_id"] for r in evaluation}
+    assert diagnostic_ids.isdisjoint(shadow_ids)
+    assert diagnostic_ids.isdisjoint(evaluation_ids)
+    assert shadow_ids.isdisjoint(evaluation_ids)
+
+    assert [r["task_id"] for r in diagnostic] == [
+        r["task_id"] for r in select_gaia_partition(rows, "diagnostic", seed="local-v2")
+    ]
+    assert [r["task_id"] for r in shadow] == [
+        r["task_id"] for r in select_gaia_partition(rows, "shadow", seed="local-v2")
+    ]
+    assert [r["task_id"] for r in evaluation] == [
+        r["task_id"] for r in select_gaia_partition(rows, "evaluation", seed="local-v2")
+    ]
+
+
+def test_shadow_partition_fails_when_unused_level_quota_is_insufficient():
+    from gaia_small_agent.benchmark.gaia100 import select_gaia_partition
+
+    rows = [row for row in _rows() if not (int(row["Level"]) == 3 and row["task_id"] in {"L3-022", "L3-023", "L3-024", "L3-025"})]
+
+    with pytest.raises(ValueError, match="shadow"):
+        select_gaia_partition(rows, "shadow", seed="local-v2")
 
 
 def test_protected_question_hashes_reject_exact_gaia_content_even_with_safe_source(tmp_path):

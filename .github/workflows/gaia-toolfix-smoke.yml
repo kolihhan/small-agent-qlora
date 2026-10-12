@@ -1,0 +1,253 @@
+name: GAIA ToolFix 3-case smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - qlora/gaia-9b-v2
+    paths:
+      - ".github/workflows/gaia-toolfix-smoke.yml"
+
+permissions:
+  contents: read
+
+env:
+  MODEL: qwen3.5:9b
+  OLLAMA_URL: http://127.0.0.1:11434
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install runtime dependencies
+        run: python -m pip install -e ".[search,files]"
+
+      - name: Install Ollama and pull frozen Base model
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in {1..30}; do
+            if curl -fsS "$OLLAMA_URL/api/tags" >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS "$OLLAMA_URL/api/tags" >/dev/null
+          ollama pull "$MODEL"
+          ollama list
+
+      - name: Live tool checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runs/toolfix-smoke
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+          from gaia_small_agent.tools.read import ReadTool
+          from gaia_small_agent.tools.search import SearchTool
+
+          out = {}
+          workspace = Path("runs/toolfix-smoke/direct-tools")
+          workspace.mkdir(parents=True, exist_ok=True)
+
+          search = SearchTool(timeout_s=30).run(
+              {"query": "NASA APOD 2015 August 21 Sprites from Space", "max_results": 2},
+              workspace,
+          )
+          # A compacted result block always has its numbered title immediately followed by its URL.
+          # This avoids mistaking numbered text inside an excerpt for another result.
+          result_blocks = re.findall(r"(?m)^\d+\. [^\n]+\nhttps?://", search.content or "")
+          out["search_max_results"] = {
+              "ok": search.ok,
+              "error_code": search.error_code,
+              "result_blocks": len(result_blocks),
+              "raw_json_results_marker": '\"results\"' in (search.content or ""),
+              "contains_expected": "Sprites from Space".casefold() in (search.content or "").casefold(),
+              "preview": (search.content or "")[:1200],
+          }
+
+          # Force Parallel fetch to be unavailable so the bounded public-HTTP PDF fallback is exercised.
+          # Use a deliberately small public PDF so this check tests PDF parsing rather than the 2 MiB safety limit.
+          pdf_url = "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"
+          read = ReadTool(timeout_s=10, endpoint="http://127.0.0.1:9").run(
+              {"source": pdf_url, "max_chars": 5000},
+              workspace,
+          )
+          out["remote_pdf_http_fallback"] = {
+              "ok": read.ok,
+              "error_code": read.error_code,
+              "contains_expected": "Dummy PDF file".casefold() in (read.content or "").casefold(),
+              "looks_like_pdf_bytes": (read.content or "").lstrip().startswith("%PDF-"),
+              "preview": (read.content or "")[:1200],
+          }
+
+          Path("runs/toolfix-smoke/direct-tool-checks.json").write_text(
+              json.dumps(out, indent=2, ensure_ascii=False) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(out, indent=2, ensure_ascii=False))
+          PY
+
+      - name: Run APOD search case
+        shell: bash
+        run: |
+          set +e
+          python -m gaia_small_agent run \
+            "Use the web search tool to answer this historical lookup: What was the exact title of NASA's Astronomy Picture of the Day on 2015 August 21? Return only the title." \
+            --model "$MODEL" \
+            --ollama-url "$OLLAMA_URL" \
+            --max-steps 6 \
+            --max-new-tokens 256 \
+            --workspace runs/toolfix-smoke/apod-workspace \
+            --output runs/toolfix-smoke/apod.json
+          code=$?
+          echo "$code" > runs/toolfix-smoke/apod.exit
+          exit 0
+
+      - name: Run remote PDF case
+        shell: bash
+        run: |
+          set +e
+          python -m gaia_small_agent run \
+            "Use the read tool on this exact public PDF URL: https://arxiv.org/pdf/1706.03762 . Return only the exact paper title." \
+            --model "$MODEL" \
+            --ollama-url "$OLLAMA_URL" \
+            --max-steps 4 \
+            --max-new-tokens 256 \
+            --workspace runs/toolfix-smoke/pdf-workspace \
+            --output runs/toolfix-smoke/pdf.json
+          code=$?
+          echo "$code" > runs/toolfix-smoke/pdf.exit
+          exit 0
+
+      - name: Run final-step synthesis boundary case
+        shell: bash
+        run: |
+          set +e
+          # With max_steps=2 this case has exactly one tool-capable turn followed by the
+          # boundary turn. Search availability/correctness is gated separately above;
+          # this case only asks whether the final turn is reserved for synthesis.
+          python -m gaia_small_agent run \
+            "Use the web search tool to answer this historical lookup: What was the exact title of NASA's Astronomy Picture of the Day on 2015 August 21? Return only the title." \
+            --model "$MODEL" \
+            --ollama-url "$OLLAMA_URL" \
+            --max-steps 2 \
+            --max-new-tokens 256 \
+            --workspace runs/toolfix-smoke/maxsteps-workspace \
+            --output runs/toolfix-smoke/maxsteps.json
+          code=$?
+          echo "$code" > runs/toolfix-smoke/maxsteps.exit
+          exit 0
+
+      - name: Build gate summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("runs/toolfix-smoke")
+          direct = json.loads((root / "direct-tool-checks.json").read_text(encoding="utf-8"))
+
+          def load_case(name):
+              path = root / f"{name}.json"
+              if not path.exists():
+                  return {"missing": True, "exit_code": int((root / f"{name}.exit").read_text()) if (root / f"{name}.exit").exists() else None}
+              data = json.loads(path.read_text(encoding="utf-8"))
+              calls = [e for e in data.get("trace", []) if e.get("kind") == "tool_call"]
+              results = [e for e in data.get("trace", []) if e.get("kind") == "tool_result"]
+              finals = [e for e in data.get("trace", []) if e.get("kind") == "final"]
+              return {
+                  "missing": False,
+                  "exit_code": int((root / f"{name}.exit").read_text()),
+                  "answer": data.get("answer", ""),
+                  "completed": bool(data.get("completed")),
+                  "stop_reason": data.get("stop_reason"),
+                  "metrics": data.get("metrics", {}),
+                  "run_config": data.get("run_config", {}),
+                  "tool_calls": [{"step": e.get("step"), "name": e.get("data", {}).get("name"), "arguments": e.get("data", {}).get("arguments", {})} for e in calls],
+                  "tool_results": [{"step": e.get("step"), "name": e.get("data", {}).get("name"), "ok": e.get("data", {}).get("ok"), "error_code": e.get("data", {}).get("error_code"), "preview": str(e.get("data", {}).get("content", ""))[:500]} for e in results],
+                  "final_steps": [e.get("step") for e in finals],
+              }
+
+          cases = {name: load_case(name) for name in ("apod", "pdf", "maxsteps")}
+          expected_apod = "sprites from space"
+          expected_pdf = "attention is all you need"
+
+          direct_search = direct["search_max_results"]
+          direct_pdf = direct["remote_pdf_http_fallback"]
+          boundary = cases["maxsteps"]
+          checks = {
+              "search_compaction_live": bool(direct_search["ok"] and not direct_search["raw_json_results_marker"] and 1 <= direct_search["result_blocks"] <= 2 and direct_search["contains_expected"]),
+              "remote_pdf_http_fallback": bool(direct_pdf["ok"] and direct_pdf["contains_expected"] and not direct_pdf["looks_like_pdf_bytes"]),
+              "apod_agent": bool(not cases["apod"].get("missing") and cases["apod"]["completed"] and expected_apod in cases["apod"]["answer"].casefold() and any(c["name"] == "search" for c in cases["apod"]["tool_calls"])),
+              "pdf_agent": bool(not cases["pdf"].get("missing") and cases["pdf"]["completed"] and expected_pdf in cases["pdf"]["answer"].casefold() and any(c["name"] == "read" for c in cases["pdf"]["tool_calls"])),
+              "maxsteps_final_synthesis": bool(
+                  not boundary.get("missing")
+                  and boundary["run_config"].get("max_steps") == 2
+                  and boundary["completed"]
+                  and boundary["stop_reason"] == "final"
+                  and boundary["metrics"].get("steps") == 2
+                  and boundary["final_steps"] == [2]
+              ),
+              "maxsteps_one_tool_before_boundary": bool(
+                  not boundary.get("missing")
+                  and len(boundary["tool_calls"]) == 1
+                  and boundary["tool_calls"][0]["step"] == 1
+                  and boundary["tool_calls"][0]["name"] == "search"
+                  and len(boundary["tool_results"]) == 1
+                  and boundary["tool_results"][0]["step"] == 1
+                  and boundary["tool_results"][0]["name"] == "search"
+              ),
+          }
+          diagnostics = {
+              "boundary_search_ok": bool(boundary.get("tool_results") and boundary["tool_results"][0]["ok"]),
+              "boundary_answer_contains_expected": expected_apod in boundary.get("answer", "").casefold(),
+          }
+          payload = {
+              "schema_version": "gaia-toolfix-smoke/v3",
+              "model": "qwen3.5:9b",
+              "scope": "cheap real-case gate before any GAIA100 rerun",
+              "direct_tool_checks": direct,
+              "cases": cases,
+              "checks": checks,
+              "diagnostics": diagnostics,
+              "all_checks_pass": all(checks.values()),
+          }
+          (root / "summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+          print(json.dumps(payload, indent=2, ensure_ascii=False))
+          PY
+
+      - name: Enforce smoke gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("runs/toolfix-smoke/summary.json").read_text(encoding="utf-8"))
+          if not data.get("all_checks_pass"):
+              raise SystemExit("ToolFix smoke gate failed; inspect uploaded evidence")
+          PY
+
+      - name: Upload smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaia-toolfix-3case-smoke
+          path: runs/toolfix-smoke
+          if-no-files-found: warn
+          retention-days: 14

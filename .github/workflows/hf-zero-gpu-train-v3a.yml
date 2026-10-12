@@ -1,0 +1,457 @@
+name: ZeroGPU Qwen3.5 9B QLoRA v3A
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/hf-zero-gpu-train-v3a.yml"
+
+permissions:
+  contents: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  HF_SPACE_ID: kolihhan/small-agent-qlora-v2-train
+  EXPERIMENT_COMMIT: f3d9c41802048f5e90fd577753e12a4428c40191
+  TRAIN_STEPS: "64"
+  EXPOSURE_COUNT: "64"
+  EXPOSURE_SEED: "qlora-v3a-exposure"
+  GRAD_ACC: "1"
+
+jobs:
+  validate:
+    name: Validate frozen v3A contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e ".[dev,files]"
+      - name: Verify exposure and workflow contracts
+        run: python -m pytest -q tests/test_training_exposure_v3a.py tests/test_workflow_contracts.py
+
+  train:
+    name: Train fixed 64-step v3A adapter
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Install clients and verify usable ZeroGPU quota
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN_NOT_CONFIGURED"; exit 42; }
+          python -m pip install --quiet 'huggingface_hub>=1.0' 'gradio_client>=2,<3'
+          python - <<'PY'
+          import json, os
+          from huggingface_hub import HfApi
+          q = HfApi(token=os.environ['HF_TOKEN']).get_zero_gpu_quota()
+          payload = {
+              'base': q.base,
+              'remaining': q.remaining,
+              'resets_at': q.resets_at.isoformat() if q.resets_at else None,
+              'required_reservation_seconds': 270,
+          }
+          print(json.dumps(payload, indent=2))
+          # This ZeroGPU route reserves about 1.5x the declared duration.
+          # 180s declared => 270s reservation, still under the observed Free 300s ceiling.
+          if q.remaining < 270:
+              raise SystemExit(f"Need >=270 quota seconds for the 180s reservation, only {q.remaining} remain")
+          PY
+
+      - name: Deploy fixed v3A trainer
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/project /tmp/space-src
+          mkdir -p /tmp/project /tmp/space-src
+          curl -fsSL "https://github.com/kolihhan/small-agent-qlora/archive/${EXPERIMENT_COMMIT}.tar.gz" -o /tmp/project.tar.gz
+          tar -xzf /tmp/project.tar.gz -C /tmp/project --strip-components=1
+          cp -R /tmp/project/src/gaia_small_agent /tmp/space-src/gaia_small_agent
+
+          cat > /tmp/space-src/requirements.txt <<'EOF'
+          transformers>=5.15,<6
+          peft>=0.20,<1
+          trl>=1.10,<2
+          bitsandbytes>=0.50.1,<1
+          accelerate>=1.10,<2
+          datasets>=4
+          requests>=2.32
+          huggingface_hub>=1.0
+          gradio>=6,<7
+          EOF
+
+          cat > /tmp/space-src/README.md <<'EOF'
+          ---
+          title: Small Agent QLoRA v3A Train
+          emoji: 🧪
+          colorFrom: gray
+          colorTo: blue
+          sdk: gradio
+          sdk_version: 6.0.1
+          app_file: app.py
+          pinned: false
+          private: true
+          hardware: zero-a10g
+          ---
+          Temporary private trainer for the frozen Small Agent 9B QLoRA v3A exposure experiment.
+          EOF
+
+          cat > /tmp/space-src/app.py <<'PYAPP'
+          from __future__ import annotations
+          import json, os, shutil, time, traceback
+          from pathlib import Path
+          import gradio as gr
+          import spaces
+          import torch
+          from huggingface_hub import snapshot_download
+          from transformers import AutoTokenizer
+          from gaia_small_agent.training.oracle_policy_v2 import generate_oracle_policy_v2_dataset
+          from gaia_small_agent.training.qlora import (
+              _build_training_exposure_report,
+              _render_turn_examples,
+              _select_balanced_exposure_examples,
+              _tokenize_completion_examples,
+              load_verified_rows,
+              train_qlora,
+          )
+
+          MODEL = 'Qwen/Qwen3.5-9B'
+          ROOT = Path('/tmp/qlora-v3a')
+          MODEL_PATH = snapshot_download(repo_id=MODEL, token=os.environ.get('HF_TOKEN') or None)
+          TOKENIZER = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
+          EXPOSURE_COUNT = int(os.environ.get('EXPOSURE_COUNT', '64'))
+          EXPOSURE_SEED = os.environ.get('EXPOSURE_SEED', 'qlora-v3a-exposure')
+          TRAIN_STEPS = int(os.environ.get('TRAIN_STEPS', '64'))
+          GRAD_ACC = int(os.environ.get('GRAD_ACC', '1'))
+
+          def build_data():
+              if ROOT.exists():
+                  shutil.rmtree(ROOT)
+              ROOT.mkdir(parents=True)
+              return generate_oracle_policy_v2_dataset(ROOT / 'oracle', seed='small-agent-policy-v2')
+
+          def exposure_preflight():
+              paths = build_data()
+              rows = load_verified_rows(paths['train'])
+              turns = _render_turn_examples(TOKENIZER, rows)
+              selected = _select_balanced_exposure_examples(
+                  turns,
+                  count=EXPOSURE_COUNT,
+                  seed=EXPOSURE_SEED,
+              )
+              report = _build_training_exposure_report(
+                  selected,
+                  seed=EXPOSURE_SEED,
+                  source_example_count=len(turns),
+              )
+              tokenized = _tokenize_completion_examples(TOKENIZER, selected, max_length=512)
+              supervised = [sum(1 for x in row['labels'] if x != -100) for row in tokenized]
+              report.update({
+                  'verified_rows': len(rows),
+                  'tokenized_examples': len(tokenized),
+                  'min_supervised_tokens': min(supervised),
+                  'max_supervised_tokens': max(supervised),
+                  'all_have_supervised_tokens': all(x > 0 for x in supervised),
+              })
+              return report
+
+          @spaces.GPU(duration=180)
+          def train():
+              try:
+                  if TRAIN_STEPS != 64:
+                      raise ValueError(f'TRAIN_STEPS must stay frozen at 64, got {TRAIN_STEPS}')
+                  if EXPOSURE_COUNT != 64:
+                      raise ValueError(f'EXPOSURE_COUNT must stay frozen at 64, got {EXPOSURE_COUNT}')
+                  if GRAD_ACC != 1:
+                      raise ValueError(f'GRAD_ACC must stay frozen at 1, got {GRAD_ACC}')
+                  paths = build_data()
+                  out = ROOT / 'adapter'
+                  start = time.time()
+                  train_qlora(
+                      data_path=paths['train'],
+                      output_dir=out,
+                      model_name=MODEL_PATH,
+                      max_length=512,
+                      learning_rate=1e-4,
+                      lora_r=16,
+                      lora_alpha=32,
+                      lora_dropout=0.05,
+                      max_steps=TRAIN_STEPS,
+                      save_steps=TRAIN_STEPS,
+                      gradient_accumulation_steps=GRAD_ACC,
+                      lora_target_modules='all-linear',
+                      exposure_count=int(os.environ['EXPOSURE_COUNT']),
+                      exposure_seed=os.environ['EXPOSURE_SEED'],
+                  )
+                  elapsed = time.time() - start
+                  required = [
+                      out / 'adapter_config.json',
+                      out / 'adapter_model.safetensors',
+                      out / 'run_config.json',
+                      out / 'training-exposure.json',
+                  ]
+                  missing = [str(p) for p in required if not p.is_file()]
+                  if missing:
+                      raise RuntimeError(f'missing adapter outputs: {missing}')
+                  cfg = json.loads((out / 'run_config.json').read_text())
+                  exposure = json.loads((out / 'training-exposure.json').read_text())
+                  if cfg.get('training_examples') != 64 or cfg.get('source_training_examples') != 3600:
+                      raise RuntimeError(f'unexpected training counts: {cfg}')
+                  if exposure.get('selected_example_count') != 64:
+                      raise RuntimeError(f'unexpected exposure count: {exposure}')
+                  if exposure.get('action_type_counts') != {'final': 29, 'tool_call': 35}:
+                      raise RuntimeError(f'unexpected action distribution: {exposure}')
+                  expected_caps = {
+                      'argument_grounding': 8,
+                      'duplicate_avoidance': 8,
+                      'evidence_to_final': 8,
+                      'failure_recovery': 8,
+                      'multi_step': 8,
+                      'no_tool_stop': 8,
+                      'strategy_switch': 8,
+                      'tool_selection': 8,
+                  }
+                  if exposure.get('capability_counts') != expected_caps:
+                      raise RuntimeError(f'unexpected capability distribution: {exposure}')
+                  archive = shutil.make_archive(str(ROOT / 'qwen35-9b-qlora-v3a-adapter'), 'zip', out)
+                  meta = {
+                      'ok': True,
+                      'model': MODEL,
+                      'experiment_commit': os.environ.get('EXPERIMENT_COMMIT'),
+                      'max_steps': TRAIN_STEPS,
+                      'max_length': 512,
+                      'gradient_accumulation_steps': GRAD_ACC,
+                      'elapsed_seconds': elapsed,
+                      'seconds_per_optimizer_step': elapsed / TRAIN_STEPS,
+                      'cuda': torch.cuda.is_available(),
+                      'device': torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+                      'vram_gib': round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2) if torch.cuda.is_available() else 0,
+                      'adapter_bytes': (out / 'adapter_model.safetensors').stat().st_size,
+                      'training_examples': cfg.get('training_examples'),
+                      'source_training_examples': cfg.get('source_training_examples'),
+                      'exposure_count': cfg.get('exposure_count'),
+                      'exposure_seed': cfg.get('exposure_seed'),
+                      'selection_sha256': exposure.get('selection_sha256'),
+                      'selected_example_count': exposure.get('selected_example_count'),
+                      'action_type_counts': exposure.get('action_type_counts'),
+                      'capability_counts': exposure.get('capability_counts'),
+                      'truncation_policy': cfg.get('truncation_policy'),
+                      'min_completion_tokens': cfg.get('min_completion_tokens'),
+                      'max_completion_tokens': cfg.get('max_completion_tokens'),
+                  }
+                  return archive, meta
+              except Exception as exc:
+                  return None, {
+                      'ok': False,
+                      'type': type(exc).__name__,
+                      'error': str(exc),
+                      'traceback': traceback.format_exc(),
+                  }
+
+          with gr.Blocks() as demo:
+              pre = gr.Button('preflight')
+              pre_out = gr.JSON()
+              pre.click(exposure_preflight, inputs=[], outputs=pre_out, api_name='preflight')
+              run = gr.Button('train')
+              out_file, out_json = gr.File(), gr.JSON()
+              run.click(train, inputs=[], outputs=[out_file, out_json], api_name='train')
+
+          if __name__ == '__main__':
+              demo.launch(show_error=True)
+          PYAPP
+
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi, SpaceHardware
+          api = HfApi(token=os.environ['HF_TOKEN'])
+          rid = os.environ['HF_SPACE_ID']
+          api.upload_folder(
+              folder_path='/tmp/space-src',
+              repo_id=rid,
+              repo_type='space',
+              delete_patterns=['*.py', 'requirements.txt', 'gaia_small_agent/**'],
+              commit_message='train exposure-controlled QLoRA v3A',
+          )
+          for key in ('HF_TOKEN',):
+              api.add_space_secret(repo_id=rid, key=key, value=os.environ[key])
+          for key in ('EXPERIMENT_COMMIT', 'TRAIN_STEPS', 'EXPOSURE_COUNT', 'EXPOSURE_SEED', 'GRAD_ACC'):
+              api.add_space_variable(repo_id=rid, key=key, value=os.environ[key])
+          api.request_space_hardware(repo_id=rid, hardware=SpaceHardware.ZERO_A10G)
+          try:
+              api.restart_space(repo_id=rid)
+          except Exception as exc:
+              print(f'restart request: {exc}')
+          PY
+
+      - name: Wait for API and validate frozen exposure on CPU
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, time
+          from huggingface_hub import HfApi
+          from gradio_client import Client
+          api = HfApi(token=os.environ['HF_TOKEN'])
+          rid = os.environ['HF_SPACE_ID']
+          runtime = api.wait_for_space(repo_id=rid, timeout=1800)
+          print(runtime)
+          deadline = time.time() + 900
+          last = None
+          while time.time() < deadline:
+              try:
+                  c = Client(rid, token=os.environ['HF_TOKEN'], verbose=False)
+                  c.view_api(print_info=False)
+                  break
+              except Exception as exc:
+                  last = exc
+                  time.sleep(10)
+          else:
+              raise SystemExit(f'API not ready: {last}')
+          result = c.predict(api_name='/preflight')
+          print(json.dumps(result, indent=2, sort_keys=True))
+          expected_caps = {
+              'argument_grounding': 8,
+              'duplicate_avoidance': 8,
+              'evidence_to_final': 8,
+              'failure_recovery': 8,
+              'multi_step': 8,
+              'no_tool_stop': 8,
+              'strategy_switch': 8,
+              'tool_selection': 8,
+          }
+          if result.get('source_example_count') != 3600:
+              raise SystemExit(result)
+          if result.get('selected_example_count') != 64:
+              raise SystemExit(result)
+          if result.get('tokenized_examples') != 64:
+              raise SystemExit(result)
+          if result.get('action_type_counts') != {'final': 29, 'tool_call': 35}:
+              raise SystemExit(result)
+          if result.get('capability_counts') != expected_caps:
+              raise SystemExit(result)
+          if len(str(result.get('selection_sha256') or '')) != 64:
+              raise SystemExit(result)
+          if not result.get('all_have_supervised_tokens'):
+              raise SystemExit(result)
+          PY
+
+      - name: Train real 9B QLoRA v3A
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runs/zero-gpu-v3a
+          python - <<'PY'
+          import json, os, shutil
+          from pathlib import Path
+          from gradio_client import Client
+          c = Client(os.environ['HF_SPACE_ID'], token=os.environ['HF_TOKEN'], verbose=False)
+          archive, meta = c.predict(api_name='/train')
+          print(json.dumps(meta, indent=2, sort_keys=True))
+          Path('runs/zero-gpu-v3a/training-meta.json').write_text(
+              json.dumps(meta, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          if not meta.get('ok'):
+              raise SystemExit('remote training failed')
+          if meta.get('cuda') is not True:
+              raise SystemExit('training did not run on CUDA')
+          if meta.get('max_steps') != 64 or meta.get('gradient_accumulation_steps') != 1:
+              raise SystemExit(f'unexpected training steps: {meta}')
+          if meta.get('training_examples') != 64 or meta.get('source_training_examples') != 3600:
+              raise SystemExit(f'unexpected training_examples: {meta}')
+          if meta.get('selected_example_count') != 64:
+              raise SystemExit(f'unexpected selected examples: {meta}')
+          if meta.get('action_type_counts') != {'final': 29, 'tool_call': 35}:
+              raise SystemExit(f'unexpected action distribution: {meta}')
+          if not archive:
+              raise SystemExit('missing adapter archive')
+          if hasattr(archive, 'path'):
+              archive = archive.path
+          elif isinstance(archive, dict):
+              archive = archive.get('path') or archive.get('name')
+          src = Path(str(archive))
+          if not src.is_file():
+              raise SystemExit(f'adapter archive not downloaded: {src}')
+          shutil.copy2(src, 'runs/zero-gpu-v3a/qwen35-9b-qlora-v3a-adapter.zip')
+          PY
+
+      - name: Verify adapter archive and exposure trace
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v3a-check && mkdir -p /tmp/v3a-check
+          unzip -q runs/zero-gpu-v3a/qwen35-9b-qlora-v3a-adapter.zip -d /tmp/v3a-check
+          test -s /tmp/v3a-check/adapter_config.json
+          test -s /tmp/v3a-check/adapter_model.safetensors
+          test -s /tmp/v3a-check/run_config.json
+          test -s /tmp/v3a-check/training-exposure.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          cfg = json.loads(Path('/tmp/v3a-check/run_config.json').read_text())
+          exposure = json.loads(Path('/tmp/v3a-check/training-exposure.json').read_text())
+          assert cfg['max_steps'] == 64, cfg
+          assert cfg['gradient_accumulation_steps'] == 1, cfg
+          assert cfg['training_examples'] == 64, cfg
+          assert cfg['source_training_examples'] == 3600, cfg
+          assert cfg['exposure_count'] == 64, cfg
+          assert cfg['exposure_seed'] == 'qlora-v3a-exposure', cfg
+          assert cfg['exposure_selection_sha256'] == exposure['selection_sha256'], (cfg, exposure)
+          assert exposure['selected_example_count'] == 64, exposure
+          assert exposure['action_type_counts'] == {'final': 29, 'tool_call': 35}, exposure
+          assert all(value == 8 for value in exposure['capability_counts'].values()), exposure
+          assert len(exposure['capability_counts']) == 8, exposure
+          assert len(exposure['selection_sha256']) == 64, exposure
+          assert cfg['truncation_policy'] == 'preserve full completion; left-trim oldest prompt tokens', cfg
+          assert cfg['min_completion_tokens'] > 0, cfg
+          print(json.dumps({'run_config': cfg, 'exposure': exposure}, indent=2, sort_keys=True))
+          PY
+          cp /tmp/v3a-check/training-exposure.json runs/zero-gpu-v3a/training-exposure.json
+          cp /tmp/v3a-check/run_config.json runs/zero-gpu-v3a/run_config.json
+
+      - name: Report remaining quota
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from huggingface_hub import HfApi
+          q = HfApi(token=os.environ['HF_TOKEN']).get_zero_gpu_quota()
+          print(json.dumps({
+              'remaining': q.remaining,
+              'resets_at': q.resets_at.isoformat() if q.resets_at else None,
+          }, indent=2))
+          PY
+
+      - name: Upload verified v3A adapter and exposure evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen35-9b-qlora-v3a
+          path: |
+            runs/zero-gpu-v3a/qwen35-9b-qlora-v3a-adapter.zip
+            runs/zero-gpu-v3a/training-meta.json
+            runs/zero-gpu-v3a/training-exposure.json
+            runs/zero-gpu-v3a/run_config.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Pause Space
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          try:
+              HfApi(token=os.environ['HF_TOKEN']).pause_space(repo_id=os.environ['HF_SPACE_ID'])
+          except Exception as exc:
+              print(exc)
+          PY

@@ -1,0 +1,288 @@
+name: Final ZeroGPU Qwen3.5 9B QLoRA v2
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/hf-zero-gpu-final-train-v2.yml"
+
+permissions:
+  contents: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  HF_SPACE_ID: kolihhan/small-agent-qlora-v2-train
+  EXPERIMENT_COMMIT: 9c0836080eebd57f47d223fde53715d9ed243d00
+  TRAIN_STEPS: "12"
+  GRAD_ACC: "1"
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Install clients and verify usable ZeroGPU quota
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN_NOT_CONFIGURED"; exit 42; }
+          python -m pip install --quiet 'huggingface_hub>=1.0' 'gradio_client>=2,<3'
+          python - <<'PY'
+          import json, os
+          from huggingface_hub import HfApi
+          q = HfApi(token=os.environ['HF_TOKEN']).get_zero_gpu_quota()
+          print(json.dumps({'base': q.base, 'remaining': q.remaining, 'resets_at': q.resets_at.isoformat() if q.resets_at else None}, indent=2))
+          # A declared 150s ZeroGPU call is charged a 1.5x reservation on this route.
+          if q.remaining < 225:
+              raise SystemExit(f"Need >=225 quota seconds for the 150s reservation, only {q.remaining} remain")
+          PY
+
+      - name: Deploy patched 150s trainer
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/project /tmp/space-src
+          mkdir -p /tmp/project /tmp/space-src
+          curl -fsSL "https://github.com/kolihhan/small-agent-qlora/archive/${EXPERIMENT_COMMIT}.tar.gz" -o /tmp/project.tar.gz
+          tar -xzf /tmp/project.tar.gz -C /tmp/project --strip-components=1
+          cp -R /tmp/project/src/gaia_small_agent /tmp/space-src/gaia_small_agent
+
+          cat > /tmp/space-src/requirements.txt <<'EOF'
+          transformers>=5.15,<6
+          peft>=0.20,<1
+          trl>=1.10,<2
+          bitsandbytes>=0.50.1,<1
+          accelerate>=1.10,<2
+          datasets>=4
+          requests>=2.32
+          huggingface_hub>=1.0
+          gradio>=6,<7
+          EOF
+
+          cat > /tmp/space-src/README.md <<'EOF'
+          ---
+          title: Small Agent QLoRA v2 Final Train
+          emoji: 🧪
+          colorFrom: gray
+          colorTo: blue
+          sdk: gradio
+          sdk_version: 6.0.1
+          app_file: app.py
+          pinned: false
+          private: true
+          hardware: zero-a10g
+          ---
+          Temporary private trainer for the frozen Small Agent 9B QLoRA v2 experiment.
+          EOF
+
+          cat > /tmp/space-src/app.py <<'PYAPP'
+          from __future__ import annotations
+          import json, os, shutil, time, traceback
+          from pathlib import Path
+          import gradio as gr
+          import spaces
+          import torch
+          from huggingface_hub import snapshot_download
+          from transformers import AutoTokenizer
+          from gaia_small_agent.training.oracle_policy_v2 import generate_oracle_policy_v2_dataset
+          from gaia_small_agent.training.qlora import (
+              _render_turn_examples,
+              _tokenize_completion_examples,
+              load_verified_rows,
+              train_qlora,
+          )
+
+          MODEL = 'Qwen/Qwen3.5-9B'
+          ROOT = Path('/tmp/qlora-v2-final')
+          MODEL_PATH = snapshot_download(repo_id=MODEL, token=os.environ.get('HF_TOKEN') or None)
+          TOKENIZER = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
+
+          def build_data():
+              if ROOT.exists(): shutil.rmtree(ROOT)
+              ROOT.mkdir(parents=True)
+              paths = generate_oracle_policy_v2_dataset(ROOT / 'oracle', seed='small-agent-policy-v2')
+              return paths
+
+          def preflight():
+              paths = build_data()
+              rows = load_verified_rows(paths['train'])
+              turns = _render_turn_examples(TOKENIZER, rows)
+              tokenized = _tokenize_completion_examples(TOKENIZER, turns, max_length=512)
+              supervised = [sum(1 for x in row['labels'] if x != -100) for row in tokenized]
+              return {
+                  'verified_rows': len(rows),
+                  'turn_examples': len(turns),
+                  'tokenized_examples': len(tokenized),
+                  'min_supervised_tokens': min(supervised),
+                  'max_supervised_tokens': max(supervised),
+                  'all_have_supervised_tokens': all(x > 0 for x in supervised),
+              }
+
+          @spaces.GPU(duration=150)
+          def train(max_steps: int = 12, gradient_accumulation_steps: int = 1):
+              try:
+                  max_steps = int(max_steps)
+                  gradient_accumulation_steps = int(gradient_accumulation_steps)
+                  if max_steps < 1 or max_steps > 16: raise ValueError('max_steps must be 1..16')
+                  if gradient_accumulation_steps < 1 or gradient_accumulation_steps > 4: raise ValueError('grad_acc must be 1..4')
+                  paths = build_data()
+                  out = ROOT / 'adapter'
+                  start = time.time()
+                  train_qlora(
+                      data_path=paths['train'], output_dir=out, model_name=MODEL_PATH,
+                      max_length=512, learning_rate=1e-4, lora_r=16, lora_alpha=32,
+                      lora_dropout=0.05, max_steps=max_steps, save_steps=max_steps,
+                      gradient_accumulation_steps=gradient_accumulation_steps,
+                      lora_target_modules='all-linear',
+                  )
+                  elapsed = time.time() - start
+                  required = [out/'adapter_config.json', out/'adapter_model.safetensors', out/'run_config.json']
+                  missing = [str(p) for p in required if not p.is_file()]
+                  if missing: raise RuntimeError(f'missing adapter outputs: {missing}')
+                  cfg = json.loads((out/'run_config.json').read_text())
+                  archive = shutil.make_archive(str(ROOT/'qwen35-9b-qlora-v2-adapter'), 'zip', out)
+                  meta = {
+                      'ok': True,
+                      'model': MODEL,
+                      'experiment_commit': os.environ.get('EXPERIMENT_COMMIT', '9c0836080eebd57f47d223fde53715d9ed243d00'),
+                      'max_steps': max_steps,
+                      'max_length': 512,
+                      'gradient_accumulation_steps': gradient_accumulation_steps,
+                      'elapsed_seconds': elapsed,
+                      'seconds_per_optimizer_step': elapsed / max_steps,
+                      'cuda': torch.cuda.is_available(),
+                      'device': torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+                      'vram_gib': round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2) if torch.cuda.is_available() else 0,
+                      'adapter_bytes': (out/'adapter_model.safetensors').stat().st_size,
+                      'training_examples': cfg.get('training_examples'),
+                      'truncation_policy': cfg.get('truncation_policy'),
+                      'min_completion_tokens': cfg.get('min_completion_tokens'),
+                      'max_completion_tokens': cfg.get('max_completion_tokens'),
+                  }
+                  return archive, meta
+              except Exception as exc:
+                  return None, {'ok': False, 'type': type(exc).__name__, 'error': str(exc), 'traceback': traceback.format_exc()}
+
+          with gr.Blocks() as demo:
+              pre = gr.Button('preflight')
+              pre_out = gr.JSON()
+              pre.click(preflight, inputs=[], outputs=pre_out, api_name='preflight')
+              run = gr.Button('train')
+              out_file, out_json = gr.File(), gr.JSON()
+              run.click(train, inputs=[gr.Number(value=12, precision=0), gr.Number(value=1, precision=0)], outputs=[out_file, out_json], api_name='train')
+
+          if __name__ == '__main__': demo.launch(show_error=True)
+          PYAPP
+
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi, SpaceHardware
+          api=HfApi(token=os.environ['HF_TOKEN']); rid=os.environ['HF_SPACE_ID']
+          api.upload_folder(folder_path='/tmp/space-src', repo_id=rid, repo_type='space',
+              delete_patterns=['*.py','requirements.txt','gaia_small_agent/**'],
+              commit_message='train patched completion-preserving QLoRA v2')
+          api.add_space_secret(repo_id=rid,key='HF_TOKEN',value=os.environ['HF_TOKEN'])
+          api.add_space_variable(repo_id=rid,key='EXPERIMENT_COMMIT',value=os.environ['EXPERIMENT_COMMIT'])
+          api.request_space_hardware(repo_id=rid,hardware=SpaceHardware.ZERO_A10G)
+          try: api.restart_space(repo_id=rid)
+          except Exception as exc: print(f'restart request: {exc}')
+          PY
+
+      - name: Wait for API and validate training data on CPU
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, time
+          from huggingface_hub import HfApi
+          from gradio_client import Client
+          api=HfApi(token=os.environ['HF_TOKEN']); rid=os.environ['HF_SPACE_ID']
+          runtime=api.wait_for_space(repo_id=rid,timeout=1800); print(runtime)
+          deadline=time.time()+900
+          while time.time()<deadline:
+              try:
+                  c=Client(rid,token=os.environ['HF_TOKEN'],verbose=False); c.view_api(print_info=False); break
+              except Exception as exc: last=exc; time.sleep(10)
+          else: raise SystemExit(f'API not ready: {last}')
+          result=c.predict(api_name='/preflight')
+          print(json.dumps(result,indent=2,sort_keys=True))
+          if result.get('tokenized_examples') != 3600: raise SystemExit(result)
+          if not result.get('all_have_supervised_tokens'): raise SystemExit(result)
+          PY
+
+      - name: Train real 9B QLoRA v2
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runs/zero-gpu-final
+          python - <<'PY'
+          import json, os, shutil
+          from pathlib import Path
+          from gradio_client import Client
+          c=Client(os.environ['HF_SPACE_ID'],token=os.environ['HF_TOKEN'],verbose=False)
+          archive, meta=c.predict(int(os.environ['TRAIN_STEPS']),int(os.environ['GRAD_ACC']),api_name='/train')
+          print(json.dumps(meta,indent=2,sort_keys=True))
+          Path('runs/zero-gpu-final/training-meta.json').write_text(json.dumps(meta,indent=2,sort_keys=True)+'\n')
+          if not meta.get('ok'): raise SystemExit('remote training failed')
+          if meta.get('cuda') is not True: raise SystemExit('training did not run on CUDA')
+          if meta.get('training_examples') != 3600: raise SystemExit(f"unexpected training_examples: {meta.get('training_examples')}")
+          if not archive: raise SystemExit('missing adapter archive')
+          if hasattr(archive,'path'): archive=archive.path
+          elif isinstance(archive,dict): archive=archive.get('path') or archive.get('name')
+          src=Path(str(archive))
+          if not src.is_file(): raise SystemExit(f'adapter archive not downloaded: {src}')
+          shutil.copy2(src,'runs/zero-gpu-final/qwen35-9b-qlora-v2-adapter.zip')
+          PY
+
+      - name: Verify adapter archive
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/adapter-check && mkdir -p /tmp/adapter-check
+          unzip -q runs/zero-gpu-final/qwen35-9b-qlora-v2-adapter.zip -d /tmp/adapter-check
+          test -s /tmp/adapter-check/adapter_config.json
+          test -s /tmp/adapter-check/adapter_model.safetensors
+          test -s /tmp/adapter-check/run_config.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          cfg=json.loads(Path('/tmp/adapter-check/run_config.json').read_text())
+          assert cfg['training_examples']==3600, cfg
+          assert cfg['truncation_policy']=='preserve full completion; left-trim oldest prompt tokens', cfg
+          assert cfg['min_completion_tokens'] > 0, cfg
+          print(json.dumps(cfg,indent=2,sort_keys=True))
+          PY
+
+      - name: Report remaining quota
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os
+          from huggingface_hub import HfApi
+          q=HfApi(token=os.environ['HF_TOKEN']).get_zero_gpu_quota()
+          print(json.dumps({'remaining':q.remaining,'resets_at':q.resets_at.isoformat() if q.resets_at else None},indent=2))
+          PY
+
+      - name: Upload verified adapter
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen35-9b-qlora-v2-final
+          path: |
+            runs/zero-gpu-final/qwen35-9b-qlora-v2-adapter.zip
+            runs/zero-gpu-final/training-meta.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Pause Space
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          try: HfApi(token=os.environ['HF_TOKEN']).pause_space(repo_id=os.environ['HF_SPACE_ID'])
+          except Exception as exc: print(exc)
+          PY

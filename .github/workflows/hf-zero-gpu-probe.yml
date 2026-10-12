@@ -1,0 +1,43 @@
+name: HF ZeroGPU quota probe
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/hf-zero-gpu-probe.yml"
+
+permissions:
+  contents: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Verify credential exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN_NOT_CONFIGURED"; exit 42; }
+      - name: Query ZeroGPU quota without starting compute
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'huggingface_hub>=0.35'
+          python - <<'PY'
+          import json, os
+          from huggingface_hub import HfApi
+
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          quota = api.get_zero_gpu_quota()
+          payload = {
+              "base_seconds": quota.base,
+              "remaining_seconds": quota.remaining,
+              "resets_at": quota.resets_at.isoformat() if quota.resets_at else None,
+              "overquota_used_seconds": quota.overquota_used,
+          }
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY

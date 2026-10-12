@@ -217,3 +217,27 @@ def test_generate_policy_tasks_parser():
     assert args.output == "runs/policy/tasks.jsonl"
     assert args.count == 64
     assert args.seed == "fixed"
+
+
+def test_generate_oracle_policy_parser():
+    args = build_parser().parse_args([
+        "generate-oracle-policy", "--output-dir", "runs/oracle", "--seed", "fixed",
+    ])
+    assert args.output_dir == "runs/oracle"
+    assert args.seed == "fixed"
+
+
+def test_eval_policy_parser_supports_base_and_adapter_runtime():
+    args = build_parser().parse_args([
+        "eval-policy",
+        "--tasks", "runs/oracle/test.jsonl",
+        "--work-root", "runs/policy-eval",
+        "--output", "runs/policy-eval/summary.json",
+        "--backend", "transformers",
+        "--adapter", "adapters/tinyagent-v1",
+    ])
+    assert args.tasks == "runs/oracle/test.jsonl"
+    assert args.work_root == "runs/policy-eval"
+    assert args.output == "runs/policy-eval/summary.json"
+    assert args.backend == "transformers"
+    assert args.adapter == "adapters/tinyagent-v1"

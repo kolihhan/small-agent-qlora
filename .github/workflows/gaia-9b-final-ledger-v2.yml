@@ -1,0 +1,248 @@
+name: Final GAIA v2 evidence ledger
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/gaia-9b-final-ledger-v2.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  ORIGINAL_RUN_ID: "38068816559"
+  QREPAIR_RUN_ID: "38073576286"
+  QTAIL_RUN_ID: "38073772848"
+  BASE5_RUN_ID: "38073818520"
+  FROZEN_EVAL_COMMIT: "9840da3067eafe203b34869e679ed9b7b2f4158c"
+  FULL_SELECTION_SHA256: "22ce65f410d45e2e84af5a0ad1eafeadb311b08bb1234c968a114174c29bb373"
+  BASE_GGUF_SHA256: "8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54"
+  ADAPTER_SHA256: "8eab99e9cad4c73eb044c84a0cbb015d2835ace3e4f0159544dec23a6ef2cc4c"
+  DATASET_REVISION: "682dd723ee1e1697e00360edccf2366dc8418dd9"
+  PROTOCOL_SEED: "gaia-local-v2"
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_EVAL_COMMIT }}
+
+      - name: Install frozen evaluator
+        run: python -m pip install --quiet -e .
+
+      - name: Download all evidence runs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/original evidence/qrepair evidence/qtail evidence/base5
+          gh run download "$ORIGINAL_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir evidence/original
+          gh run download "$QREPAIR_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir evidence/qrepair
+          gh run download "$QTAIL_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir evidence/qtail
+          gh run download "$BASE5_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir evidence/base5
+
+      - name: Build strict task-ID ledger and final matched summary
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, math, os
+          from collections import Counter
+          from pathlib import Path
+          from gaia_small_agent.benchmark.gaia100 import summarize_results
+
+          ROOT = Path('evidence')
+          EXPECTED_LEVELS = {1: 32, 2: 52, 3: 16}
+          FULL_HASH = os.environ['FULL_SELECTION_SHA256']
+          BASE_ORIGINAL = [0,1,2,3,4,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+          QLORA_ORIGINAL = [0,1,2,4,6,7,8,9,10,12,13,14,17]
+          QLORA_REPAIR = [3,5,18]
+          QLORA_TAIL_CASES = [11,31,51,71,91,15,35,55,75,95,16,36,56,76,96,19,39,59,79,99]
+          BASE5_CASES = [5,25,45,65,85]
+
+          provenance = []
+
+          def load_artifact(artifact_dir: Path, expected_n: int, arm: str, source_group: str):
+              rp = artifact_dir / 'results.jsonl'
+              sp = artifact_dir / 'shard.json'
+              if not rp.is_file():
+                  raise SystemExit(f'missing results.jsonl: {artifact_dir}')
+              if not sp.is_file():
+                  raise SystemExit(f'missing shard.json: {artifact_dir}')
+              shard = json.loads(sp.read_text(encoding='utf-8'))
+              if shard.get('full_selection_sha256') != FULL_HASH:
+                  raise SystemExit(f'full selection hash mismatch in {artifact_dir}: {shard.get("full_selection_sha256")}')
+              if shard.get('dataset_revision') != os.environ['DATASET_REVISION']:
+                  raise SystemExit(f'dataset revision mismatch in {artifact_dir}')
+              if shard.get('seed') != os.environ['PROTOCOL_SEED']:
+                  raise SystemExit(f'protocol seed mismatch in {artifact_dir}')
+              if shard.get('backend') != 'openai_compat' or shard.get('model') != 'qwen3.5-9b' or shard.get('thinking') is not False:
+                  raise SystemExit(f'protocol mismatch in {artifact_dir}: {shard}')
+              rows = [json.loads(line) for line in rp.read_text(encoding='utf-8').splitlines() if line.strip()]
+              if len(rows) != expected_n:
+                  raise SystemExit(f'{artifact_dir}: expected {expected_n} rows, got {len(rows)}')
+              for row in rows:
+                  row['_source_artifact'] = artifact_dir.name
+                  row['_source_group'] = source_group
+                  row['_arm'] = arm
+              provenance.append({'arm': arm, 'source_group': source_group, 'artifact': artifact_dir.name, 'rows': len(rows), 'full_selection_sha256': shard['full_selection_sha256']})
+              return rows
+
+          base = []
+          for s in BASE_ORIGINAL:
+              base += load_artifact(ROOT/'original'/f'finalv2-gaia-base-shard-{s}', 5, 'base', 'original-valid')
+          for i in BASE5_CASES:
+              base += load_artifact(ROOT/'base5'/f'base5v2-gaia-base-case-{i}', 1, 'base', 'infra-repair-one-case')
+
+          qlora = []
+          for s in QLORA_ORIGINAL:
+              qlora += load_artifact(ROOT/'original'/f'finalv2-gaia-qlora-shard-{s}', 5, 'qlora', 'original-valid')
+          for s in QLORA_REPAIR:
+              qlora += load_artifact(ROOT/'qrepair'/f'qrepairv2-gaia-qlora-shard-{s}', 5, 'qlora', 'infra-repair-shard')
+          for i in QLORA_TAIL_CASES:
+              qlora += load_artifact(ROOT/'qtail'/f'tailv2-gaia-qlora-case-{i}', 1, 'qlora', 'slow-tail-one-case')
+
+          def validate_arm(name, rows):
+              tids = [r['task_id'] for r in rows]
+              if len(rows) != 100:
+                  raise SystemExit(f'{name}: expected exactly 100 rows, got {len(rows)}')
+              if len(set(tids)) != 100:
+                  dup = [k for k,v in Counter(tids).items() if v > 1]
+                  raise SystemExit(f'{name}: duplicate task IDs: {dup}')
+              levels = Counter(int(r['level']) for r in rows)
+              if dict(levels) != EXPECTED_LEVELS:
+                  raise SystemExit(f'{name}: level mix mismatch: {dict(levels)} != {EXPECTED_LEVELS}')
+              return set(tids)
+
+          base_ids = validate_arm('base', base)
+          qlora_ids = validate_arm('qlora', qlora)
+          if base_ids != qlora_ids:
+              raise SystemExit(f'task-ID set mismatch: base-only={sorted(base_ids-qlora_ids)} qlora-only={sorted(qlora_ids-base_ids)}')
+
+          base_by = {r['task_id']: r for r in base}
+          qlora_by = {r['task_id']: r for r in qlora}
+          gains = regressions = both_correct = both_wrong = 0
+          changed_answer = 0
+          per_case = []
+          for tid in sorted(base_ids):
+              b, q = base_by[tid], qlora_by[tid]
+              bc, qc = bool(b['correct']), bool(q['correct'])
+              if not bc and qc: gains += 1
+              elif bc and not qc: regressions += 1
+              elif bc and qc: both_correct += 1
+              else: both_wrong += 1
+              if str(b.get('model_answer')) != str(q.get('model_answer')):
+                  changed_answer += 1
+              per_case.append({
+                  'task_id': tid, 'level': int(b['level']),
+                  'base_correct': bc, 'qlora_correct': qc,
+                  'base_completed': bool(b.get('completed')), 'qlora_completed': bool(q.get('completed')),
+                  'base_stop_reason': b.get('stop_reason'), 'qlora_stop_reason': q.get('stop_reason'),
+                  'base_tool_errors': int(b.get('tool_errors',0)), 'qlora_tool_errors': int(q.get('tool_errors',0)),
+                  'base_duplicate_calls_blocked': int(b.get('duplicate_calls_blocked',0)), 'qlora_duplicate_calls_blocked': int(q.get('duplicate_calls_blocked',0)),
+                  'base_source': b['_source_artifact'], 'qlora_source': q['_source_artifact'],
+              })
+
+          discordant = gains + regressions
+          if discordant:
+              k = min(gains, regressions)
+              tail = sum(math.comb(discordant, i) for i in range(k+1)) / (2 ** discordant)
+              mcnemar_exact_two_sided_p = min(1.0, 2 * tail)
+          else:
+              mcnemar_exact_two_sided_p = 1.0
+
+          bsum = summarize_results(base)
+          qsum = summarize_results(qlora)
+          accuracy_verdict = 'improved' if qsum['correct'] > bsum['correct'] else ('tied' if qsum['correct'] == bsum['correct'] else 'regressed')
+          promotion_verdict = 'reject_current_adapter_for_promotion' if qsum['correct'] <= bsum['correct'] else 'accuracy_improved_review_secondary_metrics'
+
+          payload = {
+              'schema_version': 'matched-gaia-9b-qlora-v2/final-ledger-v1',
+              'protocol': {
+                  'benchmark': 'GAIA 2023 validation / frozen Evaluation100',
+                  'dataset_revision': os.environ['DATASET_REVISION'],
+                  'protocol_seed': os.environ['PROTOCOL_SEED'],
+                  'frozen_evaluator_commit': os.environ['FROZEN_EVAL_COMMIT'],
+                  'full_selection_sha256': FULL_HASH,
+                  'base_gguf_sha256': os.environ['BASE_GGUF_SHA256'],
+                  'adapter_sha256': os.environ['ADAPTER_SHA256'],
+                  'reasoning_budget': 0,
+                  'context_tokens': 4096,
+                  'max_new_tokens': 512,
+                  'agent_max_steps': 12,
+                  'adapter_training': {'model':'Qwen/Qwen3.5-9B','training_examples':3600,'optimizer_steps':12},
+                  'source_runs': {
+                      'original_matched': os.environ['ORIGINAL_RUN_ID'],
+                      'qlora_infra_repair': os.environ['QREPAIR_RUN_ID'],
+                      'qlora_tail_one_case': os.environ['QTAIL_RUN_ID'],
+                      'base_shard5_one_case': os.environ['BASE5_RUN_ID'],
+                  },
+              },
+              'hard_gates': {
+                  'base_unique_tasks': len(base_ids),
+                  'qlora_unique_tasks': len(qlora_ids),
+                  'task_id_sets_equal': base_ids == qlora_ids,
+                  'level_mix': EXPECTED_LEVELS,
+                  'full_selection_hash_consistent': True,
+                  'invalid_in_final_ledger': 0,
+              },
+              'base': bsum,
+              'qlora': qsum,
+              'paired': {
+                  'both_correct': both_correct,
+                  'both_wrong': both_wrong,
+                  'base_wrong_to_qlora_correct': gains,
+                  'base_correct_to_qlora_wrong': regressions,
+                  'discordant_pairs': discordant,
+                  'changed_model_answer_count': changed_answer,
+                  'mcnemar_exact_two_sided_p': mcnemar_exact_two_sided_p,
+              },
+              'delta': {
+                  'correct_absolute': qsum['correct'] - bsum['correct'],
+                  'accuracy_pp': (qsum['accuracy'] - bsum['accuracy']) * 100,
+                  'completion_rate_pp': (qsum['completion_rate'] - bsum['completion_rate']) * 100,
+                  'tool_success_rate_pp': (qsum['tool_success_rate'] - bsum['tool_success_rate']) * 100,
+                  'tool_errors': qsum['tool_errors'] - bsum['tool_errors'],
+                  'duplicate_calls_blocked': qsum['duplicate_calls_blocked'] - bsum['duplicate_calls_blocked'],
+                  'levels_correct': {lvl: qsum['levels'][lvl]['correct'] - bsum['levels'][lvl]['correct'] for lvl in ('1','2','3')},
+              },
+              'verdict': {
+                  'accuracy': accuracy_verdict,
+                  'promotion': promotion_verdict,
+                  'note': 'Infra-only failed attempts were replaced only where no valid case result existed; already-valid case outputs were not rerun for selection.',
+              },
+              'provenance': provenance,
+              'per_case': per_case,
+          }
+
+          Path('final-gaia-v2-ledger.json').write_text(json.dumps(payload, indent=2, sort_keys=True)+'\n', encoding='utf-8')
+          md = [
+              '# Final matched GAIA v2 ledger', '',
+              f"- Base: **{bsum['correct']}/100 ({bsum['accuracy']*100:.1f}%)**",
+              f"- QLoRA: **{qsum['correct']}/100 ({qsum['accuracy']*100:.1f}%)**",
+              f"- Delta: **{(qsum['accuracy']-bsum['accuracy'])*100:+.1f} pp** ({qsum['correct']-bsum['correct']:+d} correct)",
+              f"- Completion: {bsum['completion_rate']*100:.1f}% -> {qsum['completion_rate']*100:.1f}%",
+              f"- Tool errors: {bsum['tool_errors']} -> {qsum['tool_errors']}",
+              f"- Duplicate calls blocked: {bsum['duplicate_calls_blocked']} -> {qsum['duplicate_calls_blocked']}",
+              f"- Paired gains/regressions: {gains}/{regressions}; exact McNemar p={mcnemar_exact_two_sided_p:.4f}",
+              f"- Verdict: **{promotion_verdict}**", '',
+              'Hard gates: 100 unique task IDs per arm, identical task-ID sets, level mix 32/52/16, frozen selection hash matched, zero invalid attempts in final ledger.'
+          ]
+          Path('final-gaia-v2-ledger.md').write_text('\n'.join(md)+'\n', encoding='utf-8')
+          print('\n'.join(md))
+          print(json.dumps({'base':bsum,'qlora':qsum,'paired':payload['paired'],'delta':payload['delta'],'verdict':payload['verdict']}, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload final ledger
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-gaia-v2-evidence-ledger
+          path: |
+            final-gaia-v2-ledger.json
+            final-gaia-v2-ledger.md
+          if-no-files-found: error
+          retention-days: 30
