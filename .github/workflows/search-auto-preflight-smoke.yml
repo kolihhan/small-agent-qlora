@@ -1,0 +1,30 @@
+name: Search auto preflight smoke
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/search-auto-preflight-smoke.yml"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install search support
+        run: python -m pip install --quiet -e '.[search]'
+      - name: Run exact live search preflight
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from gaia_small_agent.tools.search import SearchTool
+
+          result = SearchTool().run({"query": "OpenAI official", "max_results": 1}, Path("."))
+          print({"ok": result.ok, "error_code": result.error_code, "content": result.content[:500]})
+          assert result.ok, result.observation()
+          PY
