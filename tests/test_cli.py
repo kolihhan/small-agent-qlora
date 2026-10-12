@@ -125,7 +125,15 @@ def test_run_output_persists_full_result_json_and_runtime_provenance(monkeypatch
     assert payload["answer"] == "done"
     assert payload["completed"] is True
     assert payload["stop_reason"] == "final"
-    assert payload["metrics"] == {"steps": 1, "tool_calls": 0, "tool_successes": 0, "tool_errors": 0, "duplicate_calls_blocked": 0}
+    assert payload["metrics"] == {
+        "steps": 1,
+        "tool_calls": 0,
+        "tool_successes": 0,
+        "tool_errors": 0,
+        "duplicate_calls_blocked": 0,
+        "invalid_tool_calls": 0,
+        "tool_retries": 0,
+    }
     assert payload["trace"] == [{"kind": "tool_result", "step": 1, "data": {"name": "demo", "ok": True, "content": "full observation " + ("x" * 220)}}]
     assert "x" * 180 not in capsys.readouterr().out
 
