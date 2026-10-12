@@ -46,11 +46,13 @@ class AgentRuntime:
         trace: list[TraceEvent] = []
         metrics = RunMetrics()
         seen: set[str] = set()
+        tool_definitions = [tool.definition() for tool in self.tools.values()]
 
         for step in range(1, self.max_steps + 1):
             metrics.steps = step
+            final_only = step == self.max_steps
             try:
-                turn = self.model.complete(messages, [t.definition() for t in self.tools.values()])
+                turn = self.model.complete(messages, [] if final_only else tool_definitions)
             except ModelCapacityError:
                 trace.append(TraceEvent("model_capacity", step, {}))
                 return AgentResult("", False, "model_capacity", trace, metrics)
@@ -65,6 +67,10 @@ class AgentRuntime:
                     return AgentResult("", False, "empty_final", trace, metrics)
                 trace.append(TraceEvent("final", step, {"answer": answer}))
                 return AgentResult(answer, True, "final", trace, metrics)
+
+            if final_only:
+                trace.append(TraceEvent("max_steps", step, {"blocked_tool_calls": len(turn.tool_calls)}))
+                return AgentResult("", False, "max_steps", trace, metrics)
 
             assistant_tool_calls = []
             for call in turn.tool_calls:
