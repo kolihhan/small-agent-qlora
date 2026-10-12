@@ -7,7 +7,8 @@ CPU_QLORA_WORKFLOW = Path(".github/workflows/qlora-cpu-batch.yml")
 CPU_V3A_WORKFLOW = Path(".github/workflows/qlora-cpu-v3a.yml")
 GAIA_9B_THINKING_WORKFLOW = Path(".github/workflows/gaia-9b-thinking20.yml")
 GAIA_9B_PARALLEL_BASE_WORKFLOW = Path(".github/workflows/gaia-9b-base-parallel-mcp.yml")
-GAIA_9B_V3B_WORKFLOW = Path(".github/workflows/gaia-9b-final-v3b.yml")
+GAIA_9B_CTX16K_BASE_WORKFLOW = Path(".github/workflows/gaia-9b-base-ctx16k.yml")
+GAIA_9B_CTX16K_V3B_WORKFLOW = Path(".github/workflows/gaia-9b-v3b-ctx16k.yml")
 V3A_TRAIN_WORKFLOW = Path(".github/workflows/hf-zero-gpu-train-v3a.yml")
 GAIA_SHARD_RUNNER = Path("scripts/run_gaia_eval_shard.py")
 
@@ -135,26 +136,37 @@ def test_gaia_9b_parallel_base_matches_v3b_harness_without_adapter():
     assert "--shard-count 20" in workflow
     assert "--backend openai_compat" in workflow
     assert "--reasoning-budget 0 --temperature 0" in workflow
-    assert "--ctx-size 16384 --threads 4 --parallel 1" in workflow
-    assert "--ctx-size 4096" not in workflow
+    assert "--ctx-size 4096 --threads 4 --parallel 1" in workflow
     assert "--lora" not in workflow
     assert "adapter.gguf" not in workflow
     assert "expected Evaluation100 total 100" in workflow
     assert "name: gaia-9b-base-parallel-mcp-summary" in workflow
 
 
-def test_gaia_9b_v3b_uses_same_corrected_16k_context():
-    workflow = GAIA_9B_V3B_WORKFLOW.read_text(encoding="utf-8")
+def test_gaia_9b_ctx16k_corrected_harness_is_matched():
+    base = GAIA_9B_CTX16K_BASE_WORKFLOW.read_text(encoding="utf-8")
+    qlora = GAIA_9B_CTX16K_V3B_WORKFLOW.read_text(encoding="utf-8")
 
-    assert 'FROZEN_EVAL_COMMIT: "59d807d343039f6462beea8f996c4f9666045796"' in workflow
-    assert 'MODEL_ALIAS: qwen3.5-9b' in workflow
-    assert "max-parallel: 20" in workflow
-    assert "--shard-count 20" in workflow
-    assert "--backend openai_compat" in workflow
-    assert "--reasoning-budget 0 --temperature 0" in workflow
-    assert "--ctx-size 16384 --threads 4 --parallel 1" in workflow
-    assert "--ctx-size 4096" not in workflow
-    assert "--lora matched-input/qwen35-9b-qlora-v3b-adapter.gguf" in workflow
+    for workflow in (base, qlora):
+        assert 'FROZEN_EVAL_COMMIT: "59d807d343039f6462beea8f996c4f9666045796"' in workflow
+        assert 'FULL_SELECTION_SHA256: "22ce65f410d45e2e84af5a0ad1eafeadb311b08bb1234c968a114174c29bb373"' in workflow
+        assert 'DATASET_REVISION: "682dd723ee1e1697e00360edccf2366dc8418dd9"' in workflow
+        assert 'PROTOCOL_SEED: "gaia-local-v2"' in workflow
+        assert 'MODEL_ALIAS: qwen3.5-9b' in workflow
+        assert "max-parallel: 20" in workflow
+        assert "--shard-count 20" in workflow
+        assert "--backend openai_compat" in workflow
+        assert "--reasoning-budget 0 --temperature 0" in workflow
+        assert "--ctx-size 16384 --threads 4 --parallel 1" in workflow
+        assert "--ctx-size 4096" not in workflow
+        assert "expected Evaluation100 total 100" in workflow
+
+    assert "--lora" not in base
+    assert "adapter.gguf" not in base
+    assert "--lora matched-input/qwen35-9b-qlora-v3b-adapter.gguf" in qlora
+    assert "e7caec609a905d21e056b107519d78916d3ef79e7bdc70db916e40d801d2187d" in qlora
+    assert "name: gaia-9b-base-ctx16k-summary" in base
+    assert "name: gaia-9b-v3b-ctx16k-summary" in qlora
 
 
 def test_v3a_training_workflow_locks_balanced_exposure_and_artifact_trace():
