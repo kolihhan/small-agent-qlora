@@ -1,10 +1,44 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
 from .base import Tool, ToolResult
+
+
+def _compact_parallel_results(text: str, max_results: int) -> str | None:
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    results = payload.get("results")
+    if not isinstance(results, list):
+        return None
+
+    blocks: list[str] = []
+    for index, raw in enumerate(results[:max_results], 1):
+        if not isinstance(raw, dict):
+            continue
+        title = str(raw.get("title") or "Untitled")
+        url = str(raw.get("url") or "")
+        excerpts = raw.get("excerpts") or []
+        if isinstance(excerpts, str):
+            excerpt = excerpts.strip()
+        elif isinstance(excerpts, list):
+            excerpt = " ".join(str(item).strip() for item in excerpts if str(item).strip())
+        else:
+            excerpt = ""
+        lines = [f"{index}. {title}"]
+        if url:
+            lines.append(url)
+        if excerpt:
+            lines.append(excerpt)
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks) if blocks else None
 
 
 class SearchTool(Tool):
@@ -56,14 +90,22 @@ class SearchTool(Tool):
         query = arguments.get("query")
         if not isinstance(query, str) or not query.strip():
             return ToolResult(False, "'query' must be a non-empty string", "BAD_ARGUMENTS")
+        raw_max_results = arguments.get("max_results", 5)
+        if not isinstance(raw_max_results, int) or isinstance(raw_max_results, bool):
+            return ToolResult(False, "'max_results' must be an integer", "BAD_ARGUMENTS")
+        max_results = max(1, min(raw_max_results, 10))
 
-        # Keep max_results in the public schema for trained-model compatibility.
-        # Parallel's anonymous MCP endpoint controls result count server-side.
         try:
-            return asyncio.run(
+            result = asyncio.run(
                 asyncio.wait_for(self._search_parallel(query.strip()), timeout=self.timeout_s)
             )
         except TimeoutError:
             return ToolResult(False, "Search timed out", "SEARCH_TIMEOUT")
         except RuntimeError as exc:
             return ToolResult(False, f"Search failed: {exc}", "SEARCH_ERROR")
+
+        if result.ok:
+            compacted = _compact_parallel_results(result.content, max_results)
+            if compacted is not None:
+                return ToolResult(True, compacted)
+        return result
