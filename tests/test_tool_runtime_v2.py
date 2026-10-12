@@ -52,11 +52,11 @@ class FlakyTool(Tool):
 
 
 def test_read_supports_offset_chars_and_reports_next_offset(tmp_path):
-    text = "A" * 2100 + "TARGET" + "B" * 200
+    text = "A" * 2100 + "TARGET" + "B" * 1000
     (tmp_path / "long.txt").write_text(text, encoding="utf-8")
 
     result = ReadTool().run(
-        {"source": "long.txt", "offset_chars": 2000, "max_chars": 300},
+        {"source": "long.txt", "offset_chars": 2000, "max_chars": 500},
         tmp_path,
     )
 
@@ -64,9 +64,9 @@ def test_read_supports_offset_chars_and_reports_next_offset(tmp_path):
     assert "TARGET" in result.content
     assert result.metadata == {
         "offset_chars": 2000,
-        "returned_chars": 300,
+        "returned_chars": 500,
         "total_chars": len(text),
-        "next_offset_chars": 2300,
+        "next_offset_chars": 2500,
     }
 
 
