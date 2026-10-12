@@ -41,13 +41,28 @@ def _compact_parallel_results(text: str, max_results: int) -> str | None:
     return "\n\n".join(blocks) if blocks else None
 
 
+def _format_ddgs_results(rows: list[dict], max_results: int) -> str:
+    blocks: list[str] = []
+    for index, row in enumerate(rows[:max_results], 1):
+        title = str(row.get("title") or "Untitled")
+        url = str(row.get("href") or row.get("url") or "")
+        body = str(row.get("body") or row.get("snippet") or "")
+        lines = [f"{index}. {title}"]
+        if url:
+            lines.append(url)
+        if body:
+            lines.append(body)
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
 class SearchTool(Tool):
     name = "search"
     description = "Search the public web and return source links and excerpts."
     schema = {
         "type": "object",
         "properties": {
-            "query": {"type": "string"},
+            "query": {"type": "string", "minLength": 1},
             "max_results": {"type": "integer", "minimum": 1, "maximum": 10},
         },
         "required": ["query"],
@@ -86,6 +101,23 @@ class SearchTool(Tool):
             return ToolResult(False, "Search failed: no results", "SEARCH_ERROR")
         return ToolResult(True, text)
 
+    def _search_fallback(self, query: str, max_results: int) -> ToolResult:
+        try:
+            from ddgs import DDGS
+            from ddgs.exceptions import TimeoutException
+        except ImportError:
+            return ToolResult(False, "DDGS fallback dependency unavailable", "MISSING_DEPENDENCY")
+
+        try:
+            rows = list(DDGS(timeout=self.timeout_s).text(query, max_results=max_results, backend="auto"))
+        except TimeoutException as exc:
+            return ToolResult(False, f"Fallback search timed out: {exc}", "SEARCH_TIMEOUT")
+        except Exception as exc:
+            return ToolResult(False, f"Fallback search failed: {exc}", "SEARCH_ERROR")
+        if not rows:
+            return ToolResult(False, "Fallback search returned no results", "SEARCH_ERROR")
+        return ToolResult(True, _format_ddgs_results(rows, max_results))
+
     def run(self, arguments: dict[str, Any], workspace: Path) -> ToolResult:
         query = arguments.get("query")
         if not isinstance(query, str) or not query.strip():
@@ -94,18 +126,29 @@ class SearchTool(Tool):
         if not isinstance(raw_max_results, int) or isinstance(raw_max_results, bool):
             return ToolResult(False, "'max_results' must be an integer", "BAD_ARGUMENTS")
         max_results = max(1, min(raw_max_results, 10))
+        query = query.strip()
 
         try:
             result = asyncio.run(
-                asyncio.wait_for(self._search_parallel(query.strip()), timeout=self.timeout_s)
+                asyncio.wait_for(self._search_parallel(query), timeout=self.timeout_s)
             )
         except TimeoutError:
-            return ToolResult(False, "Search timed out", "SEARCH_TIMEOUT")
+            result = ToolResult(False, "Search timed out", "SEARCH_TIMEOUT")
         except RuntimeError as exc:
-            return ToolResult(False, f"Search failed: {exc}", "SEARCH_ERROR")
+            result = ToolResult(False, f"Search failed: {exc}", "SEARCH_ERROR")
 
         if result.ok:
             compacted = _compact_parallel_results(result.content, max_results)
             if compacted is not None:
                 return ToolResult(True, compacted)
-        return result
+            return result
+
+        fallback = self._search_fallback(query, max_results)
+        if fallback.ok:
+            fallback.metadata = {"fallback_from": result.error_code or "SEARCH_ERROR"}
+            return fallback
+        return ToolResult(
+            False,
+            f"Primary search failed: {result.content}; fallback failed: {fallback.content}",
+            fallback.error_code or result.error_code or "SEARCH_ERROR",
+        )
