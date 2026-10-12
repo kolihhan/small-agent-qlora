@@ -1,79 +1,51 @@
-import sys
-import types
+import asyncio
 
+from gaia_small_agent.tools.base import ToolResult
 from gaia_small_agent.tools.search import SearchTool
 
 
-def _install_fake_ddgs(monkeypatch, ddgs_cls, timeout_exc_cls):
-    ddgs_module = types.ModuleType("ddgs")
-    ddgs_module.DDGS = ddgs_cls
-    exceptions_module = types.ModuleType("ddgs.exceptions")
-    exceptions_module.TimeoutException = timeout_exc_cls
-    monkeypatch.setitem(sys.modules, "ddgs", ddgs_module)
-    monkeypatch.setitem(sys.modules, "ddgs.exceptions", exceptions_module)
+def test_search_tool_calls_parallel_mcp_without_changing_public_contract(monkeypatch, tmp_path):
+    seen = {}
 
+    async def fake_parallel_search(self, query):
+        seen["endpoint"] = self.endpoint
+        seen["query"] = query
+        return ToolResult(True, "FastAPI docs\nhttps://fastapi.tiangolo.com/")
 
-def test_search_tool_uses_ddgs_auto_backend_with_timeout(monkeypatch, tmp_path):
-    seen = {"timeouts": [], "calls": []}
-
-    class FakeTimeout(Exception):
-        pass
-
-    class FakeDDGS:
-        def __init__(self, *, timeout):
-            seen["timeouts"].append(timeout)
-
-        def text(self, query, *, backend, max_results):
-            seen["calls"].append((query, backend, max_results))
-            return [{"title": "ok", "href": "https://example.com", "body": "result"}]
-
-    _install_fake_ddgs(monkeypatch, FakeDDGS, FakeTimeout)
+    monkeypatch.setattr(SearchTool, "_search_parallel", fake_parallel_search, raising=False)
 
     result = SearchTool(timeout_s=7.0).run({"query": "bounded search", "max_results": 3}, tmp_path)
 
     assert result.ok is True
-    assert seen["timeouts"] == [7.0]
-    assert seen["calls"] == [("bounded search", "auto", 3)]
-    assert "https://example.com" in result.content
+    assert seen == {
+        "endpoint": "https://search.parallel.ai/mcp",
+        "query": "bounded search",
+    }
+    assert "https://fastapi.tiangolo.com/" in result.content
 
 
-def test_search_tool_classifies_auto_backend_timeout(monkeypatch, tmp_path):
-    class FakeTimeout(Exception):
-        pass
+def test_search_tool_classifies_parallel_timeout(monkeypatch, tmp_path):
+    async def slow_parallel_search(self, query):
+        await asyncio.sleep(0.05)
+        return ToolResult(True, "too late")
 
-    class FakeDDGS:
-        def __init__(self, *, timeout):
-            self.timeout = timeout
+    monkeypatch.setattr(SearchTool, "_search_parallel", slow_parallel_search, raising=False)
 
-        def text(self, query, *, backend, max_results):
-            assert backend == "auto"
-            raise FakeTimeout("auto search timed out")
-
-    _install_fake_ddgs(monkeypatch, FakeDDGS, FakeTimeout)
-
-    result = SearchTool(timeout_s=3.0).run({"query": "timeout case"}, tmp_path)
+    result = SearchTool(timeout_s=0.001).run({"query": "timeout case"}, tmp_path)
 
     assert result.ok is False
     assert result.error_code == "SEARCH_TIMEOUT"
     assert "timed out" in result.content.casefold()
 
 
-def test_search_tool_reports_empty_auto_results(monkeypatch, tmp_path):
-    class FakeTimeout(Exception):
-        pass
+def test_search_tool_preserves_parallel_tool_error(monkeypatch, tmp_path):
+    async def failed_parallel_search(self, query):
+        return ToolResult(False, "Parallel rate limit reached", "SEARCH_ERROR")
 
-    class FakeDDGS:
-        def __init__(self, *, timeout):
-            self.timeout = timeout
+    monkeypatch.setattr(SearchTool, "_search_parallel", failed_parallel_search, raising=False)
 
-        def text(self, query, *, backend, max_results):
-            assert backend == "auto"
-            return []
-
-    _install_fake_ddgs(monkeypatch, FakeDDGS, FakeTimeout)
-
-    result = SearchTool().run({"query": "empty case"}, tmp_path)
+    result = SearchTool().run({"query": "rate limited"}, tmp_path)
 
     assert result.ok is False
     assert result.error_code == "SEARCH_ERROR"
-    assert "no results" in result.content.casefold()
+    assert "rate limit" in result.content.casefold()
