@@ -26,7 +26,7 @@ def _aggregate_trace_counts(results_path: Path) -> dict:
     tool_errors_by_name = Counter()
     error_codes_by_tool: dict[str, Counter] = defaultdict(Counter)
 
-    for line in results_path.read_text(encoding="utf-8").splitlines():
+    for line in results_path.read_text(encoding="utf-8").split("\n"):
         if not line.strip():
             continue
         record = json.loads(line)
