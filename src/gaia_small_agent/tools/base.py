@@ -40,9 +40,7 @@ class ToolResult:
         if len(full) <= max_chars:
             return full, metadata
 
-        marker = f"\n...[truncated from {len(self.content)} content characters; continue from next_offset_chars when provided]"
         body_prefix = self._body_prefix()
-
         offset = metadata.get("offset_chars")
         total = metadata.get("total_chars")
         pagination = (
@@ -54,19 +52,31 @@ class ToolResult:
             and offset >= 0
             and total >= offset
         )
+        if pagination:
+            marker = f"\n...[truncated from {len(self.content)} content characters; continue from next_offset_chars when provided]"
+        else:
+            marker = (
+                f"\n...[truncated from {len(self.content)} characters; request a narrower result "
+                "or use another tool call to inspect only what is needed]"
+            )
 
         visible = 0
-        for _ in range(4):
+        for _ in range(6):
             prefix = self._metadata_prefix(metadata)
             visible = max(0, min(len(self.content), max_chars - len(prefix) - len(body_prefix) - len(marker)))
-            if pagination:
-                metadata["returned_chars"] = visible
-                next_offset = offset + visible
-                metadata["next_offset_chars"] = next_offset if next_offset < total else None
+            if not pagination:
+                break
+            previous = (metadata.get("returned_chars"), metadata.get("next_offset_chars"))
+            metadata["returned_chars"] = visible
+            next_offset = offset + visible
+            metadata["next_offset_chars"] = next_offset if next_offset < total else None
+            current = (metadata["returned_chars"], metadata["next_offset_chars"])
+            if current == previous:
+                break
 
         prefix = self._metadata_prefix(metadata)
         visible = max(0, min(len(self.content), max_chars - len(prefix) - len(body_prefix) - len(marker)))
-        if pagination:
+        if pagination and metadata.get("returned_chars") != visible:
             metadata["returned_chars"] = visible
             next_offset = offset + visible
             metadata["next_offset_chars"] = next_offset if next_offset < total else None
