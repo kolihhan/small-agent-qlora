@@ -6,6 +6,7 @@ TRIGGER = Path(".github/GAIA_SHADOW_TRIGGER")
 CPU_QLORA_WORKFLOW = Path(".github/workflows/qlora-cpu-batch.yml")
 CPU_V3A_WORKFLOW = Path(".github/workflows/qlora-cpu-v3a.yml")
 GAIA_9B_THINKING_WORKFLOW = Path(".github/workflows/gaia-9b-thinking20.yml")
+GAIA_9B_PARALLEL_BASE_WORKFLOW = Path(".github/workflows/gaia-9b-base-parallel-mcp.yml")
 V3A_TRAIN_WORKFLOW = Path(".github/workflows/hf-zero-gpu-train-v3a.yml")
 GAIA_SHARD_RUNNER = Path("scripts/run_gaia_eval_shard.py")
 
@@ -119,6 +120,25 @@ def test_gaia_9b_thinking_baseline_is_isolated_and_matched():
     assert "expected Evaluation100 total 100" in workflow
     assert "name: gaia-9b-thinking-baseline-summary-20way" in workflow
     assert "results.jsonl" not in workflow[workflow.index("Upload final sanitized aggregate only"):]
+
+
+def test_gaia_9b_parallel_base_matches_v3b_harness_without_adapter():
+    workflow = GAIA_9B_PARALLEL_BASE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'FROZEN_EVAL_COMMIT: "59d807d343039f6462beea8f996c4f9666045796"' in workflow
+    assert 'FULL_SELECTION_SHA256: "22ce65f410d45e2e84af5a0ad1eafeadb311b08bb1234c968a114174c29bb373"' in workflow
+    assert 'DATASET_REVISION: "682dd723ee1e1697e00360edccf2366dc8418dd9"' in workflow
+    assert 'PROTOCOL_SEED: "gaia-local-v2"' in workflow
+    assert 'MODEL_ALIAS: qwen3.5-9b' in workflow
+    assert "max-parallel: 20" in workflow
+    assert "--shard-count 20" in workflow
+    assert "--backend openai_compat" in workflow
+    assert "--reasoning-budget 0 --temperature 0" in workflow
+    assert "--ctx-size 4096 --threads 4 --parallel 1" in workflow
+    assert "--lora" not in workflow
+    assert "adapter.gguf" not in workflow
+    assert "expected Evaluation100 total 100" in workflow
+    assert "name: gaia-9b-base-parallel-mcp-summary" in workflow
 
 
 def test_v3a_training_workflow_locks_balanced_exposure_and_artifact_trace():
