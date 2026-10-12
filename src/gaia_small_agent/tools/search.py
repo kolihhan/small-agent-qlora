@@ -44,34 +44,21 @@ class SearchTool(Tool):
                 pass
 
         max_results = max(1, min(int(arguments.get("max_results", 5)), 10))
-        errors: list[str] = []
-        rows = []
-        timeout_count = 0
-        backends = ("brave", "duckduckgo")
-        for backend in backends:
-            try:
-                rows = list(
-                    self._client(DDGS).text(
-                        query,
-                        backend=backend,
-                        max_results=max_results,
-                    )
+        try:
+            rows = list(
+                self._client(DDGS).text(
+                    query,
+                    backend="auto",
+                    max_results=max_results,
                 )
-            except TimeoutException as exc:
-                timeout_count += 1
-                errors.append(f"{backend}: timed out: {exc}")
-                continue
-            except Exception as exc:
-                errors.append(f"{backend}: {exc}")
-                continue
-            if rows:
-                break
-            errors.append(f"{backend}: no results")
+            )
+        except TimeoutException as exc:
+            return ToolResult(False, f"Search timed out: {exc}", "SEARCH_TIMEOUT")
+        except Exception as exc:
+            return ToolResult(False, f"Search failed: {exc}", "SEARCH_ERROR")
 
         if not rows:
-            detail = "; ".join(errors) if errors else "no results"
-            error_code = "SEARCH_TIMEOUT" if timeout_count == len(backends) else "SEARCH_ERROR"
-            return ToolResult(False, f"Search failed: {detail}", error_code)
+            return ToolResult(False, "Search failed: no results", "SEARCH_ERROR")
 
         lines = []
         for i, row in enumerate(rows, 1):
