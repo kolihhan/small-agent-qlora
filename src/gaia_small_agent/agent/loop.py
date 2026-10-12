@@ -30,6 +30,10 @@ def _bound_tool_observation(observation: str) -> str:
     return observation[: MAX_TOOL_OBSERVATION_CHARS - len(marker)] + marker
 
 
+def _looks_like_textual_tool_call(content: str) -> bool:
+    return content.lstrip().startswith("<tool_call>")
+
+
 class AgentRuntime:
     def __init__(self, model: Model, tools: list[Tool], max_steps: int = 12):
         self.model = model
@@ -72,6 +76,9 @@ class AgentRuntime:
                 if not answer:
                     trace.append(TraceEvent("empty_final", step, {}))
                     return AgentResult("", False, "empty_final", trace, metrics)
+                if _looks_like_textual_tool_call(answer):
+                    trace.append(TraceEvent("invalid_final", step, {"content": answer}))
+                    return AgentResult("", False, "invalid_final", trace, metrics)
                 trace.append(TraceEvent("final", step, {"answer": answer}))
                 return AgentResult(answer, True, "final", trace, metrics)
 
