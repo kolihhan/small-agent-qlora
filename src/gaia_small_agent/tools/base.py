@@ -16,13 +16,65 @@ class ToolResult:
     error_code: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def observation(self) -> str:
-        metadata = ""
-        if self.metadata:
-            metadata = f"ToolMeta: {json.dumps(self.metadata, ensure_ascii=False, sort_keys=True)}\n"
+    @staticmethod
+    def _metadata_prefix(metadata: dict[str, Any]) -> str:
+        if not metadata:
+            return ""
+        return f"ToolMeta: {json.dumps(metadata, ensure_ascii=False, sort_keys=True)}\n"
+
+    def _body_prefix(self) -> str:
         if self.ok:
-            return metadata + self.content
-        return metadata + f"ToolError[{self.error_code or 'ERROR'}]: {self.content}"
+            return ""
+        return f"ToolError[{self.error_code or 'ERROR'}]: "
+
+    def observation(self) -> str:
+        return self._metadata_prefix(self.metadata) + self._body_prefix() + self.content
+
+    def bounded_observation(self, max_chars: int) -> tuple[str, dict[str, Any]]:
+        """Render an observation without making pagination metadata skip unseen content."""
+        if max_chars <= 0:
+            raise ValueError("max_chars must be positive")
+
+        metadata = dict(self.metadata)
+        full = self.observation()
+        if len(full) <= max_chars:
+            return full, metadata
+
+        marker = f"\n...[truncated from {len(self.content)} content characters; continue from next_offset_chars when provided]"
+        body_prefix = self._body_prefix()
+
+        offset = metadata.get("offset_chars")
+        total = metadata.get("total_chars")
+        pagination = (
+            self.ok
+            and isinstance(offset, int)
+            and not isinstance(offset, bool)
+            and isinstance(total, int)
+            and not isinstance(total, bool)
+            and offset >= 0
+            and total >= offset
+        )
+
+        visible = 0
+        for _ in range(4):
+            prefix = self._metadata_prefix(metadata)
+            visible = max(0, min(len(self.content), max_chars - len(prefix) - len(body_prefix) - len(marker)))
+            if pagination:
+                metadata["returned_chars"] = visible
+                next_offset = offset + visible
+                metadata["next_offset_chars"] = next_offset if next_offset < total else None
+
+        prefix = self._metadata_prefix(metadata)
+        visible = max(0, min(len(self.content), max_chars - len(prefix) - len(body_prefix) - len(marker)))
+        if pagination:
+            metadata["returned_chars"] = visible
+            next_offset = offset + visible
+            metadata["next_offset_chars"] = next_offset if next_offset < total else None
+            prefix = self._metadata_prefix(metadata)
+            visible = max(0, min(len(self.content), max_chars - len(prefix) - len(body_prefix) - len(marker)))
+
+        observation = prefix + body_prefix + self.content[:visible] + marker
+        return observation[:max_chars], metadata
 
 
 class Tool(ABC):
