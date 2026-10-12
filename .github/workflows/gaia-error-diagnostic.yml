@@ -1,4 +1,5 @@
 # Triggered after clean Base v2 to localize tool errors before the next QLoRA experiment.
+# Tool Runtime v2 rerun: compare minimal runtime fixes on frozen Diagnostic25.
 name: GAIA 9B error diagnostic
 
 on:
