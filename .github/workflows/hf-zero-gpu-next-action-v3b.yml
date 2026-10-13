@@ -1,4 +1,4 @@
-name: GitHub CPU held-out next-action Base vs v3B thinking256
+name: GitHub CPU held-out next-action recovery 0-6 thinking256
 
 on:
   push:
@@ -31,9 +31,9 @@ jobs:
     timeout-minutes: 120
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 2
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: [0, 6]
     steps:
       - name: Checkout experiment branch
         uses: actions/checkout@v4
@@ -48,8 +48,7 @@ jobs:
         run: python -m pip install --quiet -e '.[dev]'
 
       - name: Verify next-action evaluator
-        run: |
-          python -m pytest -q tests/test_next_action_eval.py tests/test_oracle_policy_v3.py tests/test_training_exposure_v3b.py
+        run: python -m pytest -q tests/test_next_action_eval.py tests/test_oracle_policy_v3.py tests/test_training_exposure_v3b.py
 
       - name: Freeze deterministic held-out shard
         shell: bash
@@ -59,11 +58,9 @@ jobs:
           set -euo pipefail
           mkdir -p runs/oracle runs/selection
           python - <<'PY'
-          import json
-          import os
+          import json, os
           from collections import Counter
           from pathlib import Path
-
           from gaia_small_agent.training.oracle_policy_v3 import generate_oracle_policy_v3_dataset
           from gaia_small_agent.training.qlora import _render_turn_examples, _select_diagnostic_exposure_examples
 
@@ -91,8 +88,6 @@ jobs:
           shard_index = int(os.environ["SHARD_INDEX"])
           shard_count = int(os.environ["SHARD_COUNT"])
           shard_ids = selected_ids[shard_index::shard_count]
-          if not shard_ids:
-              raise SystemExit(f"empty shard {shard_index}")
           selected_meta = {
               "sample_count": len(selected_ids),
               "seed": os.environ["SAMPLE_SEED"],
@@ -107,21 +102,31 @@ jobs:
           print(json.dumps({k: v for k, v in selected_meta.items() if k != "example_ids"}, indent=2, sort_keys=True))
           PY
 
-      - name: Download and verify frozen Base 9B and llama.cpp
+      - name: Download and verify frozen Base 9B and llama.cpp robustly
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p model /tmp/llama-bin matched-input
-          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf
+          touch model/Qwen3.5-9B-Q4_K_M.gguf
+          ok=0
+          for attempt in {1..12}; do
+            echo "model download attempt $attempt"
+            if curl --http1.1 -fL --retry 3 --retry-all-errors --retry-delay 2 -C - "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf; then
+              ok=1
+              break
+            fi
+            sleep 3
+          done
+          test "$ok" -eq 1
           echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
-          curl -fL --retry 5 --retry-delay 3 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          curl --http1.1 -fL --retry 10 --retry-all-errors --retry-delay 2 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
           echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
           tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
           SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
           test -n "$SERVER"
           echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
 
-      - name: Download and verify frozen v3B GGUF adapter
+      - name: Download frozen v3B GGUF adapter
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.SOURCE_ARTIFACT }}
@@ -145,14 +150,12 @@ jobs:
           set -euo pipefail
           shard="$SHARD_INDEX"
           mkdir -p "runs/results/shard-$shard"
-
           run_arm() {
             arm="$1"
             extra=()
             if [ "$arm" = "v3b" ]; then
               extra=(--lora matched-input/qwen35-9b-qlora-v3b-adapter.gguf)
             fi
-
             "$LLAMA_SERVER" \
               -m model/Qwen3.5-9B-Q4_K_M.gguf \
               "${extra[@]}" \
@@ -162,28 +165,20 @@ jobs:
               --jinja --reasoning on --reasoning-format deepseek --reasoning-budget 256 --temperature 0 \
               > "runs/results/shard-$shard/${arm}-server.log" 2>&1 &
             pid=$!
-            cleanup() {
-              kill "$pid" 2>/dev/null || true
-              wait "$pid" 2>/dev/null || true
-            }
+            cleanup() { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
             trap cleanup RETURN
-
             for i in {1..180}; do
               if curl -fsS http://127.0.0.1:8080/health >/dev/null; then break; fi
               sleep 2
             done
             curl -fsS http://127.0.0.1:8080/health >/dev/null
-
             ARM="$arm" python - <<'PY'
-          import json
-          import os
+          import json, os
           from pathlib import Path
-
           from gaia_small_agent.model.openai_compat import OpenAICompatModel
           from gaia_small_agent.training.next_action_eval import evaluate_next_actions
 
           selection = json.loads(Path("runs/selection/selected.json").read_text(encoding="utf-8"))
-          ids = set(selection["example_ids"])
           model = OpenAICompatModel(
               model=os.environ["MODEL_ALIAS"],
               base_url="http://127.0.0.1:8080",
@@ -193,7 +188,7 @@ jobs:
           summary = evaluate_next_actions(
               "runs/oracle/test.jsonl",
               lambda: model,
-              example_ids=ids,
+              example_ids=set(selection["example_ids"]),
           )
           payload = {
               "schema_version": "heldout-next-action-shard/v1",
@@ -207,25 +202,16 @@ jobs:
           }
           out = Path(f"runs/results/shard-{selection['shard_index']}/{os.environ['ARM']}.json")
           out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-          print(json.dumps({
-              "arm": os.environ["ARM"],
-              "shard": selection["shard_index"],
-              "total": summary["total"],
-              "correct": summary["correct"],
-              "accuracy": summary["accuracy"],
-              "errors": summary["error_counts"],
-          }, indent=2, sort_keys=True))
+          print(json.dumps({"arm": os.environ["ARM"], "shard": selection["shard_index"], "correct": summary["correct"], "total": summary["total"], "accuracy": summary["accuracy"], "errors": summary["error_counts"]}, indent=2, sort_keys=True))
           PY
-
             cleanup
             trap - RETURN
             sleep 2
           }
-
           run_arm base
           run_arm v3b
 
-      - name: Upload paired shard evidence
+      - name: Upload recovery shard evidence
         uses: actions/upload-artifact@v4
         with:
           name: heldout-next-action-thinking256-shard-${{ matrix.shard }}
@@ -233,122 +219,5 @@ jobs:
             runs/results/shard-${{ matrix.shard }}/base.json
             runs/results/shard-${{ matrix.shard }}/v3b.json
             runs/selection/selected.json
-          if-no-files-found: error
-          retention-days: 30
-
-  summarize:
-    needs: paired-shard
-    if: ${{ always() && needs.paired-shard.result == 'success' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all paired shards
-        uses: actions/download-artifact@v4
-        with:
-          pattern: heldout-next-action-thinking256-shard-*
-          path: evidence
-
-      - name: Build paired held-out summary
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json
-          import math
-          from collections import Counter, defaultdict
-          from pathlib import Path
-
-          def merge_arm(arm):
-              files = sorted(Path("evidence").glob(f"heldout-next-action-thinking256-shard-*/{arm}.json"))
-              if len(files) != 8:
-                  raise SystemExit(f"{arm}: expected 8 shard files, got {len(files)}")
-              examples = []
-              errors = Counter()
-              by_cap = defaultdict(lambda: {"total": 0, "correct": 0})
-              by_action = defaultdict(lambda: {"total": 0, "correct": 0})
-              for path in files:
-                  payload = json.loads(path.read_text(encoding="utf-8"))
-                  summary = payload["summary"]
-                  examples.extend(summary["examples"])
-                  errors.update(summary["error_counts"])
-                  for name, bucket in summary["by_capability"].items():
-                      by_cap[name]["total"] += int(bucket["total"])
-                      by_cap[name]["correct"] += int(bucket["correct"])
-                  for name, bucket in summary["by_action_type"].items():
-                      by_action[name]["total"] += int(bucket["total"])
-                      by_action[name]["correct"] += int(bucket["correct"])
-              ids = [str(item["example_id"]) for item in examples]
-              if len(examples) != 64 or len(ids) != len(set(ids)):
-                  raise SystemExit(f"{arm}: expected 64 unique examples, got {len(examples)} / {len(set(ids))}")
-              correct = sum(bool(item["correct"]) for item in examples)
-              return {
-                  "total": len(examples),
-                  "correct": correct,
-                  "accuracy": 100.0 * correct / len(examples),
-                  "error_counts": dict(sorted(errors.items())),
-                  "by_capability": dict(sorted(by_cap.items())),
-                  "by_action_type": dict(sorted(by_action.items())),
-                  "examples": examples,
-              }
-
-          def mcnemar_exact(b, c):
-              n = b + c
-              if n == 0:
-                  return 1.0
-              k = min(b, c)
-              tail = sum(math.comb(n, i) for i in range(k + 1)) / (2 ** n)
-              return min(1.0, 2.0 * tail)
-
-          base = merge_arm("base")
-          tuned = merge_arm("v3b")
-          bmap = {str(x["example_id"]): x for x in base["examples"]}
-          tmap = {str(x["example_id"]): x for x in tuned["examples"]}
-          if set(bmap) != set(tmap):
-              raise SystemExit("Base and v3B example identities differ")
-
-          wrong_to_correct = sum((not bool(bmap[k]["correct"])) and bool(tmap[k]["correct"]) for k in bmap)
-          correct_to_wrong = sum(bool(bmap[k]["correct"]) and (not bool(tmap[k]["correct"])) for k in bmap)
-          both_correct = sum(bool(bmap[k]["correct"]) and bool(tmap[k]["correct"]) for k in bmap)
-          both_wrong = len(bmap) - wrong_to_correct - correct_to_wrong - both_correct
-
-          # Drop per-example details from the headline artifact; shard artifacts retain them.
-          base_public = {k: v for k, v in base.items() if k != "examples"}
-          tuned_public = {k: v for k, v in tuned.items() if k != "examples"}
-          payload = {
-              "schema_version": "heldout-next-action-v3b-thinking256/v1",
-              "experiment": "held-out next-action transfer under matched GitHub CPU inference",
-              "sample_count": 64,
-              "selection_seed": "heldout-v3b-next-action-v1",
-              "model": "Qwen3.5-9B Q4_K_M",
-              "adapter": "QLoRA v3B GGUF",
-              "thinking": True,
-              "reasoning_budget": 256,
-              "max_new_tokens": 512,
-              "base": base_public,
-              "v3b": tuned_public,
-              "delta": {
-                  "correct": tuned["correct"] - base["correct"],
-                  "accuracy_pp": tuned["accuracy"] - base["accuracy"],
-              },
-              "paired": {
-                  "both_correct": both_correct,
-                  "both_wrong": both_wrong,
-                  "base_only": correct_to_wrong,
-                  "v3b_only": wrong_to_correct,
-                  "net_correct_change": wrong_to_correct - correct_to_wrong,
-                  "mcnemar_exact_p": mcnemar_exact(wrong_to_correct, correct_to_wrong),
-              },
-          }
-          Path("heldout-next-action-v3b-thinking256-summary.json").write_text(
-              json.dumps(payload, indent=2, sort_keys=True) + "\n",
-              encoding="utf-8",
-          )
-          print(json.dumps(payload, indent=2, sort_keys=True))
-          PY
-
-      - name: Upload clean paired summary
-        uses: actions/upload-artifact@v4
-        with:
-          name: heldout-next-action-v3b-thinking256-summary
-          path: heldout-next-action-v3b-thinking256-summary.json
           if-no-files-found: error
           retention-days: 30
