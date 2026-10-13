@@ -20,15 +20,24 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install test dependencies
-        run: python -m pip install --quiet -e '.[test]'
+        run: python -m pip install --quiet -e '.[dev]'
       - name: Verify reasoning protocol tests are RED before implementation
         run: |
           set +e
-          python -m pytest -q tests/test_reasoning_content_protocol.py
+          python -m pytest -q tests/test_reasoning_content_protocol.py > /tmp/red.log 2>&1
           status=$?
           set -e
+          cat /tmp/red.log
           if [ "$status" -eq 0 ]; then
             echo "Expected RED tests to fail before implementation, but they passed."
+            exit 1
+          fi
+          if grep -q "No module named pytest" /tmp/red.log; then
+            echo "RED invalid: pytest was not available."
+            exit 1
+          fi
+          if ! grep -Eq "reasoning_content|unexpected keyword argument" /tmp/red.log; then
+            echo "RED invalid: failure was not caused by missing reasoning_content support."
             exit 1
           fi
           echo "RED confirmed: reasoning_content protocol is not implemented yet."
