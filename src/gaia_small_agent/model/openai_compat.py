@@ -94,4 +94,8 @@ class OpenAICompatModel:
                 )
             )
 
-        return AssistantTurn(content=str(message.get("content") or ""), tool_calls=calls)
+        return AssistantTurn(
+            content=str(message.get("content") or ""),
+            tool_calls=calls,
+            reasoning_content=str(message.get("reasoning_content") or ""),
+        )
