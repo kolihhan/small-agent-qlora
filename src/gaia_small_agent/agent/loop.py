@@ -95,7 +95,14 @@ class AgentRuntime:
                     "type": "function",
                     "function": {"name": call.name, "arguments": call.arguments},
                 })
-            messages.append({"role": "assistant", "content": turn.content or "", "tool_calls": assistant_tool_calls})
+            assistant_message = {
+                "role": "assistant",
+                "content": turn.content or "",
+                "tool_calls": assistant_tool_calls,
+            }
+            if turn.reasoning_content:
+                assistant_message["reasoning_content"] = turn.reasoning_content
+            messages.append(assistant_message)
 
             for call in turn.tool_calls:
                 metrics.tool_calls += 1
