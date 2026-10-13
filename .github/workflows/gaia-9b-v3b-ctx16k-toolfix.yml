@@ -15,7 +15,7 @@ env:
   CONVERT_RUN_ID: "38156235327"
   CONVERT_ARTIFACT: "qwen35-9b-qlora-v3b-gguf"
   ADAPTER_SHA256: "e7caec609a905d21e056b107519d78916d3ef79e7bdc70db916e40d801d2187d"
-  FROZEN_EVAL_COMMIT: "2fd2369a3b409fbeb14e023283ab4281fc6f14a7"
+  FROZEN_EVAL_COMMIT: "08fbcaa5ed82c5238188c45d5748993bae9bf1e1"
   FULL_SELECTION_SHA256: "22ce65f410d45e2e84af5a0ad1eafeadb311b08bb1234c968a114174c29bb373"
   DATASET_REVISION: "682dd723ee1e1697e00360edccf2366dc8418dd9"
   PROTOCOL_SEED: "gaia-local-v2"
@@ -225,7 +225,7 @@ jobs:
               if shard.get('backend') != 'openai_compat' or shard.get('model') != 'qwen3.5-9b' or shard.get('thinking') is not False:
                   raise SystemExit(f'protocol mismatch: {shard_path}: {shard}')
               result_path = shard_path.parent / 'results.jsonl'
-              shard_rows = [json.loads(line) for line in result_path.read_text().splitlines() if line.strip()]
+              shard_rows = [json.loads(line) for line in result_path.read_text().split('\n') if line.strip()]
               if len(shard_rows) != 5:
                   raise SystemExit(f'{result_path}: expected 5 rows, got {len(shard_rows)}')
               rows.extend(shard_rows)
