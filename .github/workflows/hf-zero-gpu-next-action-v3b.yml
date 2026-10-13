@@ -1,4 +1,4 @@
-name: ZeroGPU held-out next-action Base vs v3B
+name: GitHub CPU held-out next-action Base vs v3B thinking256
 
 on:
   push:
@@ -13,225 +13,342 @@ permissions:
   actions: read
 
 env:
-  HF_TOKEN: ${{ secrets.HF_TOKEN }}
-  HF_SPACE_ID: kolihhan/small-agent-qlora-v2-train
-  SOURCE_RUN_ID: "38152689194"
-  SOURCE_ARTIFACT: qwen35-9b-qlora-v3b-adapter
-  MODEL_ID: Qwen/Qwen3.5-9B
+  SOURCE_RUN_ID: "38156235327"
+  SOURCE_ARTIFACT: qwen35-9b-qlora-v3b-gguf
+  ADAPTER_SHA256: e7caec609a905d21e056b107519d78916d3ef79e7bdc70db916e40d801d2187d
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA256: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_RELEASE_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_RELEASE_SHA256: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  MODEL_ALIAS: qwen3.5-9b
   SAMPLE_COUNT: "64"
   SAMPLE_SEED: heldout-v3b-next-action-v1
+  SHARD_COUNT: "8"
 
 jobs:
-  evaluate:
+  paired-shard:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v6
+      - name: Checkout experiment branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
-      - name: Verify evaluator and full suite
+
+      - name: Install focused evaluation dependencies
+        run: python -m pip install --quiet -e '.[dev]'
+
+      - name: Verify next-action evaluator
         run: |
-          python -m pip install --quiet -e '.[dev,files]'
-          python -m pytest -q tests/test_next_action_eval.py
-          python -m pytest -q
-      - name: Verify free ZeroGPU quota
-        run: |
-          test -n "$HF_TOKEN" || { echo "HF_TOKEN_NOT_CONFIGURED"; exit 42; }
-          python -m pip install --quiet 'huggingface_hub>=1.0' 'gradio_client>=2,<3'
-          python - <<'PY'
-          import json, os
-          from huggingface_hub import HfApi
-          q = HfApi(token=os.environ['HF_TOKEN']).get_zero_gpu_quota()
-          print(json.dumps({'remaining': q.remaining, 'resets_at': q.resets_at.isoformat() if q.resets_at else None}, indent=2))
-          if q.remaining < 300:
-              raise SystemExit(f'Need at least 300 free ZeroGPU seconds; remaining={q.remaining}')
-          PY
-      - name: Download verified PEFT v3B adapter
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ env.SOURCE_ARTIFACT }}
-          path: source
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ env.SOURCE_RUN_ID }}
-      - name: Build and deploy isolated evaluator Space
+          python -m pytest -q tests/test_next_action_eval.py tests/test_oracle_policy_v3.py tests/test_training_exposure_v3b.py
+
+      - name: Freeze deterministic held-out shard
         shell: bash
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
         run: |
           set -euo pipefail
-          rm -rf /tmp/space-src /tmp/adapter
-          mkdir -p /tmp/space-src /tmp/adapter
-          unzip -q source/qwen35-9b-qlora-v3b-adapter.zip -d /tmp/adapter
-          test -s /tmp/adapter/adapter_model.safetensors
-          cp -R src/gaia_small_agent /tmp/space-src/gaia_small_agent
-          cp -R /tmp/adapter /tmp/space-src/adapter
-          cat > /tmp/space-src/requirements.txt <<'EOF'
-          transformers>=5.15,<6
-          peft>=0.20,<1
-          bitsandbytes>=0.50.1,<1
-          accelerate>=1.10,<2
-          requests>=2.32
-          jsonschema>=4.20
-          pypdf>=5
-          openpyxl>=3.1
-          pandas>=2.2
-          mcp>=2,<3
-          ddgs>=9.16,<10
-          huggingface_hub>=1.0
-          gradio>=6,<7
-          spaces
-          EOF
-          cat > /tmp/space-src/README.md <<'EOF'
-          ---
-          title: Small Agent Heldout Next Action Eval
-          emoji: 🧪
-          colorFrom: gray
-          colorTo: blue
-          sdk: gradio
-          sdk_version: 6.0.1
-          app_file: app.py
-          pinned: false
-          private: true
-          hardware: zero-a10g
-          ---
-          Temporary private evaluator for held-out next-action Base vs v3B diagnostics.
-          EOF
-          cat > /tmp/space-src/app.py <<'PYAPP'
-          from __future__ import annotations
-          import gc, json, os, tempfile, time
+          mkdir -p runs/oracle runs/selection
+          python - <<'PY'
+          import json
+          import os
+          from collections import Counter
           from pathlib import Path
-          import gradio as gr
-          import spaces
-          import torch
-          from huggingface_hub import snapshot_download
-          from transformers import AutoTokenizer
-          from gaia_small_agent.model.transformers_qwen import TransformersQwenModel
-          from gaia_small_agent.training.next_action_eval import evaluate_next_actions
+
           from gaia_small_agent.training.oracle_policy_v3 import generate_oracle_policy_v3_dataset
           from gaia_small_agent.training.qlora import _render_turn_examples, _select_diagnostic_exposure_examples
 
-          MODEL_ID = os.environ.get('MODEL_ID', 'Qwen/Qwen3.5-9B')
-          SAMPLE_COUNT = int(os.environ.get('SAMPLE_COUNT', '64'))
-          SAMPLE_SEED = os.environ.get('SAMPLE_SEED', 'heldout-v3b-next-action-v1')
-          MODEL_PATH = snapshot_download(repo_id=MODEL_ID, token=os.environ.get('HF_TOKEN') or None)
-          ADAPTER = '/home/user/app/adapter'
+          class NativeShapeTokenizer:
+              def apply_chat_template(self, messages, **kwargs):
+                  def dump(value):
+                      return json.dumps(value, sort_keys=True, separators=(",", ":"))
+                  if kwargs.get("add_generation_prompt"):
+                      return dump(messages) + "<assistant>"
+                  if messages and messages[-1].get("role") == "assistant":
+                      return dump(messages[:-1]) + "<assistant>" + dump(messages[-1])
+                  return dump(messages)
 
-          def _release(model):
-              del model
-              gc.collect()
-              if torch.cuda.is_available():
-                  torch.cuda.empty_cache()
-
-          @spaces.GPU(duration=300)
-          def evaluate_pair():
-              root = Path(tempfile.mkdtemp(prefix='heldout-next-action-'))
-              paths = generate_oracle_policy_v3_dataset(root / 'oracle', seed='small-agent-policy-v3')
-              tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
-              rows = [json.loads(line) for line in paths['test'].read_text(encoding='utf-8').splitlines() if line.strip()]
-              turns = _render_turn_examples(tokenizer, rows)
-              selected = _select_diagnostic_exposure_examples(turns, count=SAMPLE_COUNT, seed=SAMPLE_SEED)
-              example_ids = {str(item['metadata']['example_id']) for item in selected}
-              selected_meta = {
-                  'sample_count': len(example_ids),
-                  'seed': SAMPLE_SEED,
-                  'capabilities': {},
-                  'action_types': {},
-              }
-              for item in selected:
-                  meta = item['metadata']
-                  selected_meta['capabilities'][meta['capability']] = selected_meta['capabilities'].get(meta['capability'], 0) + 1
-                  selected_meta['action_types'][meta['action_type']] = selected_meta['action_types'].get(meta['action_type'], 0) + 1
-
-              started = time.time()
-              base = TransformersQwenModel(model_name=MODEL_PATH, quantize_4bit=True, adapter=None, enable_thinking=False, max_new_tokens=128)
-              base_summary = evaluate_next_actions(paths['test'], lambda: base, example_ids=example_ids)
-              base_seconds = time.time() - started
-              _release(base)
-
-              tuned_start = time.time()
-              tuned = TransformersQwenModel(model_name=MODEL_PATH, quantize_4bit=True, adapter=ADAPTER, enable_thinking=False, max_new_tokens=128)
-              tuned_summary = evaluate_next_actions(paths['test'], lambda: tuned, example_ids=example_ids)
-              tuned_seconds = time.time() - tuned_start
-              _release(tuned)
-
-              base_examples = {x['example_id']: x for x in base_summary['examples']}
-              tuned_examples = {x['example_id']: x for x in tuned_summary['examples']}
-              ids = sorted(example_ids)
-              wrong_to_correct = sum((not base_examples[i]['correct']) and tuned_examples[i]['correct'] for i in ids)
-              correct_to_wrong = sum(base_examples[i]['correct'] and (not tuned_examples[i]['correct']) for i in ids)
-              return {
-                  'schema_version': 'heldout-next-action-v3b/v1',
-                  'model': MODEL_ID,
-                  'inference_stack': 'Transformers NF4 + PEFT',
-                  'thinking': False,
-                  'max_new_tokens': 128,
-                  'selection': selected_meta,
-                  'base': base_summary,
-                  'v3b': tuned_summary,
-                  'paired': {'wrong_to_correct': wrong_to_correct, 'correct_to_wrong': correct_to_wrong, 'net_correct_change': wrong_to_correct - correct_to_wrong},
-                  'timing_seconds': {'base': base_seconds, 'v3b': tuned_seconds},
-              }
-
-          with gr.Blocks() as demo:
-              run = gr.Button('evaluate')
-              out = gr.JSON()
-              run.click(evaluate_pair, inputs=[], outputs=out, api_name='evaluate_pair')
-          if __name__ == '__main__':
-              demo.launch(show_error=True)
-          PYAPP
-          python - <<'PY'
-          import os
-          from huggingface_hub import HfApi, SpaceHardware
-          api = HfApi(token=os.environ['HF_TOKEN'])
-          rid = os.environ['HF_SPACE_ID']
-          api.upload_folder(folder_path='/tmp/space-src', repo_id=rid, repo_type='space', delete_patterns=['*.py','requirements.txt','gaia_small_agent/**','adapter/**'], commit_message='heldout next-action v3B evaluator')
-          api.add_space_secret(repo_id=rid, key='HF_TOKEN', value=os.environ['HF_TOKEN'])
-          for key in ('MODEL_ID','SAMPLE_COUNT','SAMPLE_SEED'):
-              api.add_space_variable(repo_id=rid, key=key, value=os.environ[key])
-          api.request_space_hardware(repo_id=rid, hardware=SpaceHardware.ZERO_A10G)
-          try: api.restart_space(repo_id=rid)
-          except Exception as exc: print('restart', exc)
+          paths = generate_oracle_policy_v3_dataset(Path("runs/oracle"), seed="small-agent-policy-v3")
+          rows = [json.loads(line) for line in paths["test"].read_text(encoding="utf-8").splitlines() if line.strip()]
+          turns = _render_turn_examples(NativeShapeTokenizer(), rows)
+          selected = _select_diagnostic_exposure_examples(
+              turns,
+              count=int(os.environ["SAMPLE_COUNT"]),
+              seed=os.environ["SAMPLE_SEED"],
+          )
+          selected_ids = [str(item["metadata"]["example_id"]) for item in selected]
+          if len(selected_ids) != len(set(selected_ids)):
+              raise SystemExit("selected held-out example IDs are not unique")
+          shard_index = int(os.environ["SHARD_INDEX"])
+          shard_count = int(os.environ["SHARD_COUNT"])
+          shard_ids = selected_ids[shard_index::shard_count]
+          if not shard_ids:
+              raise SystemExit(f"empty shard {shard_index}")
+          selected_meta = {
+              "sample_count": len(selected_ids),
+              "seed": os.environ["SAMPLE_SEED"],
+              "capabilities": dict(Counter(str(item["metadata"]["capability"]) for item in selected)),
+              "action_types": dict(Counter(str(item["metadata"]["action_type"]) for item in selected)),
+              "shard_index": shard_index,
+              "shard_count": shard_count,
+              "shard_size": len(shard_ids),
+              "example_ids": shard_ids,
+          }
+          Path("runs/selection/selected.json").write_text(json.dumps(selected_meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps({k: v for k, v in selected_meta.items() if k != "example_ids"}, indent=2, sort_keys=True))
           PY
-      - name: Run paired held-out evaluation
+
+      - name: Download and verify frozen Base 9B and llama.cpp
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model /tmp/llama-bin matched-input
+          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf
+          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
+          curl -fL --retry 5 --retry-delay 3 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+
+      - name: Download and verify frozen v3B GGUF adapter
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SOURCE_ARTIFACT }}
+          path: matched-input
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Verify adapter checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s matched-input/qwen35-9b-qlora-v3b-adapter.gguf
+          echo "$ADAPTER_SHA256  matched-input/qwen35-9b-qlora-v3b-adapter.gguf" | sha256sum -c -
+
+      - name: Run matched Base then v3B with thinking budget 256
+        shell: bash
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          shard="$SHARD_INDEX"
+          mkdir -p "runs/results/shard-$shard"
+
+          run_arm() {
+            arm="$1"
+            extra=()
+            if [ "$arm" = "v3b" ]; then
+              extra=(--lora matched-input/qwen35-9b-qlora-v3b-adapter.gguf)
+            fi
+
+            "$LLAMA_SERVER" \
+              -m model/Qwen3.5-9B-Q4_K_M.gguf \
+              "${extra[@]}" \
+              --alias "$MODEL_ALIAS" \
+              --host 127.0.0.1 --port 8080 \
+              --ctx-size 16384 --threads 4 --parallel 1 \
+              --jinja --reasoning on --reasoning-format deepseek --reasoning-budget 256 --temperature 0 \
+              > "runs/results/shard-$shard/${arm}-server.log" 2>&1 &
+            pid=$!
+            cleanup() {
+              kill "$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+            }
+            trap cleanup RETURN
+
+            for i in {1..180}; do
+              if curl -fsS http://127.0.0.1:8080/health >/dev/null; then break; fi
+              sleep 2
+            done
+            curl -fsS http://127.0.0.1:8080/health >/dev/null
+
+            ARM="$arm" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from gaia_small_agent.model.openai_compat import OpenAICompatModel
+          from gaia_small_agent.training.next_action_eval import evaluate_next_actions
+
+          selection = json.loads(Path("runs/selection/selected.json").read_text(encoding="utf-8"))
+          ids = set(selection["example_ids"])
+          model = OpenAICompatModel(
+              model=os.environ["MODEL_ALIAS"],
+              base_url="http://127.0.0.1:8080",
+              timeout_s=240.0,
+              max_new_tokens=512,
+          )
+          summary = evaluate_next_actions(
+              "runs/oracle/test.jsonl",
+              lambda: model,
+              example_ids=ids,
+          )
+          payload = {
+              "schema_version": "heldout-next-action-shard/v1",
+              "arm": os.environ["ARM"],
+              "inference_stack": "llama.cpp + Qwen3.5-9B Q4_K_M + optional GGUF LoRA",
+              "thinking": True,
+              "reasoning_budget": 256,
+              "max_new_tokens": 512,
+              "selection": selection,
+              "summary": summary,
+          }
+          out = Path(f"runs/results/shard-{selection['shard_index']}/{os.environ['ARM']}.json")
+          out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps({
+              "arm": os.environ["ARM"],
+              "shard": selection["shard_index"],
+              "total": summary["total"],
+              "correct": summary["correct"],
+              "accuracy": summary["accuracy"],
+              "errors": summary["error_counts"],
+          }, indent=2, sort_keys=True))
+          PY
+
+            cleanup
+            trap - RETURN
+            sleep 2
+          }
+
+          run_arm base
+          run_arm v3b
+
+      - name: Upload paired shard evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: heldout-next-action-thinking256-shard-${{ matrix.shard }}
+          path: |
+            runs/results/shard-${{ matrix.shard }}/base.json
+            runs/results/shard-${{ matrix.shard }}/v3b.json
+            runs/selection/selected.json
+          if-no-files-found: error
+          retention-days: 30
+
+  summarize:
+    needs: paired-shard
+    if: ${{ always() && needs.paired-shard.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all paired shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: heldout-next-action-thinking256-shard-*
+          path: evidence
+
+      - name: Build paired held-out summary
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json, os, time
-          from huggingface_hub import HfApi
-          from gradio_client import Client
-          rid = os.environ['HF_SPACE_ID']
-          api = HfApi(token=os.environ['HF_TOKEN'])
-          print(api.wait_for_space(repo_id=rid, timeout=1800))
-          deadline = time.time() + 900
-          last = None
-          while time.time() < deadline:
-              try:
-                  client = Client(rid, token=os.environ['HF_TOKEN'], verbose=False)
-                  client.view_api(print_info=False)
-                  break
-              except Exception as exc:
-                  last = exc
-                  time.sleep(10)
-          else:
-              raise SystemExit(f'API not ready: {last}')
-          result = client.predict(api_name='/evaluate_pair')
-          with open('heldout-next-action-v3b.json', 'w', encoding='utf-8') as f:
-              json.dump(result, f, indent=2, sort_keys=True)
-              f.write('\n')
-          print(json.dumps({
-              'selection': result['selection'],
-              'base': {k: result['base'][k] for k in ('total','correct','accuracy','error_counts','by_capability','by_action_type')},
-              'v3b': {k: result['v3b'][k] for k in ('total','correct','accuracy','error_counts','by_capability','by_action_type')},
-              'paired': result['paired'],
-              'timing_seconds': result['timing_seconds'],
-          }, indent=2, sort_keys=True))
+          import json
+          import math
+          from collections import Counter, defaultdict
+          from pathlib import Path
+
+          def merge_arm(arm):
+              files = sorted(Path("evidence").glob(f"heldout-next-action-thinking256-shard-*/{arm}.json"))
+              if len(files) != 8:
+                  raise SystemExit(f"{arm}: expected 8 shard files, got {len(files)}")
+              examples = []
+              errors = Counter()
+              by_cap = defaultdict(lambda: {"total": 0, "correct": 0})
+              by_action = defaultdict(lambda: {"total": 0, "correct": 0})
+              for path in files:
+                  payload = json.loads(path.read_text(encoding="utf-8"))
+                  summary = payload["summary"]
+                  examples.extend(summary["examples"])
+                  errors.update(summary["error_counts"])
+                  for name, bucket in summary["by_capability"].items():
+                      by_cap[name]["total"] += int(bucket["total"])
+                      by_cap[name]["correct"] += int(bucket["correct"])
+                  for name, bucket in summary["by_action_type"].items():
+                      by_action[name]["total"] += int(bucket["total"])
+                      by_action[name]["correct"] += int(bucket["correct"])
+              ids = [str(item["example_id"]) for item in examples]
+              if len(examples) != 64 or len(ids) != len(set(ids)):
+                  raise SystemExit(f"{arm}: expected 64 unique examples, got {len(examples)} / {len(set(ids))}")
+              correct = sum(bool(item["correct"]) for item in examples)
+              return {
+                  "total": len(examples),
+                  "correct": correct,
+                  "accuracy": 100.0 * correct / len(examples),
+                  "error_counts": dict(sorted(errors.items())),
+                  "by_capability": dict(sorted(by_cap.items())),
+                  "by_action_type": dict(sorted(by_action.items())),
+                  "examples": examples,
+              }
+
+          def mcnemar_exact(b, c):
+              n = b + c
+              if n == 0:
+                  return 1.0
+              k = min(b, c)
+              tail = sum(math.comb(n, i) for i in range(k + 1)) / (2 ** n)
+              return min(1.0, 2.0 * tail)
+
+          base = merge_arm("base")
+          tuned = merge_arm("v3b")
+          bmap = {str(x["example_id"]): x for x in base["examples"]}
+          tmap = {str(x["example_id"]): x for x in tuned["examples"]}
+          if set(bmap) != set(tmap):
+              raise SystemExit("Base and v3B example identities differ")
+
+          wrong_to_correct = sum((not bool(bmap[k]["correct"])) and bool(tmap[k]["correct"]) for k in bmap)
+          correct_to_wrong = sum(bool(bmap[k]["correct"]) and (not bool(tmap[k]["correct"])) for k in bmap)
+          both_correct = sum(bool(bmap[k]["correct"]) and bool(tmap[k]["correct"]) for k in bmap)
+          both_wrong = len(bmap) - wrong_to_correct - correct_to_wrong - both_correct
+
+          # Drop per-example details from the headline artifact; shard artifacts retain them.
+          base_public = {k: v for k, v in base.items() if k != "examples"}
+          tuned_public = {k: v for k, v in tuned.items() if k != "examples"}
+          payload = {
+              "schema_version": "heldout-next-action-v3b-thinking256/v1",
+              "experiment": "held-out next-action transfer under matched GitHub CPU inference",
+              "sample_count": 64,
+              "selection_seed": "heldout-v3b-next-action-v1",
+              "model": "Qwen3.5-9B Q4_K_M",
+              "adapter": "QLoRA v3B GGUF",
+              "thinking": True,
+              "reasoning_budget": 256,
+              "max_new_tokens": 512,
+              "base": base_public,
+              "v3b": tuned_public,
+              "delta": {
+                  "correct": tuned["correct"] - base["correct"],
+                  "accuracy_pp": tuned["accuracy"] - base["accuracy"],
+              },
+              "paired": {
+                  "both_correct": both_correct,
+                  "both_wrong": both_wrong,
+                  "base_only": correct_to_wrong,
+                  "v3b_only": wrong_to_correct,
+                  "net_correct_change": wrong_to_correct - correct_to_wrong,
+                  "mcnemar_exact_p": mcnemar_exact(wrong_to_correct, correct_to_wrong),
+              },
+          }
+          Path("heldout-next-action-v3b-thinking256-summary.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(payload, indent=2, sort_keys=True))
           PY
-      - name: Upload diagnostic evidence
+
+      - name: Upload clean paired summary
         uses: actions/upload-artifact@v4
         with:
-          name: heldout-next-action-v3b
-          path: heldout-next-action-v3b.json
+          name: heldout-next-action-v3b-thinking256-summary
+          path: heldout-next-action-v3b-thinking256-summary.json
           if-no-files-found: error
           retention-days: 30
