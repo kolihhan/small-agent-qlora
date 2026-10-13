@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - qlora/gaia-9b-v2
+      - tool-runtime-v2/red-tests
     paths:
       - ".github/workflows/gaia-toolfix-posthoc-analysis.yml"
 
@@ -13,8 +14,8 @@ permissions:
   actions: read
 
 env:
-  BASE_RUN_ID: "38240310406"
-  QLORA_RUN_ID: "38240367561"
+  BASE_RUN_ID: "38326300262"
+  QLORA_RUN_ID: "38337206077"
 
 jobs:
   audit:
