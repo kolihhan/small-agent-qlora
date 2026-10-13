@@ -31,6 +31,7 @@ class ToolCall:
 class AssistantTurn:
     content: str
     tool_calls: list[ToolCall] = field(default_factory=list)
+    reasoning_content: str = ""
 
 
 @dataclass
