@@ -1,10 +1,10 @@
-name: Clean same-runner Qwen3.5 9B Base vs QLoRA v3B GAIA100
+name: Runtime v2 same-runner Qwen3.5 9B Base vs QLoRA v3B GAIA100
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - debug/qlora-clean-eval
+      - tool-runtime-v2/red-tests
     paths:
       - ".github/workflows/gaia-v3b-clean-same-runner.yml"
 
@@ -14,6 +14,7 @@ permissions:
 
 env:
   HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  FROZEN_EVAL_COMMIT: "08fbcaa5ed82c5238188c45d5748993bae9bf1e1"
   ADAPTER_RUN_ID: "38156235327"
   ADAPTER_ARTIFACT: qwen35-9b-qlora-v3b-gguf
   ADAPTER_SHA256: e7caec609a905d21e056b107519d78916d3ef79e7bdc70db916e40d801d2187d
@@ -33,8 +34,10 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
     steps:
-      - name: Checkout current clean evaluator
+      - name: Checkout frozen Runtime v2 evaluator
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_EVAL_COMMIT }}
 
       - name: Install evaluation dependencies
         run: python -m pip install --quiet -e '.[search,files,eval]'
@@ -134,7 +137,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: clean-paired-v3b-shard-${{ matrix.shard }}
+          name: runtime-v2-paired-v3b-shard-${{ matrix.shard }}
           path: runs
           if-no-files-found: error
           retention-days: 14
@@ -144,8 +147,10 @@ jobs:
     if: ${{ always() && needs.paired-eval.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout current evaluator
+      - name: Checkout frozen Runtime v2 evaluator
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_EVAL_COMMIT }}
 
       - name: Install package
         run: python -m pip install --quiet -e .
@@ -153,7 +158,7 @@ jobs:
       - name: Download all paired shards
         uses: actions/download-artifact@v4
         with:
-          pattern: clean-paired-v3b-shard-*
+          pattern: runtime-v2-paired-v3b-shard-*
           path: evidence
 
       - name: Build clean matched GAIA100 summary
@@ -162,6 +167,7 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
           from gaia_small_agent.benchmark.gaia100 import summarize_results
 
@@ -170,11 +176,11 @@ jobs:
           for arm in ("base", "qlora-v3b"):
               rows = []
               ids = set()
-              files = sorted(Path("evidence").glob(f"clean-paired-v3b-shard-*/{arm}/shard-*/results.jsonl"))
+              files = sorted(Path("evidence").glob(f"runtime-v2-paired-v3b-shard-*/{arm}/shard-*/results.jsonl"))
               if len(files) != 20:
                   raise SystemExit(f"{arm}: expected 20 results.jsonl, got {len(files)}")
               for path in files:
-                  for line in path.read_text(encoding="utf-8").splitlines():
+                  for line in path.read_text(encoding="utf-8").split("\n"):
                       if not line.strip():
                           continue
                       row = json.loads(line)
@@ -194,10 +200,11 @@ jobs:
           b = summaries["base"]
           q = summaries["qlora-v3b"]
           payload = {
-              "schema_version": "clean-same-runner-v3b/v1",
+              "schema_version": "runtime-v2-same-runner-v3b/v1",
               "protocol": {
                   "benchmark": "GAIA 2023 validation / frozen Evaluation100",
                   "pairing": "same GitHub runner per shard, sequential Base then QLoRA",
+                  "runtime_commit": os.environ["FROZEN_EVAL_COMMIT"],
                   "context_tokens": 16384,
                   "max_new_tokens": 512,
                   "agent_max_steps": 12,
@@ -222,7 +229,7 @@ jobs:
                   "passes": q["accuracy"] >= 0.1875,
               },
           }
-          Path("clean-same-runner-v3b-summary.json").write_text(
+          Path("runtime-v2-same-runner-v3b-summary.json").write_text(
               json.dumps(payload, indent=2, sort_keys=True) + "\n",
               encoding="utf-8",
           )
@@ -232,7 +239,7 @@ jobs:
       - name: Upload clean matched summary
         uses: actions/upload-artifact@v4
         with:
-          name: clean-same-runner-v3b-summary
-          path: clean-same-runner-v3b-summary.json
+          name: runtime-v2-same-runner-v3b-summary
+          path: runtime-v2-same-runner-v3b-summary.json
           if-no-files-found: error
           retention-days: 30
