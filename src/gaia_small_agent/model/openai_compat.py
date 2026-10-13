@@ -18,11 +18,18 @@ class OpenAICompatModel:
         base_url: str = "http://127.0.0.1:8080",
         timeout_s: float = 180.0,
         max_new_tokens: int = 512,
+        thinking_budget_tokens: int | None = None,
     ):
+        if thinking_budget_tokens is not None:
+            if isinstance(thinking_budget_tokens, bool) or not isinstance(thinking_budget_tokens, int):
+                raise TypeError("thinking_budget_tokens must be an integer or None")
+            if thinking_budget_tokens < 0:
+                raise ValueError("thinking_budget_tokens must be >= 0; unrestricted thinking is not supported")
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
         self.max_new_tokens = max_new_tokens
+        self.thinking_budget_tokens = thinking_budget_tokens
         self._ids = itertools.count(1)
 
     def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
@@ -38,6 +45,8 @@ class OpenAICompatModel:
             "max_tokens": self.max_new_tokens,
             "temperature": 0,
         }
+        if self.thinking_budget_tokens is not None:
+            payload["thinking_budget_tokens"] = self.thinking_budget_tokens
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
@@ -94,4 +103,8 @@ class OpenAICompatModel:
                 )
             )
 
-        return AssistantTurn(content=str(message.get("content") or ""), tool_calls=calls)
+        return AssistantTurn(
+            content=str(message.get("content") or ""),
+            tool_calls=calls,
+            reasoning_content=str(message.get("reasoning_content") or ""),
+        )
