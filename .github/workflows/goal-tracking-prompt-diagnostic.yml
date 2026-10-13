@@ -1,0 +1,227 @@
+name: Goal-tracking prompt diagnostic
+
+on:
+  push:
+    branches:
+      - experiment/goal-tracking-prompt
+    paths:
+      - ".github/workflows/goal-tracking-prompt-diagnostic.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  BASE_REF: "28ce3fd57ba3ee56dd0948e11dbc7ed14076f8b1"
+  GOAL_REF: "0e470a09d7b0a671b8ffa3a38736e3caaaa895b1"
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA256: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_RELEASE_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_RELEASE_SHA256: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  MODEL_ALIAS: qwen3.5-9b
+  TARGET_IDS: "f918266a-b3e0-4914-865d-4faa564f1aef e4e91f1c-1dcd-439e-9fdd-cb976f5293fd 8131e2c0-0083-4265-9ce7-78c2d568425d"
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --quiet -e '.[eval]'
+      - id: matrix
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from gaia_small_agent.benchmark.gaia100 import GAIA_REVISION, LOCAL_PROTOCOL_SEED, load_validation, select_gaia_partition
+
+          targets = os.environ["TARGET_IDS"].split()
+          dataset = load_validation("gaia-benchmark/GAIA", token=os.environ["HF_TOKEN"], revision=GAIA_REVISION)
+          rows = select_gaia_partition(dataset, partition="evaluation", seed=LOCAL_PROTOCOL_SEED)
+          positions = {str(row["task_id"]): i for i, row in enumerate(rows)}
+          missing = [tid for tid in targets if tid not in positions]
+          if missing:
+              raise SystemExit(f"missing target ids: {missing}")
+
+          include = []
+          for tid in targets:
+              for variant, ref in (("baseline", os.environ["BASE_REF"]), ("goal", os.environ["GOAL_REF"])):
+                  include.append({"variant": variant, "ref": ref, "position": positions[tid], "task_id": tid})
+          matrix = {"include": include}
+          print(json.dumps(matrix, indent=2))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write("matrix=" + json.dumps(matrix, separators=(",", ":")) + "\n")
+          PY
+
+  eval:
+    needs: discover
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+    steps:
+      - name: Checkout exact prompt variant
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ matrix.ref }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install evaluator
+        run: python -m pip install --quiet -e '.[search,files,eval]'
+      - name: Verify GAIA credential
+        shell: bash
+        run: test -n "$HF_TOKEN"
+      - name: Download frozen base model and llama-server
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model /tmp/llama-bin
+          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf
+          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
+          curl -fL --retry 5 --retry-delay 3 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+      - name: Start exact Base inference protocol
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p run
+          "$LLAMA_SERVER" \
+            -m model/Qwen3.5-9B-Q4_K_M.gguf \
+            --alias "$MODEL_ALIAS" \
+            --host 127.0.0.1 --port 8080 \
+            --ctx-size 16384 --threads 4 --parallel 1 \
+            --jinja --reasoning-budget 0 --temperature 0 \
+            > run/llama-server.log 2>&1 &
+          echo $! > run/llama-server.pid
+          for i in {1..180}; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+      - name: Run one targeted Evaluation100 case
+        shell: bash
+        env:
+          POSITION: ${{ matrix.position }}
+          TASK_ID: ${{ matrix.task_id }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          python scripts/run_gaia_eval_shard.py \
+            --backend openai_compat \
+            --model "$MODEL_ALIAS" \
+            --openai-base-url http://127.0.0.1:8080 \
+            --hf-token "$HF_TOKEN" \
+            --shard-index "$POSITION" \
+            --shard-count 100 \
+            --work-root run \
+            --output run/shard.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          rows=[json.loads(x) for x in Path("run/results.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
+          assert len(rows) == 1, rows
+          assert str(rows[0]["task_id"]) == os.environ["TASK_ID"], (rows[0]["task_id"], os.environ["TASK_ID"])
+          print(json.dumps({
+              "variant": os.environ["VARIANT"],
+              "task_id": rows[0]["task_id"],
+              "correct": rows[0].get("correct"),
+              "stop_reason": rows[0].get("stop_reason"),
+              "model_answer": rows[0].get("model_answer"),
+              "metrics": rows[0].get("metrics"),
+          }, indent=2, ensure_ascii=False))
+          PY
+      - name: Stop server
+        if: always()
+        shell: bash
+        run: |
+          if [ -f run/llama-server.pid ]; then kill "$(cat run/llama-server.pid)" 2>/dev/null || true; fi
+      - name: Upload case evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: goal-prompt-${{ matrix.variant }}-${{ matrix.position }}
+          path: run
+          if-no-files-found: error
+          retention-days: 14
+
+  summarize:
+    needs: eval
+    if: ${{ always() && needs.eval.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download diagnostic evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: goal-prompt-*
+          path: evidence
+      - name: Build paired summary
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from collections import defaultdict
+          from pathlib import Path
+
+          rows=[]
+          for path in sorted(Path("evidence").glob("goal-prompt-*/results.jsonl")):
+              variant=path.parent.name.split("-")[2]
+              for line in path.read_text(encoding="utf-8").splitlines():
+                  if line.strip():
+                      row=json.loads(line)
+                      row["variant"]=variant
+                      rows.append(row)
+
+          by=defaultdict(dict)
+          for row in rows:
+              by[str(row["task_id"])][row["variant"]]=row
+
+          pairs=[]
+          for tid, variants in sorted(by.items()):
+              if set(variants) != {"baseline", "goal"}:
+                  raise SystemExit(f"unpaired task {tid}: {sorted(variants)}")
+              item={"task_id":tid}
+              for variant in ("baseline","goal"):
+                  row=variants[variant]
+                  metrics=row.get("metrics") or {}
+                  item[variant]={
+                      "correct": row.get("correct"),
+                      "stop_reason": row.get("stop_reason"),
+                      "model_answer": row.get("model_answer"),
+                      "steps": metrics.get("steps"),
+                      "tool_calls": metrics.get("tool_calls"),
+                      "tool_errors": metrics.get("tool_errors"),
+                      "duplicate_calls_blocked": metrics.get("duplicate_calls_blocked"),
+                  }
+              pairs.append(item)
+
+          summary={
+              "schema_version":"goal-tracking-prompt-diagnostic/v1",
+              "pairs":pairs,
+              "baseline_correct":sum(bool(x["baseline"]["correct"]) for x in pairs),
+              "goal_correct":sum(bool(x["goal"]["correct"]) for x in pairs),
+          }
+          Path("goal-tracking-prompt-diagnostic-summary.json").write_text(json.dumps(summary,indent=2,ensure_ascii=False)+"\n",encoding="utf-8")
+          print(json.dumps(summary,indent=2,ensure_ascii=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goal-tracking-prompt-diagnostic-summary
+          path: goal-tracking-prompt-diagnostic-summary.json
+          if-no-files-found: error
+          retention-days: 30
