@@ -1,0 +1,195 @@
+name: Native thinking budget paired5
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/native-thinking-budget
+    paths:
+      - ".github/workflows/native-thinking-budget-paired5.yml"
+
+permissions:
+  contents: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA256: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_RELEASE_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_RELEASE_SHA256: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  MODEL_ALIAS: qwen3.5-9b
+
+jobs:
+  paired4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout experiment branch
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install evaluation dependencies
+        run: python -m pip install --quiet -e '.[search,files,eval,dev]'
+      - name: Verify protocol regression tests
+        run: python -m pytest -q tests/test_reasoning_content_protocol.py
+      - name: Verify GAIA credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN_NOT_CONFIGURED"; exit 42; }
+      - name: Download and verify frozen Base 9B + llama-server
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model /tmp/llama-bin runs/native-thinking-paired5
+          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf
+          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
+          curl -fL --retry 5 --retry-delay 3 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+      - name: Run four new cases with reasoning budget 0
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$LLAMA_SERVER" \
+            -m model/Qwen3.5-9B-Q4_K_M.gguf \
+            --alias "$MODEL_ALIAS" \
+            --host 127.0.0.1 --port 8080 \
+            --ctx-size 16384 --threads 4 --parallel 1 \
+            --jinja --reasoning on --reasoning-format deepseek --reasoning-budget 0 --temperature 0 \
+            > runs/native-thinking-paired5/llama-budget0.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..180}; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+          for task in \
+            42576abe-0deb-4869-8c63-225c2d75a95a \
+            4b650a35-8529-4695-89ed-8dc7a500a498 \
+            54612da3-fd56-4941-80f4-5eb82330de25 \
+            7cc4acfa-63fd-4acc-a1a1-e8e529e0a97f
+          do
+            python scripts/run_native_thinking_case.py \
+              --model "$MODEL_ALIAS" \
+              --openai-base-url http://127.0.0.1:8080 \
+              --hf-token "$HF_TOKEN" \
+              --task-id "$task" \
+              --reasoning-budget 0 \
+              --work-root "runs/native-thinking-paired5/budget0/$task" \
+              --output "runs/native-thinking-paired5/budget0-$task.json"
+          done
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          trap - EXIT
+      - name: Run four new cases with reasoning budget 256
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$LLAMA_SERVER" \
+            -m model/Qwen3.5-9B-Q4_K_M.gguf \
+            --alias "$MODEL_ALIAS" \
+            --host 127.0.0.1 --port 8080 \
+            --ctx-size 16384 --threads 4 --parallel 1 \
+            --jinja --reasoning on --reasoning-format deepseek --reasoning-budget 256 --temperature 0 \
+            > runs/native-thinking-paired5/llama-budget256.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..180}; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+          for task in \
+            42576abe-0deb-4869-8c63-225c2d75a95a \
+            4b650a35-8529-4695-89ed-8dc7a500a498 \
+            54612da3-fd56-4941-80f4-5eb82330de25 \
+            7cc4acfa-63fd-4acc-a1a1-e8e529e0a97f
+          do
+            python scripts/run_native_thinking_case.py \
+              --model "$MODEL_ALIAS" \
+              --openai-base-url http://127.0.0.1:8080 \
+              --hf-token "$HF_TOKEN" \
+              --task-id "$task" \
+              --reasoning-budget 256 \
+              --work-root "runs/native-thinking-paired5/budget256/$task" \
+              --output "runs/native-thinking-paired5/budget256-$task.json"
+          done
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          trap - EXIT
+      - name: Build paired four-case summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("runs/native-thinking-paired5")
+          task_ids = [
+              "42576abe-0deb-4869-8c63-225c2d75a95a",
+              "4b650a35-8529-4695-89ed-8dc7a500a498",
+              "54612da3-fd56-4941-80f4-5eb82330de25",
+              "7cc4acfa-63fd-4acc-a1a1-e8e529e0a97f",
+          ]
+          pairs = []
+          for task_id in task_ids:
+              off = json.loads((root / f"budget0-{task_id}.json").read_text(encoding="utf-8"))
+              on = json.loads((root / f"budget256-{task_id}.json").read_text(encoding="utf-8"))
+              confounded = bool(off["used_live_search"] or on["used_live_search"])
+              pairs.append({
+                  "task_id": task_id,
+                  "live_search_confound": confounded,
+                  "budget0": {k: off[k] for k in ("correct", "completed", "stop_reason", "model_answer", "steps", "tool_calls", "tool_errors", "duplicate_calls_blocked", "latency_ms", "used_tools")},
+                  "budget256": {k: on[k] for k in ("correct", "completed", "stop_reason", "model_answer", "steps", "tool_calls", "tool_errors", "duplicate_calls_blocked", "latency_ms", "used_tools")},
+              })
+
+          eligible = [p for p in pairs if not p["live_search_confound"]]
+          payload = {
+              "schema_version": "native-thinking-budget-paired4/v1",
+              "model": "qwen3.5-9b Q4_K_M",
+              "reasoning_budgets": [0, 256],
+              "max_new_tokens": 512,
+              "context_tokens": 16384,
+              "temperature": 0,
+              "pairs": pairs,
+              "eligible_no_live_search": len(eligible),
+              "confounded_live_search": len(pairs) - len(eligible),
+              "eligible_aggregate": {
+                  "budget0_correct": sum(int(p["budget0"]["correct"]) for p in eligible),
+                  "budget256_correct": sum(int(p["budget256"]["correct"]) for p in eligible),
+                  "budget0_completed": sum(int(p["budget0"]["completed"]) for p in eligible),
+                  "budget256_completed": sum(int(p["budget256"]["completed"]) for p in eligible),
+                  "budget0_steps": sum(int(p["budget0"]["steps"]) for p in eligible),
+                  "budget256_steps": sum(int(p["budget256"]["steps"]) for p in eligible),
+                  "budget0_tool_calls": sum(int(p["budget0"]["tool_calls"]) for p in eligible),
+                  "budget256_tool_calls": sum(int(p["budget256"]["tool_calls"]) for p in eligible),
+                  "budget0_tool_errors": sum(int(p["budget0"]["tool_errors"]) for p in eligible),
+                  "budget256_tool_errors": sum(int(p["budget256"]["tool_errors"]) for p in eligible),
+                  "budget0_duplicate_blocks": sum(int(p["budget0"]["duplicate_calls_blocked"]) for p in eligible),
+                  "budget256_duplicate_blocks": sum(int(p["budget256"]["duplicate_calls_blocked"]) for p in eligible),
+                  "budget0_latency_ms": sum(float(p["budget0"]["latency_ms"]) for p in eligible),
+                  "budget256_latency_ms": sum(float(p["budget256"]["latency_ms"]) for p in eligible),
+              },
+          }
+          (root / "paired4-summary.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+      - name: Upload sanitized paired evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-thinking-budget-paired4
+          path: |
+            runs/native-thinking-paired5/budget0-*.json
+            runs/native-thinking-paired5/budget256-*.json
+            runs/native-thinking-paired5/paired4-summary.json
+          if-no-files-found: error
+          retention-days: 14
