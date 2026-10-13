@@ -1,0 +1,214 @@
+name: Goal-tracking prompt diagnostic A-B
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/goal-tracking-prompt
+    paths:
+      - ".github/workflows/prompt-goal-tracking-ab.yml"
+
+permissions:
+  contents: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA256: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_RELEASE_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_RELEASE_SHA256: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  MODEL_ALIAS: qwen3.5-9b
+
+jobs:
+  prompt-ab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout experiment branch
+        uses: actions/checkout@v4
+
+      - name: Install evaluation dependencies
+        run: python -m pip install --quiet -e '.[search,files,eval]'
+
+      - name: Verify GAIA credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN_NOT_CONFIGURED"; exit 42; }
+
+      - name: Download and verify Base 9B + llama-server
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model /tmp/llama-bin
+          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf
+          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
+          curl -fL --retry 5 --retry-delay 3 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+
+      - name: Start Base 9B once
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$LLAMA_SERVER" \
+            -m model/Qwen3.5-9B-Q4_K_M.gguf \
+            --alias "$MODEL_ALIAS" \
+            --host 127.0.0.1 --port 8080 \
+            --ctx-size 16384 --threads 4 --parallel 1 \
+            --jinja --reasoning-budget 0 --temperature 0 \
+            > llama-server.log 2>&1 &
+          echo $! > llama-server.pid
+          for i in {1..180}; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+
+      - name: Run paired old vs goal-tracking prompt on three diagnostic tasks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          import gaia_small_agent.agent.loop as loop
+          import gaia_small_agent.benchmark.runner as runner
+          from gaia_small_agent.agent.loop import AgentRuntime
+          from gaia_small_agent.benchmark.gaia100 import GAIA_REVISION, LOCAL_PROTOCOL_SEED, load_validation, select_gaia_partition
+          from gaia_small_agent.model.openai_compat import OpenAICompatModel
+          from gaia_small_agent.tools import default_tools
+
+          TARGET_IDS = [
+              "f918266a-b3e0-4914-865d-4faa564f1aef",
+              "e4e91f1c-1dcd-439e-9fdd-cb976f5293fd",
+              "8131e2c0-0083-4265-9ce7-78c2d568425d",
+          ]
+
+          OLD_PROMPT = """You are Small Agent, a compact autonomous tool-using assistant.
+          Choose the next action from the available tools based only on the user task and observations.
+          There is no fixed workflow. Recover from tool errors by changing strategy when useful.
+          Use tools only when needed. Never invent tool results.
+          When you have enough evidence, return the final answer concisely.
+          Do not reveal hidden chain-of-thought; tool calls and short factual status are sufficient.
+          """
+          NEW_PROMPT = loop.SYSTEM_PROMPT
+
+          dataset = load_validation("gaia-benchmark/GAIA", token=__import__("os").environ["HF_TOKEN"], revision=GAIA_REVISION)
+          evaluation = select_gaia_partition(dataset, partition="evaluation", seed=LOCAL_PROTOCOL_SEED)
+          by_id = {str(row["task_id"]): row for row in evaluation}
+          missing = [tid for tid in TARGET_IDS if tid not in by_id]
+          if missing:
+              raise SystemExit(f"Diagnostic task IDs missing from Evaluation100: {missing}")
+          selected = [by_id[tid] for tid in TARGET_IDS]
+
+          original_selector = runner.select_gaia_partition
+          original_prompt = loop.SYSTEM_PROMPT
+          summaries = {}
+          try:
+              runner.select_gaia_partition = lambda rows, partition, seed: list(selected)
+              for arm, prompt in (("old", OLD_PROMPT), ("goal_tracking", NEW_PROMPT)):
+                  loop.SYSTEM_PROMPT = prompt
+
+                  def factory():
+                      model = OpenAICompatModel(
+                          model="qwen3.5-9b",
+                          base_url="http://127.0.0.1:8080",
+                          max_new_tokens=512,
+                      )
+                      return AgentRuntime(model, default_tools(), max_steps=12)
+
+                  root = Path("runs") / arm
+                  summary = runner.run_gaia100(
+                      dataset,
+                      factory,
+                      root,
+                      seed=LOCAL_PROTOCOL_SEED,
+                      manifest_path=None,
+                      dataset_revision=GAIA_REVISION,
+                      run_config={
+                          "experiment": "goal-tracking-prompt-ab",
+                          "arm": arm,
+                          "task_ids": TARGET_IDS,
+                          "model": "qwen3.5-9b",
+                          "context_tokens": 16384,
+                          "max_new_tokens": 512,
+                          "max_steps": 12,
+                          "reasoning_budget": 0,
+                          "temperature": 0,
+                      },
+                      partition="evaluation",
+                  )
+                  summaries[arm] = summary
+          finally:
+              runner.select_gaia_partition = original_selector
+              loop.SYSTEM_PROMPT = original_prompt
+
+          rows = {}
+          for arm in ("old", "goal_tracking"):
+              path = Path("runs") / arm / "results.jsonl"
+              rows[arm] = {
+                  row["task_id"]: row
+                  for row in (json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+              }
+
+          paired = []
+          for tid in TARGET_IDS:
+              old = rows["old"][tid]
+              new = rows["goal_tracking"][tid]
+              paired.append({
+                  "task_id": tid,
+                  "old": {
+                      "correct": old["correct"],
+                      "completed": old["completed"],
+                      "stop_reason": old["stop_reason"],
+                      "steps": old["steps"],
+                      "tool_calls": old["tool_calls"],
+                      "tool_errors": old["tool_errors"],
+                      "duplicate_calls_blocked": old["duplicate_calls_blocked"],
+                      "answer": old["model_answer"],
+                  },
+                  "goal_tracking": {
+                      "correct": new["correct"],
+                      "completed": new["completed"],
+                      "stop_reason": new["stop_reason"],
+                      "steps": new["steps"],
+                      "tool_calls": new["tool_calls"],
+                      "tool_errors": new["tool_errors"],
+                      "duplicate_calls_blocked": new["duplicate_calls_blocked"],
+                      "answer": new["model_answer"],
+                  },
+              })
+
+          payload = {
+              "schema_version": "goal-tracking-prompt-ab/v1",
+              "task_ids": TARGET_IDS,
+              "old_summary": summaries["old"],
+              "goal_tracking_summary": summaries["goal_tracking"],
+              "paired": paired,
+          }
+          Path("prompt-ab-summary.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+          print(json.dumps(payload, indent=2, ensure_ascii=False))
+          PY
+
+      - name: Stop server
+        if: always()
+        shell: bash
+        run: |
+          if [ -f llama-server.pid ]; then kill "$(cat llama-server.pid)" 2>/dev/null || true; fi
+
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: goal-tracking-prompt-ab
+          path: |
+            prompt-ab-summary.json
+            runs
+            llama-server.log
+          if-no-files-found: warn
+          retention-days: 14
