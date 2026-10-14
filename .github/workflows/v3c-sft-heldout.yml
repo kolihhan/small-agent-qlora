@@ -1,0 +1,790 @@
+name: v3C SFT and held-out evaluation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/heldout-next-action-eval
+    paths:
+      - ".github/workflows/v3c-sft-heldout.yml"
+      - "scripts/v3c_space_app.py"
+      - "src/gaia_small_agent/training/exposure_v3c.py"
+      - "src/gaia_small_agent/training/next_action_eval.py"
+      - "tests/test_training_exposure_v3c.py"
+      - "tests/test_next_action_forensics.py"
+      - "tests/test_v3c_workflow_contract.py"
+      - "evals/heldout-next-action/**"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  HF_SPACE_ID: kolihhan/small-agent-qlora-v2-train
+  TRAIN_STEPS: "128"
+  SELECTION_SEED: "qlora-v3c-full-trajectory"
+  MAX_LENGTH: "1024"
+  GRAD_ACC: "1"
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA256: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_RELEASE_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_RELEASE_SHA256: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  MODEL_ALIAS: qwen3.5-9b
+  SAMPLE_COUNT: "64"
+  SAMPLE_SEED: heldout-v3b-next-action-v1
+  SHARD_COUNT: "8"
+  V3B_SOURCE_RUN_ID: "38156235327"
+  V3B_SOURCE_ARTIFACT: qwen35-9b-qlora-v3b-gguf
+  V3B_ADAPTER_SHA256: e7caec609a905d21e056b107519d78916d3ef79e7bdc70db916e40d801d2187d
+  LLAMA_CPP_CONVERTER_COMMIT: aa94f2086147cd4bfbcff818ce998dffce5fcb39
+
+jobs:
+  validate:
+    name: Validate v3C treatment and evaluator
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e ".[dev,files]"
+      - name: Focused tests
+        run: >-
+          python -m pytest -q
+          tests/test_oracle_policy_v3.py
+          tests/test_training_exposure_v3b.py
+          tests/test_training_exposure_v3c.py
+          tests/test_next_action_eval.py
+          tests/test_next_action_forensics.py
+          tests/test_qlora_completion_preserving_tokens.py
+          tests/test_v3c_workflow_contract.py
+      - name: Compile changed Python
+        run: >-
+          python -m compileall -q
+          src/gaia_small_agent/training/exposure_v3c.py
+          src/gaia_small_agent/training/next_action_eval.py
+          scripts/v3c_space_app.py
+
+  forensic-v3b:
+    name: Forensic v3B failure subset
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install evaluator
+        run: python -m pip install --quiet -e '.[dev]'
+      - name: Freeze oracle test data
+        run: |
+          mkdir -p runs/oracle runs/forensic
+          python - <<'PY'
+          from pathlib import Path
+          from gaia_small_agent.training.oracle_policy_v3 import generate_oracle_policy_v3_dataset
+          generate_oracle_policy_v3_dataset(Path("runs/oracle"), seed="small-agent-policy-v3")
+          PY
+      - name: Download and verify Q4 model and llama.cpp
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model /tmp/llama-bin
+          touch model/Qwen3.5-9B-Q4_K_M.gguf
+          ok=0
+          for attempt in {1..12}; do
+            if curl --http1.1 -fL --retry 3 --retry-all-errors --retry-delay 2 -C - "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf; then
+              ok=1
+              break
+            fi
+            sleep 3
+          done
+          test "$ok" -eq 1
+          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
+          curl --http1.1 -fL --retry 10 --retry-all-errors --retry-delay 2 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+      - name: Download frozen v3B GGUF adapter
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V3B_SOURCE_ARTIFACT }}
+          path: matched-input
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.V3B_SOURCE_RUN_ID }}
+      - name: Verify frozen v3B adapter
+        run: echo "$V3B_ADAPTER_SHA256  matched-input/qwen35-9b-qlora-v3b-adapter.gguf" | sha256sum -c -
+      - name: Run forensic subset with exact payload capture
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$LLAMA_SERVER" \
+            -m model/Qwen3.5-9B-Q4_K_M.gguf \
+            --lora matched-input/qwen35-9b-qlora-v3b-adapter.gguf \
+            --alias "$MODEL_ALIAS" \
+            --host 127.0.0.1 --port 8080 \
+            --ctx-size 16384 --threads 4 --parallel 1 \
+            --jinja --reasoning on --reasoning-format deepseek --reasoning-budget 256 --temperature 0 \
+            > runs/forensic/v3b-server.log 2>&1 &
+          pid=$!
+          cleanup() { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
+          trap cleanup EXIT
+          for i in {1..180}; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from gaia_small_agent.model.openai_compat import OpenAICompatModel
+          from gaia_small_agent.training.next_action_eval import evaluate_next_actions
+
+          subset = json.loads(Path("evals/heldout-next-action/v3b-forensic-subset.json").read_text())
+          model = OpenAICompatModel(
+              model="qwen3.5-9b",
+              base_url="http://127.0.0.1:8080",
+              timeout_s=240.0,
+              max_new_tokens=512,
+          )
+          summary = evaluate_next_actions(
+              "runs/oracle/test.jsonl",
+              lambda: model,
+              example_ids=set(subset["example_ids"]),
+          )
+          payload = {
+              "schema_version": "v3b-forensic-thinking256/v1",
+              "thinking": True,
+              "reasoning_budget": 256,
+              "temperature": 0,
+              "max_new_tokens": 512,
+              "summary": summary,
+          }
+          Path("runs/forensic/v3b.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+          print(json.dumps({"correct": summary["correct"], "total": summary["total"], "errors": summary["error_counts"]}, indent=2, sort_keys=True))
+          PY
+      - name: Upload forensic evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3b-forensic-thinking256
+          path: runs/forensic/v3b.json
+          if-no-files-found: error
+          retention-days: 30
+
+  train-v3c:
+    name: Train 128-step full-trajectory v3C adapter
+    needs: [validate, forensic-v3b]
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Verify free ZeroGPU quota
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN_NOT_CONFIGURED"; exit 42; }
+          python -m pip install --quiet 'huggingface_hub>=1.0' 'gradio_client>=2,<3'
+          python - <<'PY'
+          import json, os
+          from huggingface_hub import HfApi
+          quota = HfApi(token=os.environ["HF_TOKEN"]).get_zero_gpu_quota()
+          payload = {
+              "base": quota.base,
+              "remaining": quota.remaining,
+              "resets_at": quota.resets_at.isoformat() if quota.resets_at else None,
+              "required_reservation_seconds": 293,
+          }
+          print(json.dumps(payload, indent=2))
+          if quota.remaining < 293:
+              raise SystemExit(f"Need >=293 free ZeroGPU quota seconds; only {quota.remaining} remain")
+          PY
+      - name: Deploy frozen v3C trainer
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/project /tmp/space-src
+          mkdir -p /tmp/project /tmp/space-src
+          curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/archive/${GITHUB_SHA}.tar.gz" -o /tmp/project.tar.gz
+          tar -xzf /tmp/project.tar.gz -C /tmp/project --strip-components=1
+          cp -R /tmp/project/src/gaia_small_agent /tmp/space-src/gaia_small_agent
+          cp /tmp/project/scripts/v3c_space_app.py /tmp/space-src/app.py
+          cat > /tmp/space-src/requirements.txt <<'EOF'
+          transformers>=5.15,<6
+          peft>=0.20,<1
+          trl>=1.10,<2
+          bitsandbytes>=0.50.1,<1
+          accelerate>=1.10,<2
+          datasets>=4
+          requests>=2.32
+          huggingface_hub>=1.0
+          gradio>=6,<7
+          jinja2>=3.1
+          EOF
+          cat > /tmp/space-src/README.md <<'EOF'
+          ---
+          title: Small Agent QLoRA v3C Train
+          emoji: 🧪
+          colorFrom: gray
+          colorTo: blue
+          sdk: gradio
+          sdk_version: 6.0.1
+          app_file: app.py
+          pinned: false
+          private: true
+          hardware: zero-a10g
+          ---
+          Temporary private trainer for the frozen Small Agent 9B QLoRA v3C experiment.
+          EOF
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi, SpaceHardware
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          rid = os.environ["HF_SPACE_ID"]
+          api.upload_folder(
+              folder_path="/tmp/space-src",
+              repo_id=rid,
+              repo_type="space",
+              delete_patterns=["*.py", "requirements.txt", "gaia_small_agent/**"],
+              commit_message="train full-trajectory QLoRA v3C",
+          )
+          api.add_space_secret(repo_id=rid, key="HF_TOKEN", value=os.environ["HF_TOKEN"])
+          values = {
+              "EXPERIMENT_COMMIT": os.environ["GITHUB_SHA"],
+              "TRAIN_STEPS": os.environ["TRAIN_STEPS"],
+              "SELECTION_SEED": os.environ["SELECTION_SEED"],
+              "MAX_LENGTH": os.environ["MAX_LENGTH"],
+              "GRAD_ACC": os.environ["GRAD_ACC"],
+          }
+          for key, value in values.items():
+              api.add_space_variable(repo_id=rid, key=key, value=value)
+          api.request_space_hardware(repo_id=rid, hardware=SpaceHardware.ZERO_A10G)
+          try:
+              api.restart_space(repo_id=rid)
+          except Exception as exc:
+              print(f"restart request: {exc}")
+          PY
+      - name: Wait for trainer and verify v3C preflight on CPU
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, time
+          from huggingface_hub import HfApi
+          from gradio_client import Client
+
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          rid = os.environ["HF_SPACE_ID"]
+          print(api.wait_for_space(repo_id=rid, timeout=1800))
+          deadline = time.time() + 900
+          last = None
+          while time.time() < deadline:
+              try:
+                  client = Client(rid, token=os.environ["HF_TOKEN"], verbose=False)
+                  client.view_api(print_info=False)
+                  break
+              except Exception as exc:
+                  last = exc
+                  time.sleep(10)
+          else:
+              raise SystemExit(f"API not ready: {last}")
+
+          result = client.predict(api_name="/preflight")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          expected_caps = {
+              "argument_grounding": 12,
+              "duplicate_avoidance": 4,
+              "evidence_to_final": 20,
+              "failure_recovery": 36,
+              "multi_step": 24,
+              "no_tool_stop": 6,
+              "strategy_switch": 18,
+              "tool_selection": 8,
+          }
+          checks = [
+              result.get("source_verified_rows") == 1600,
+              result.get("source_example_count") == 3600,
+              result.get("selected_task_count") == 54,
+              result.get("selected_example_count") == 128,
+              result.get("rendered_selected_example_count") == 128,
+              result.get("tokenized_examples") == 128,
+              result.get("action_type_counts") == {"final": 54, "tool_call": 74},
+              result.get("capability_example_counts") == expected_caps,
+              result.get("minimum_safe_context", 99999) <= 1024,
+              result.get("max_length") == 1024,
+              result.get("require_full_prompt") is True,
+              result.get("all_have_supervised_tokens") is True,
+              result.get("training_steps") == 128,
+              result.get("gradient_accumulation_steps") == 1,
+          ]
+          if not all(checks):
+              raise SystemExit(result)
+          PY
+      - name: Train real 9B QLoRA v3C
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runs/zero-gpu-v3c
+          python - <<'PY'
+          import json, os, shutil
+          from pathlib import Path
+          from gradio_client import Client
+
+          client = Client(os.environ["HF_SPACE_ID"], token=os.environ["HF_TOKEN"], verbose=False)
+          archive, meta = client.predict(api_name="/train")
+          print(json.dumps(meta, indent=2, sort_keys=True))
+          Path("runs/zero-gpu-v3c/training-meta.json").write_text(
+              json.dumps(meta, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          if not meta.get("ok"):
+              raise SystemExit("remote training failed")
+          checks = [
+              meta.get("cuda") is True,
+              meta.get("max_steps") == 128,
+              meta.get("gradient_accumulation_steps") == 1,
+              meta.get("max_length") == 1024,
+              meta.get("require_full_prompt") is True,
+              meta.get("training_examples") == 128,
+              meta.get("source_training_examples") == 128,
+              meta.get("oracle_source_example_count") == 3600,
+              meta.get("selected_task_count") == 54,
+              meta.get("selected_example_count") == 128,
+              meta.get("action_type_counts") == {"final": 54, "tool_call": 74},
+          ]
+          if not all(checks):
+              raise SystemExit(f"unexpected v3C training metadata: {meta}")
+          if not archive:
+              raise SystemExit("adapter archive was not returned")
+          shutil.copyfile(archive, "runs/zero-gpu-v3c/qwen35-9b-qlora-v3c-adapter.zip")
+          PY
+      - name: Upload v3C adapter and training metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen35-9b-qlora-v3c-adapter
+          path: runs/zero-gpu-v3c/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Pause temporary trainer
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          token = os.environ.get("HF_TOKEN")
+          rid = os.environ.get("HF_SPACE_ID")
+          if token and rid:
+              try:
+                  print(HfApi(token=token).pause_space(repo_id=rid))
+              except Exception as exc:
+                  print(f"pause request failed: {exc}")
+          PY
+
+  convert-v3c:
+    name: Convert v3C PEFT adapter to GGUF
+    needs: train-v3c
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download v3C adapter
+        uses: actions/download-artifact@v4
+        with:
+          name: qwen35-9b-qlora-v3c-adapter
+          path: runs/source
+      - name: Unpack and validate adapter
+        run: |
+          set -euo pipefail
+          mkdir -p runs/adapter
+          unzip -q runs/source/qwen35-9b-qlora-v3c-adapter.zip -d runs/adapter
+          test -s runs/adapter/adapter_config.json
+          test -s runs/adapter/adapter_model.safetensors
+          test -s runs/adapter/run_config.json
+          test -s runs/adapter/v3c-selection.json
+      - name: Pin llama.cpp converter
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
+          git -C /tmp/llama.cpp checkout "$LLAMA_CPP_CONVERTER_COMMIT"
+          python -m pip install --quiet -r /tmp/llama.cpp/requirements/requirements-convert_lora_to_gguf.txt
+          python -m pip install --quiet --upgrade 'transformers>=5.15,<6'
+      - name: Convert v3C adapter
+        run: |
+          set -euo pipefail
+          python /tmp/llama.cpp/convert_lora_to_gguf.py \
+            --base-model-id Qwen/Qwen3.5-9B \
+            --outfile runs/qwen35-9b-qlora-v3c-adapter.gguf \
+            --outtype f16 \
+            runs/adapter
+          test -s runs/qwen35-9b-qlora-v3c-adapter.gguf
+          sha256sum runs/qwen35-9b-qlora-v3c-adapter.gguf | tee runs/qwen35-9b-qlora-v3c-adapter.sha256
+      - name: Upload v3C GGUF adapter
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen35-9b-qlora-v3c-gguf
+          path: |
+            runs/qwen35-9b-qlora-v3c-adapter.gguf
+            runs/qwen35-9b-qlora-v3c-adapter.sha256
+            runs/source/training-meta.json
+          if-no-files-found: error
+          retention-days: 30
+
+  heldout-v3c:
+    name: heldout-v3c-shard (${{ matrix.shard }})
+    needs: convert-v3c
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install focused evaluator
+        run: python -m pip install --quiet -e '.[dev]'
+      - name: Freeze exact held-out shard
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          mkdir -p runs/oracle runs/selection
+          python - <<'PY'
+          import json, os
+          from collections import Counter
+          from pathlib import Path
+          from gaia_small_agent.training.oracle_policy_v3 import generate_oracle_policy_v3_dataset
+          from gaia_small_agent.training.qlora import _render_turn_examples, _select_diagnostic_exposure_examples
+
+          class NativeShapeTokenizer:
+              def apply_chat_template(self, messages, **kwargs):
+                  def dump(value):
+                      return json.dumps(value, sort_keys=True, separators=(",", ":"))
+                  if kwargs.get("add_generation_prompt"):
+                      return dump(messages) + "<assistant>"
+                  if messages and messages[-1].get("role") == "assistant":
+                      return dump(messages[:-1]) + "<assistant>" + dump(messages[-1])
+                  return dump(messages)
+
+          paths = generate_oracle_policy_v3_dataset(Path("runs/oracle"), seed="small-agent-policy-v3")
+          rows = [json.loads(line) for line in paths["test"].read_text(encoding="utf-8").splitlines() if line.strip()]
+          turns = _render_turn_examples(NativeShapeTokenizer(), rows)
+          selected = _select_diagnostic_exposure_examples(turns, count=int(os.environ["SAMPLE_COUNT"]), seed=os.environ["SAMPLE_SEED"])
+          selected_ids = [str(item["metadata"]["example_id"]) for item in selected]
+          shard_index = int(os.environ["SHARD_INDEX"])
+          shard_count = int(os.environ["SHARD_COUNT"])
+          shard_ids = selected_ids[shard_index::shard_count]
+          payload = {
+              "sample_count": len(selected_ids),
+              "seed": os.environ["SAMPLE_SEED"],
+              "capabilities": dict(Counter(str(item["metadata"]["capability"]) for item in selected)),
+              "action_types": dict(Counter(str(item["metadata"]["action_type"]) for item in selected)),
+              "shard_index": shard_index,
+              "shard_count": shard_count,
+              "shard_size": len(shard_ids),
+              "example_ids": shard_ids,
+          }
+          Path("runs/selection/selected.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+          PY
+      - name: Download and verify Q4 model and llama.cpp
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model /tmp/llama-bin
+          touch model/Qwen3.5-9B-Q4_K_M.gguf
+          ok=0
+          for attempt in {1..12}; do
+            if curl --http1.1 -fL --retry 3 --retry-all-errors --retry-delay 2 -C - "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf; then
+              ok=1
+              break
+            fi
+            sleep 3
+          done
+          test "$ok" -eq 1
+          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
+          curl --http1.1 -fL --retry 10 --retry-all-errors --retry-delay 2 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+      - name: Download v3C GGUF adapter
+        uses: actions/download-artifact@v4
+        with:
+          name: qwen35-9b-qlora-v3c-gguf
+          path: matched-input
+      - name: Verify v3C GGUF checksum
+        run: |
+          set -euo pipefail
+          test -s matched-input/qwen35-9b-qlora-v3c-adapter.gguf
+          expected="$(awk '{print $1}' matched-input/qwen35-9b-qlora-v3c-adapter.sha256)"
+          echo "$expected  matched-input/qwen35-9b-qlora-v3c-adapter.gguf" | sha256sum -c -
+      - name: Run v3C held-out shard with thinking256
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shard="$SHARD_INDEX"
+          mkdir -p "runs/results/shard-$shard"
+          "$LLAMA_SERVER" \
+            -m model/Qwen3.5-9B-Q4_K_M.gguf \
+            --lora matched-input/qwen35-9b-qlora-v3c-adapter.gguf \
+            --alias "$MODEL_ALIAS" \
+            --host 127.0.0.1 --port 8080 \
+            --ctx-size 16384 --threads 4 --parallel 1 \
+            --jinja --reasoning on --reasoning-format deepseek --reasoning-budget 256 --temperature 0 \
+            > "runs/results/shard-$shard/v3c-server.log" 2>&1 &
+          pid=$!
+          cleanup() { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
+          trap cleanup EXIT
+          for i in {1..180}; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from gaia_small_agent.model.openai_compat import OpenAICompatModel
+          from gaia_small_agent.training.next_action_eval import evaluate_next_actions
+
+          selection = json.loads(Path("runs/selection/selected.json").read_text())
+          model = OpenAICompatModel(
+              model=os.environ["MODEL_ALIAS"],
+              base_url="http://127.0.0.1:8080",
+              timeout_s=240.0,
+              max_new_tokens=512,
+          )
+          summary = evaluate_next_actions(
+              "runs/oracle/test.jsonl",
+              lambda: model,
+              example_ids=set(selection["example_ids"]),
+          )
+          payload = {
+              "schema_version": "heldout-next-action-v3c-shard/v1",
+              "arm": "v3c",
+              "thinking": True,
+              "reasoning_budget": 256,
+              "temperature": 0,
+              "max_new_tokens": 512,
+              "selection": selection,
+              "summary": summary,
+          }
+          out = Path(f"runs/results/shard-{selection['shard_index']}/v3c.json")
+          out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+          print(json.dumps({"shard": selection["shard_index"], "correct": summary["correct"], "total": summary["total"], "errors": summary["error_counts"]}, indent=2, sort_keys=True))
+          PY
+      - name: Upload v3C held-out shard
+        uses: actions/upload-artifact@v4
+        with:
+          name: heldout-v3c-thinking256-shard-${{ matrix.shard }}
+          path: runs/results/shard-${{ matrix.shard }}/v3c.json
+          if-no-files-found: error
+          retention-days: 30
+
+  summarize-v3c:
+    name: Summarize v3C against frozen Base and v3B
+    needs: heldout-v3c
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Download all v3C shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: heldout-v3c-thinking256-shard-*
+          path: merged/v3c
+          merge-multiple: false
+      - name: Reuse frozen Base/v3B shards from original run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: heldout-next-action-thinking256-shard-*
+          path: merged/frozen-a
+          merge-multiple: false
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: "38423661192"
+      - name: Reuse recovered Base/v3B shards 0 and 6
+        uses: actions/download-artifact@v4
+        with:
+          pattern: heldout-next-action-thinking256-shard-*
+          path: merged/frozen-b
+          merge-multiple: false
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: "38426519870"
+      - name: Build paired summary
+        run: |
+          mkdir -p runs/summary
+          python - <<'PY'
+          import json
+          import math
+          from collections import Counter, defaultdict
+          from pathlib import Path
+
+          v3c_paths = sorted(Path("merged/v3c").rglob("v3c.json"))
+          if len(v3c_paths) != 8:
+              raise SystemExit(f"expected 8 v3C shard files, found {len(v3c_paths)}")
+          v3c_examples = []
+          for path in v3c_paths:
+              payload = json.loads(path.read_text())
+              v3c_examples.extend(payload["summary"]["examples"])
+          v3c_by_id = {item["example_id"]: item for item in v3c_examples}
+
+          base_paths = sorted(Path("merged/frozen-a").rglob("base.json")) + sorted(Path("merged/frozen-b").rglob("base.json"))
+          v3b_paths = sorted(Path("merged/frozen-a").rglob("v3b.json")) + sorted(Path("merged/frozen-b").rglob("v3b.json"))
+          if len(base_paths) != 8 or len(v3b_paths) != 8:
+              raise SystemExit(f"expected 8 frozen Base/v3B shards, got {len(base_paths)}/{len(v3b_paths)}")
+          base_examples = []
+          v3b_examples = []
+          protocol = None
+          for path in base_paths:
+              payload = json.loads(path.read_text())
+              base_examples.extend(payload["summary"]["examples"])
+              protocol = protocol or {
+                  "base_model": "Qwen3.5-9B Q4_K_M",
+                  "runtime": "llama.cpp",
+                  "thinking": payload.get("thinking"),
+                  "reasoning_budget": payload.get("reasoning_budget"),
+                  "max_new_tokens": payload.get("max_new_tokens"),
+                  "temperature": 0,
+                  "sample_count": 64,
+                  "sample_seed": "heldout-v3b-next-action-v1",
+                  "source_runs": [38423661192, 38426519870],
+              }
+          for path in v3b_paths:
+              payload = json.loads(path.read_text())
+              v3b_examples.extend(payload["summary"]["examples"])
+          base_by_id = {item["example_id"]: item for item in base_examples}
+          v3b_by_id = {item["example_id"]: item for item in v3b_examples}
+          if len(v3c_by_id) != 64 or set(v3c_by_id) != set(base_by_id) or set(v3c_by_id) != set(v3b_by_id):
+              raise SystemExit("v3C examples do not exactly match frozen Base/v3B examples")
+          ref_by_id = {
+              example_id: {
+                  "example_id": example_id,
+                  "task_id": base_by_id[example_id]["task_id"],
+                  "capability": base_by_id[example_id]["capability"],
+                  "action_type": base_by_id[example_id]["action_type"],
+                  "base": base_by_id[example_id],
+                  "v3b": v3b_by_id[example_id],
+              }
+              for example_id in base_by_id
+          }
+
+          def counts_for(arm):
+              correct = 0
+              action = defaultdict(lambda: {"total": 0, "correct": 0})
+              capability = defaultdict(lambda: {"total": 0, "correct": 0})
+              errors = Counter()
+              for example_id, ref in ref_by_id.items():
+                  item = v3c_by_id[example_id] if arm == "v3c" else ref[arm]
+                  ok = bool(item["correct"])
+                  correct += int(ok)
+                  action_name = ref["action_type"]
+                  cap = ref["capability"]
+                  action[action_name]["total"] += 1
+                  action[action_name]["correct"] += int(ok)
+                  capability[cap]["total"] += 1
+                  capability[cap]["correct"] += int(ok)
+                  if item.get("error"):
+                      errors[str(item["error"])] += 1
+              return {
+                  "correct": correct,
+                  "total": 64,
+                  "accuracy": correct * 100.0 / 64,
+                  "by_action_type": dict(action),
+                  "by_capability": dict(capability),
+                  "error_counts": dict(errors),
+              }
+
+          def paired(left, right):
+              left_only = right_only = both = neither = 0
+              transitions = []
+              for example_id, ref in ref_by_id.items():
+                  l = v3c_by_id[example_id] if left == "v3c" else ref[left]
+                  r = v3c_by_id[example_id] if right == "v3c" else ref[right]
+                  lc, rc = bool(l["correct"]), bool(r["correct"])
+                  if lc and rc:
+                      both += 1
+                  elif lc:
+                      left_only += 1
+                  elif rc:
+                      right_only += 1
+                  else:
+                      neither += 1
+                  if lc != rc:
+                      transitions.append({
+                          "example_id": example_id,
+                          "capability": ref["capability"],
+                          "action_type": ref["action_type"],
+                          left: {"correct": lc, "error": l.get("error")},
+                          right: {"correct": rc, "error": r.get("error")},
+                      })
+              n = left_only + right_only
+              if n:
+                  k = min(left_only, right_only)
+                  p = min(1.0, 2.0 * sum(math.comb(n, i) for i in range(k + 1)) / (2 ** n))
+              else:
+                  p = 1.0
+              return {
+                  f"{left}_only_wins": left_only,
+                  f"{right}_only_wins": right_only,
+                  "both_correct": both,
+                  "both_wrong": neither,
+                  "mcnemar_two_sided_exact_p": p,
+                  "discordant_examples": transitions,
+              }
+
+          arms = {name: counts_for(name) for name in ("base", "v3b", "v3c")}
+          recovery = arms["v3c"]["by_capability"].get("failure_recovery", {"correct": 0})["correct"]
+          finals = arms["v3c"]["by_action_type"].get("final", {"correct": 0})["correct"]
+          promotion_candidate = arms["v3c"]["correct"] >= 38 and recovery >= 3 and finals >= 15
+          result = {
+              "schema_version": "heldout-next-action-v3c-summary/v1",
+              "protocol": protocol,
+              "arms": arms,
+              "paired_base_vs_v3c": paired("v3c", "base"),
+              "paired_v3b_vs_v3c": paired("v3c", "v3b"),
+              "promotion_candidate": promotion_candidate,
+              "promotion_bar": {
+                  "total_correct_at_least": 38,
+                  "failure_recovery_correct_at_least": 3,
+                  "final_correct_at_least": 15,
+              },
+          }
+          Path("runs/summary/v3c-heldout-summary.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          print(json.dumps({
+              "base": arms["base"],
+              "v3b": arms["v3b"],
+              "v3c": arms["v3c"],
+              "v3c_vs_base": result["paired_base_vs_v3c"],
+              "v3c_vs_v3b": result["paired_v3b_vs_v3c"],
+              "promotion_candidate": promotion_candidate,
+          }, indent=2, sort_keys=True))
+          PY
+      - name: Upload paired v3C summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: heldout-v3c-thinking256-summary
+          path: runs/summary/v3c-heldout-summary.json
+          if-no-files-found: error
+          retention-days: 30
