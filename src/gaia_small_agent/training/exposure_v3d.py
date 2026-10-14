@@ -115,6 +115,17 @@ def select_v3d_corrective_examples(
     return selected
 
 
+def plan_v3d_batches(
+    selected: list[dict[str, Any]],
+    *,
+    batch_size: int = 6,
+) -> list[list[dict[str, Any]]]:
+    """Slice the frozen v3D training order into resumable sequential batches."""
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    return [selected[start : start + batch_size] for start in range(0, len(selected), batch_size)]
+
+
 def summarize_v3d_selection(selected: list[dict[str, Any]]) -> dict[str, Any]:
     metadata = [dict(_metadata(item)) for item in selected]
     example_ids = [str(item["example_id"]) for item in metadata]
@@ -150,6 +161,7 @@ def summarize_v3d_selection(selected: list[dict[str, Any]]) -> dict[str, Any]:
 
 __all__ = [
     "V3D_STATE_QUOTAS",
+    "plan_v3d_batches",
     "select_v3d_corrective_examples",
     "summarize_v3d_selection",
 ]
