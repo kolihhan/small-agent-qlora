@@ -1,0 +1,324 @@
+name: v3D CPU late-layer continuation smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/heldout-next-action-eval
+    paths:
+      - ".github/workflows/v3d-cpu-last-layer-smoke.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  HF_MODEL: "Qwen/Qwen3.5-9B"
+  POLICY_SEED: "small-agent-policy-v3"
+  EXPOSURE_SEED: "qlora-v3b-exposure"
+  MAX_LENGTH: "1024"
+  V3B_SOURCE_RUN_ID: "38152689194"
+  V3B_SOURCE_ARTIFACT: "qwen35-9b-qlora-v3b-adapter"
+  OMP_NUM_THREADS: "4"
+  MKL_NUM_THREADS: "4"
+  TOKENIZERS_PARALLELISM: "false"
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  MALLOC_ARENA_MAX: "2"
+
+jobs:
+  cpu-smoke:
+    name: CPU 9B v3D one-step late-layer smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install CPU training stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+          python -m pip install -e ".[train,files]"
+
+      - name: Verify CPU runner resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          free -h
+          df -h .
+          python - <<'PY'
+          import json, os, torch
+          torch.set_num_threads(min(4, os.cpu_count() or 1))
+          payload = {
+              "torch": torch.__version__,
+              "cuda_available": torch.cuda.is_available(),
+              "cpu_count": os.cpu_count(),
+              "torch_threads": torch.get_num_threads(),
+          }
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          if torch.cuda.is_available():
+              raise SystemExit("This experiment must remain GitHub CPU-only")
+          if (os.cpu_count() or 0) < 4:
+              raise SystemExit("unexpected runner CPU count")
+          PY
+
+      - name: Download frozen v3B PEFT adapter
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V3B_SOURCE_ARTIFACT }}
+          path: runs/v3b-source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.V3B_SOURCE_RUN_ID }}
+
+      - name: Unpack and validate v3B adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runs/v3d-cpu-smoke/v3b-adapter
+          test -s runs/v3b-source/qwen35-9b-qlora-v3b-adapter.zip
+          unzip -q runs/v3b-source/qwen35-9b-qlora-v3b-adapter.zip -d runs/v3d-cpu-smoke/v3b-adapter
+          test -s runs/v3d-cpu-smoke/v3b-adapter/adapter_config.json
+          test -s runs/v3d-cpu-smoke/v3b-adapter/adapter_model.safetensors
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from safetensors import safe_open
+
+          root = Path("runs/v3d-cpu-smoke/v3b-adapter")
+          cfg = json.loads((root / "adapter_config.json").read_text(encoding="utf-8"))
+          with safe_open(root / "adapter_model.safetensors", framework="pt", device="cpu") as f:
+              keys = list(f.keys())
+          late = [key for key in keys if ".layers.31." in key and "lora_" in key]
+          if not late:
+              raise SystemExit("v3B adapter has no layer-31 LoRA tensors")
+          payload = {
+              "r": cfg.get("r"),
+              "lora_alpha": cfg.get("lora_alpha"),
+              "target_modules": cfg.get("target_modules"),
+              "adapter_tensor_count": len(keys),
+              "layer31_lora_tensor_count": len(late),
+              "layer31_sample_keys": late[:12],
+          }
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          Path("runs/v3d-cpu-smoke/v3b-adapter-audit.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          if cfg.get("r") != 16 or cfg.get("lora_alpha") != 32:
+              raise SystemExit(f"unexpected v3B LoRA config: {cfg}")
+          PY
+
+      - name: Run one corrective optimizer step on final full-attention layer only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import time
+          from pathlib import Path
+
+          import torch
+          from datasets import Dataset
+          from peft import PeftModel, prepare_model_for_kbit_training
+          from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+          from trl import SFTConfig, SFTTrainer
+
+          from gaia_small_agent.training.oracle_policy_v3 import generate_oracle_policy_v3_dataset
+          from gaia_small_agent.training.qlora import (
+              _cpu_safe_compute_loss,
+              _render_turn_examples,
+              _select_diagnostic_exposure_examples,
+              _tokenize_completion_examples,
+              load_verified_rows,
+          )
+
+          root = Path("runs/v3d-cpu-smoke")
+          adapter_dir = root / "v3b-adapter"
+          oracle = generate_oracle_policy_v3_dataset(root / "oracle", seed=os.environ["POLICY_SEED"])
+          tokenizer = AutoTokenizer.from_pretrained(os.environ["HF_MODEL"], trust_remote_code=True)
+          rows = load_verified_rows(oracle["train"])
+          all_examples = _render_turn_examples(tokenizer, rows)
+          selected = _select_diagnostic_exposure_examples(
+              all_examples,
+              count=64,
+              seed=os.environ["EXPOSURE_SEED"],
+          )
+
+          # Stress the CPU path with a long, decision-relevant final example.
+          candidates = [
+              item for item in selected
+              if item["metadata"]["action_type"] == "final"
+              and item["metadata"]["capability"] in {"evidence_to_final", "failure_recovery", "multi_step"}
+          ]
+          if not candidates:
+              raise SystemExit("no corrective final candidates found")
+
+          def total_tokens(item):
+              p = len(tokenizer(item["prompt"], add_special_tokens=False)["input_ids"])
+              c = len(tokenizer(item["completion"], add_special_tokens=False)["input_ids"])
+              return p + c
+
+          example = max(candidates, key=total_tokens)
+          total = total_tokens(example)
+          tokenized = _tokenize_completion_examples(
+              tokenizer,
+              [example],
+              max_length=int(os.environ["MAX_LENGTH"]),
+              require_full_prompt=True,
+          )
+          dataset = Dataset.from_list(tokenized)
+          (root / "selected-example.json").write_text(
+              json.dumps({
+                  "metadata": example["metadata"],
+                  "total_tokens": total,
+                  "max_length": int(os.environ["MAX_LENGTH"]),
+              }, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps({"selected": example["metadata"], "total_tokens": total}, indent=2, sort_keys=True))
+
+          torch.set_num_threads(min(4, os.cpu_count() or 1))
+          try:
+              torch.set_num_interop_threads(1)
+          except RuntimeError:
+              pass
+
+          bnb = BitsAndBytesConfig(
+              load_in_4bit=True,
+              bnb_4bit_quant_type="nf4",
+              bnb_4bit_use_double_quant=True,
+              bnb_4bit_compute_dtype=torch.bfloat16,
+          )
+          base = AutoModelForCausalLM.from_pretrained(
+              os.environ["HF_MODEL"],
+              quantization_config=bnb,
+              device_map="auto",
+              trust_remote_code=True,
+          )
+          base = prepare_model_for_kbit_training(base, use_gradient_checkpointing=False)
+          model = PeftModel.from_pretrained(base, adapter_dir, is_trainable=True)
+
+          trainable_names = []
+          trainable_params = 0
+          for name, param in model.named_parameters():
+              keep = "lora_" in name and ".layers.31." in name
+              param.requires_grad = keep
+              if keep:
+                  trainable_names.append(name)
+                  trainable_params += param.numel()
+
+          if not trainable_names:
+              raise SystemExit("no layer-31 LoRA parameters were made trainable")
+          if any(".layers.31." not in name or "lora_" not in name for name in trainable_names):
+              raise SystemExit(f"unexpected trainable parameter: {trainable_names}")
+
+          audit = {
+              "trainable_tensor_count": len(trainable_names),
+              "trainable_parameter_count": trainable_params,
+              "trainable_names": trainable_names,
+              "torch_threads": torch.get_num_threads(),
+          }
+          print(json.dumps(audit, indent=2, sort_keys=True))
+          (root / "trainable-audit.json").write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n")
+
+          config = SFTConfig(
+              output_dir=str(root / "adapter-step1"),
+              learning_rate=1e-4,
+              per_device_train_batch_size=1,
+              gradient_accumulation_steps=1,
+              max_length=int(os.environ["MAX_LENGTH"]),
+              completion_only_loss=False,
+              loss_type="nll",
+              logging_steps=1,
+              max_steps=1,
+              save_strategy="steps",
+              save_steps=1,
+              save_total_limit=1,
+              report_to="none",
+              bf16=False,
+              fp16=False,
+              seed=42,
+              data_seed=42,
+          )
+
+          class CpuSafeSFTTrainer(SFTTrainer):
+              def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+                  return _cpu_safe_compute_loss(model, inputs, return_outputs=return_outputs)
+
+          trainer = CpuSafeSFTTrainer(
+              model=model,
+              args=config,
+              train_dataset=dataset,
+              processing_class=tokenizer,
+          )
+          start = time.time()
+          trainer.train()
+          elapsed = time.time() - start
+          trainer.save_model(str(root / "adapter-step1"))
+          tokenizer.save_pretrained(str(root / "adapter-step1"))
+
+          result = {
+              "schema_version": "v3d-cpu-last-layer-smoke/v1",
+              "success": True,
+              "backend": "github-actions-cpu",
+              "model": os.environ["HF_MODEL"],
+              "initial_adapter": "v3B",
+              "optimizer_steps": 1,
+              "elapsed_seconds": elapsed,
+              "selected_example": example["metadata"],
+              "selected_example_tokens": total,
+              "max_length": int(os.environ["MAX_LENGTH"]),
+              "trainable_tensor_count": len(trainable_names),
+              "trainable_parameter_count": trainable_params,
+              "trainable_scope": "layer-31 LoRA only",
+              "cuda_available": torch.cuda.is_available(),
+          }
+          (root / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Verify one-step checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s runs/v3d-cpu-smoke/result.json
+          test -s runs/v3d-cpu-smoke/adapter-step1/adapter_config.json
+          test -s runs/v3d-cpu-smoke/adapter-step1/adapter_model.safetensors
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path("runs/v3d-cpu-smoke/result.json").read_text())
+          assert result["success"] is True, result
+          assert result["backend"] == "github-actions-cpu", result
+          assert result["cuda_available"] is False, result
+          assert result["optimizer_steps"] == 1, result
+          assert result["trainable_scope"] == "layer-31 LoRA only", result
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload CPU smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3d-cpu-last-layer-smoke
+          path: |
+            runs/v3d-cpu-smoke/result.json
+            runs/v3d-cpu-smoke/selected-example.json
+            runs/v3d-cpu-smoke/trainable-audit.json
+            runs/v3d-cpu-smoke/v3b-adapter-audit.json
+            runs/v3d-cpu-smoke/adapter-step1/adapter_config.json
+            runs/v3d-cpu-smoke/adapter-step1/adapter_model.safetensors
+          if-no-files-found: warn
+          retention-days: 14
