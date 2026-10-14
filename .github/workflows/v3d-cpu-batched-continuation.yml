@@ -1,0 +1,282 @@
+name: v3D CPU batched QLoRA continuation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/heldout-next-action-eval
+    paths:
+      - ".github/workflows/v3d-cpu-batched-continuation.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: v3d-cpu-batched-continuation-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  HF_MODEL: "Qwen/Qwen3.5-9B"
+  V3B_SOURCE_RUN_ID: "38152689194"
+  V3B_SOURCE_ARTIFACT: "qwen35-9b-qlora-v3b-adapter"
+  BATCH_SIZE: "6"
+  MAX_LENGTH: "1024"
+  LEARNING_RATE: "1e-4"
+  OMP_NUM_THREADS: "4"
+  MKL_NUM_THREADS: "4"
+  TOKENIZERS_PARALLELISM: "false"
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  MALLOC_ARENA_MAX: "2"
+
+jobs:
+  batch1:
+    name: v3D CPU batch 1/4
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install CPU QLoRA stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+          python -m pip install -e '.[train]'
+      - name: Verify CPU-only runner
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, torch
+          torch.set_num_threads(min(4, os.cpu_count() or 1))
+          payload = {"cuda_available": torch.cuda.is_available(), "cpu_count": os.cpu_count(), "torch": torch.__version__}
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          if torch.cuda.is_available():
+              raise SystemExit("v3D continuation must remain GitHub CPU-only")
+          PY
+      - name: Download frozen v3B adapter
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V3B_SOURCE_ARTIFACT }}
+          path: runs/v3b-source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.V3B_SOURCE_RUN_ID }}
+      - name: Unpack v3B adapter
+        run: |
+          set -euo pipefail
+          mkdir -p runs/v3b-adapter
+          test -s runs/v3b-source/qwen35-9b-qlora-v3b-adapter.zip
+          unzip -q runs/v3b-source/qwen35-9b-qlora-v3b-adapter.zip -d runs/v3b-adapter
+          test -s runs/v3b-adapter/adapter_config.json
+          test -s runs/v3b-adapter/adapter_model.safetensors
+      - name: Train sequential examples 1-6
+        run: |
+          set -euo pipefail
+          python scripts/run_v3d_cpu_batch.py \
+            --batch-index 0 \
+            --batch-size "$BATCH_SIZE" \
+            --source-adapter runs/v3b-adapter \
+            --output-dir runs/v3d-batch1 \
+            --model "$HF_MODEL" \
+            --max-length "$MAX_LENGTH" \
+            --learning-rate "$LEARNING_RATE"
+      - name: Verify batch 1 checkpoint
+        run: |
+          set -euo pipefail
+          test -s runs/v3d-batch1/checkpoint/adapter/adapter_model.safetensors
+          test -s runs/v3d-batch1/checkpoint/optimizer.pt
+          test -s runs/v3d-batch1/checkpoint/state.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          state = json.loads(Path('runs/v3d-batch1/checkpoint/state.json').read_text())
+          assert state['cuda_available'] is False, state
+          assert state['batch_index'] == 0, state
+          assert state['optimizer_steps'] == 6, state
+          assert len(state['completed_example_ids']) == 6, state
+          print(json.dumps(state, indent=2, sort_keys=True))
+          PY
+      - name: Upload batch 1 checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3d-cpu-batch-1
+          path: runs/v3d-batch1
+          if-no-files-found: error
+          retention-days: 14
+
+  batch2:
+    name: v3D CPU batch 2/4
+    needs: batch1
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install CPU QLoRA stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+          python -m pip install -e '.[train]'
+      - name: Download batch 1 checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: v3d-cpu-batch-1
+          path: runs/source
+      - name: Train sequential examples 7-12
+        run: |
+          set -euo pipefail
+          python scripts/run_v3d_cpu_batch.py \
+            --batch-index 1 \
+            --batch-size "$BATCH_SIZE" \
+            --source-adapter runs/source/checkpoint/adapter \
+            --source-optimizer runs/source/checkpoint/optimizer.pt \
+            --source-state runs/source/checkpoint/state.json \
+            --output-dir runs/v3d-batch2 \
+            --model "$HF_MODEL" \
+            --max-length "$MAX_LENGTH" \
+            --learning-rate "$LEARNING_RATE"
+      - name: Verify batch 2 checkpoint
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          state = json.loads(Path('runs/v3d-batch2/checkpoint/state.json').read_text())
+          assert state['cuda_available'] is False, state
+          assert state['batch_index'] == 1, state
+          assert state['optimizer_steps'] == 12, state
+          assert len(state['completed_example_ids']) == 12, state
+          print(json.dumps(state, indent=2, sort_keys=True))
+          PY
+      - name: Upload batch 2 checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3d-cpu-batch-2
+          path: runs/v3d-batch2
+          if-no-files-found: error
+          retention-days: 14
+
+  batch3:
+    name: v3D CPU batch 3/4
+    needs: batch2
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install CPU QLoRA stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+          python -m pip install -e '.[train]'
+      - name: Download batch 2 checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: v3d-cpu-batch-2
+          path: runs/source
+      - name: Train sequential examples 13-18
+        run: |
+          set -euo pipefail
+          python scripts/run_v3d_cpu_batch.py \
+            --batch-index 2 \
+            --batch-size "$BATCH_SIZE" \
+            --source-adapter runs/source/checkpoint/adapter \
+            --source-optimizer runs/source/checkpoint/optimizer.pt \
+            --source-state runs/source/checkpoint/state.json \
+            --output-dir runs/v3d-batch3 \
+            --model "$HF_MODEL" \
+            --max-length "$MAX_LENGTH" \
+            --learning-rate "$LEARNING_RATE"
+      - name: Verify batch 3 checkpoint
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          state = json.loads(Path('runs/v3d-batch3/checkpoint/state.json').read_text())
+          assert state['cuda_available'] is False, state
+          assert state['batch_index'] == 2, state
+          assert state['optimizer_steps'] == 18, state
+          assert len(state['completed_example_ids']) == 18, state
+          print(json.dumps(state, indent=2, sort_keys=True))
+          PY
+      - name: Upload batch 3 checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3d-cpu-batch-3
+          path: runs/v3d-batch3
+          if-no-files-found: error
+          retention-days: 14
+
+  batch4:
+    name: v3D CPU batch 4/4
+    needs: batch3
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install CPU QLoRA stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+          python -m pip install -e '.[train]'
+      - name: Download batch 3 checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: v3d-cpu-batch-3
+          path: runs/source
+      - name: Train sequential examples 19-24
+        run: |
+          set -euo pipefail
+          python scripts/run_v3d_cpu_batch.py \
+            --batch-index 3 \
+            --batch-size "$BATCH_SIZE" \
+            --source-adapter runs/source/checkpoint/adapter \
+            --source-optimizer runs/source/checkpoint/optimizer.pt \
+            --source-state runs/source/checkpoint/state.json \
+            --output-dir runs/v3d-batch4 \
+            --model "$HF_MODEL" \
+            --max-length "$MAX_LENGTH" \
+            --learning-rate "$LEARNING_RATE"
+      - name: Verify final v3D checkpoint
+        run: |
+          set -euo pipefail
+          test -s runs/v3d-batch4/checkpoint/adapter/adapter_model.safetensors
+          test -s runs/v3d-batch4/checkpoint/optimizer.pt
+          test -s runs/v3d-batch4/checkpoint/state.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          state = json.loads(Path('runs/v3d-batch4/checkpoint/state.json').read_text())
+          assert state['cuda_available'] is False, state
+          assert state['batch_index'] == 3, state
+          assert state['batch_count'] == 4, state
+          assert state['optimizer_steps'] == 24, state
+          assert len(state['completed_example_ids']) == 24, state
+          assert len(set(state['completed_example_ids'])) == 24, state
+          print(json.dumps(state, indent=2, sort_keys=True))
+          PY
+      - name: Upload final v3D CPU checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen35-9b-qlora-v3d-cpu-adapter
+          path: runs/v3d-batch4
+          if-no-files-found: error
+          retention-days: 30
