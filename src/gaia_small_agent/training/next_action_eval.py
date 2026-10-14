@@ -9,29 +9,51 @@ from ..agent.types import AssistantTurn
 from ..benchmark.scoring import gaia_score
 
 
+def _arguments_dict(value) -> dict:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = {"__raw__": value}
+    if not isinstance(value, dict):
+        value = {"__raw__": value}
+    return value
+
+
 def _canonical_arguments(value: dict) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _expected_tool_calls(message: dict) -> list[tuple[str, str]]:
+def _expected_tool_call_payloads(message: dict) -> list[dict]:
     calls = []
     for call in message.get("tool_calls") or []:
         function = call.get("function") or {}
-        name = str(function.get("name") or "")
-        arguments = function.get("arguments") or {}
-        if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments)
-            except json.JSONDecodeError:
-                arguments = {"__raw__": arguments}
-        if not isinstance(arguments, dict):
-            arguments = {"__raw__": arguments}
-        calls.append((name, _canonical_arguments(arguments)))
+        calls.append({
+            "name": str(function.get("name") or ""),
+            "arguments": _arguments_dict(function.get("arguments") or {}),
+        })
     return calls
 
 
+def _predicted_tool_call_payloads(turn: AssistantTurn) -> list[dict]:
+    return [
+        {"name": call.name, "arguments": dict(call.arguments)}
+        for call in turn.tool_calls
+    ]
+
+
+def _expected_tool_calls(message: dict) -> list[tuple[str, str]]:
+    return [
+        (call["name"], _canonical_arguments(call["arguments"]))
+        for call in _expected_tool_call_payloads(message)
+    ]
+
+
 def _predicted_tool_calls(turn: AssistantTurn) -> list[tuple[str, str]]:
-    return [(call.name, _canonical_arguments(call.arguments)) for call in turn.tool_calls]
+    return [
+        (call["name"], _canonical_arguments(call["arguments"]))
+        for call in _predicted_tool_call_payloads(turn)
+    ]
 
 
 def _score_turn(expected: dict, predicted: AssistantTurn) -> tuple[bool, str | None]:
@@ -101,15 +123,23 @@ def evaluate_next_actions(
                 bucket = buckets.setdefault(key, {"total": 0, "correct": 0})
                 bucket["total"] += 1
                 bucket["correct"] += int(is_correct)
+
+            expected_payloads = _expected_tool_call_payloads(expected)
+            predicted_payloads = _predicted_tool_call_payloads(predicted)
             examples.append({
                 "example_id": example_id,
                 "task_id": task_id,
+                "message_index": message_index,
                 "capability": capability,
                 "action_type": action_type,
                 "correct": is_correct,
                 "error": error,
-                "expected_tool_calls": [name for name, _ in _expected_tool_calls(expected)],
-                "predicted_tool_calls": [call.name for call in predicted.tool_calls],
+                "expected_tool_calls": [item["name"] for item in expected_payloads],
+                "predicted_tool_calls": [item["name"] for item in predicted_payloads],
+                "expected_tool_calls_full": expected_payloads,
+                "predicted_tool_calls_full": predicted_payloads,
+                "expected_final": None if expected_payloads else str(expected.get("content") or ""),
+                "predicted_final": str(predicted.content or ""),
             })
 
         if assistant_targets == 0:

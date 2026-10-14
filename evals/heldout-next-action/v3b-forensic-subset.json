@@ -1,0 +1,21 @@
+{
+  "example_ids": [
+    "small-agent-policy-v3-test-failure_recovery-0003:4",
+    "small-agent-policy-v3-test-failure_recovery-0009:4",
+    "small-agent-policy-v3-test-failure_recovery-0010:4",
+    "small-agent-policy-v3-test-failure_recovery-0015:6",
+    "small-agent-policy-v3-test-failure_recovery-0020:4",
+    "small-agent-policy-v3-test-failure_recovery-0021:6",
+    "small-agent-policy-v3-test-failure_recovery-0023:4",
+    "small-agent-policy-v3-test-failure_recovery-0024:6",
+    "small-agent-policy-v3-test-multi_step-0001:6",
+    "small-agent-policy-v3-test-multi_step-0004:6",
+    "small-agent-policy-v3-test-multi_step-0008:6",
+    "small-agent-policy-v3-test-multi_step-0018:6",
+    "small-agent-policy-v3-test-argument_grounding-0003:2",
+    "small-agent-policy-v3-test-argument_grounding-0016:2",
+    "small-agent-policy-v3-test-argument_grounding-0020:2"
+  ],
+  "rationale": "all failure_recovery decisions + all Base-only v3B regressions + three representative same-tool wrong_arguments cases",
+  "schema_version": "v3b-forensic-subset/v1"
+}
