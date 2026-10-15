@@ -1,0 +1,428 @@
+name: v3D deterministic closed-loop comparison
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/heldout-next-action-eval
+    paths:
+      - ".github/workflows/v3d-closed-loop.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  V3B_CONVERT_RUN_ID: "38156235327"
+  V3B_ARTIFACT: qwen35-9b-qlora-v3b-gguf
+  V3D_EVAL_RUN_ID: "38714014392"
+  V3D_ARTIFACT: qwen35-9b-qlora-v3d-gguf
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA256: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_RELEASE_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_RELEASE_SHA256: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  MODEL_ALIAS: qwen3.5-9b
+  POLICY_SEED: small-agent-policy-v3
+  SHARD_COUNT: "10"
+  V3D_MIN_GAIN_CORRECT: "5"
+  V3D_MAX_CAPABILITY_LOSS: "2"
+
+jobs:
+  prepare:
+    name: Freeze Base/v3B/v3D inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Verify source runs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for run_id in "$V3B_CONVERT_RUN_ID" "$V3D_EVAL_RUN_ID"; do
+            payload="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}")"
+            status="$(python -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], d.get("conclusion"))' <<<"$payload")"
+            echo "run $run_id: $status"
+            [ "$status" = "completed success" ] || { echo "source run $run_id is not successful"; exit 1; }
+          done
+
+      - name: Download frozen v3B GGUF adapter
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ env.V3B_ARTIFACT }}
+          path: adapters/v3b
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.V3B_CONVERT_RUN_ID }}
+
+      - name: Download frozen v3D GGUF adapter
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ env.V3D_ARTIFACT }}
+          path: adapters/v3d
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.V3D_EVAL_RUN_ID }}
+
+      - name: Validate adapter provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s adapters/v3b/qwen35-9b-qlora-v3b-adapter.gguf
+          test -s adapters/v3b/adapter-conversion-meta.json
+          test -s adapters/v3b/source/training-meta.json
+          test -s adapters/v3d/qwen35-9b-qlora-v3d-adapter.gguf
+          test -s adapters/v3d/adapter-conversion-meta.json
+          test -s adapters/v3d/source/checkpoint/state.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          v3b_conv = json.loads(Path("adapters/v3b/adapter-conversion-meta.json").read_text())
+          v3b_train = json.loads(Path("adapters/v3b/source/training-meta.json").read_text())
+          v3d_conv = json.loads(Path("adapters/v3d/adapter-conversion-meta.json").read_text())
+          v3d_state = json.loads(Path("adapters/v3d/source/checkpoint/state.json").read_text())
+
+          assert str(v3b_conv["source_training_run_id"]) == "38152689194", v3b_conv
+          assert int(v3b_conv["training_steps"]) == 64, v3b_conv
+          assert v3b_train["model"] == "Qwen/Qwen3.5-9B", v3b_train
+          assert int(v3b_train["max_steps"]) == 64, v3b_train
+          assert str(v3d_conv["source_training_run_id"]) == "38561069365", v3d_conv
+          assert int(v3d_conv["training_steps"]) == 24, v3d_conv
+          assert v3d_conv["trainable_scope"] == "layer-31 LoRA only", v3d_conv
+          assert int(v3d_state["optimizer_steps"]) == 24, v3d_state
+          assert v3d_state["trainable_scope"] == "layer-31 LoRA only", v3d_state
+          print(json.dumps({
+              "v3b_training_steps": v3b_conv["training_steps"],
+              "v3d_training_steps": v3d_conv["training_steps"],
+              "v3d_trainable_scope": v3d_conv["trainable_scope"],
+          }, indent=2, sort_keys=True))
+          PY
+          sha256sum adapters/v3b/qwen35-9b-qlora-v3b-adapter.gguf
+          sha256sum adapters/v3d/qwen35-9b-qlora-v3d-adapter.gguf
+
+      - name: Upload matched adapter bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: closed-loop-matched-adapters
+          path: adapters
+          if-no-files-found: error
+          retention-days: 30
+
+  closed-loop:
+    name: closed-loop-shard (${{ matrix.shard }})
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deterministic policy evaluator
+        run: python -m pip install --quiet -e '.[search,files]'
+
+      - name: Generate frozen policy-v3 test shard
+        shell: bash
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          mkdir -p runs/oracle
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from gaia_small_agent.training.oracle_policy_v3 import generate_oracle_policy_v3_dataset
+
+          paths = generate_oracle_policy_v3_dataset("runs/oracle", seed=os.environ["POLICY_SEED"])
+          rows = [line for line in paths["test"].read_text(encoding="utf-8").splitlines() if line.strip()]
+          shard = int(os.environ["SHARD_INDEX"])
+          count = int(os.environ["SHARD_COUNT"])
+          selected = [line for i, line in enumerate(rows) if i % count == shard]
+          assert len(rows) == 200, len(rows)
+          assert len(selected) == 20, len(selected)
+          Path("runs/test-shard.jsonl").write_text("\n".join(selected) + "\n", encoding="utf-8")
+          print(f"frozen rows={len(rows)} shard={shard} selected={len(selected)}")
+          PY
+
+      - name: Download and verify Q4 model and llama.cpp
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model /tmp/llama-bin
+          touch model/Qwen3.5-9B-Q4_K_M.gguf
+          ok=0
+          for attempt in {1..12}; do
+            if curl --http1.1 -fL --retry 3 --retry-all-errors --retry-delay 2 -C - "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf; then
+              ok=1
+              break
+            fi
+            sleep 3
+          done
+          test "$ok" -eq 1
+          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
+          curl --http1.1 -fL --retry 10 --retry-all-errors --retry-delay 2 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+          "$SERVER" --version
+
+      - name: Download matched adapters
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: closed-loop-matched-adapters
+          path: adapters
+
+      - name: Run Base, v3B, and v3D on identical closed-loop shard
+        shell: bash
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          test -s adapters/v3b/qwen35-9b-qlora-v3b-adapter.gguf
+          test -s adapters/v3d/qwen35-9b-qlora-v3d-adapter.gguf
+          mkdir -p runs/results
+
+          run_arm() {
+            arm="$1"
+            adapter="$2"
+            port="$3"
+            log="runs/results/server-${arm}-${SHARD_INDEX}.log"
+            args=(
+              -m model/Qwen3.5-9B-Q4_K_M.gguf
+              --alias "$MODEL_ALIAS"
+              --host 127.0.0.1 --port "$port"
+              --ctx-size 4096 --threads 4 --parallel 1
+              --jinja --reasoning-budget 0
+              --temperature 0
+            )
+            if [ -n "$adapter" ]; then
+              args+=(--lora "$adapter")
+            fi
+            "$LLAMA_SERVER" "${args[@]}" > "$log" 2>&1 &
+            pid=$!
+
+            healthy=0
+            for i in {1..180}; do
+              if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null; then
+                healthy=1
+                break
+              fi
+              sleep 2
+            done
+            if [ "$healthy" -ne 1 ]; then
+              tail -200 "$log" >&2 || true
+              kill "$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+              return 1
+            fi
+
+            set +e
+            small-agent eval-policy \
+              --tasks runs/test-shard.jsonl \
+              --work-root "runs/work-${arm}-${SHARD_INDEX}" \
+              --output "runs/results/test-${arm}-${SHARD_INDEX}.json" \
+              --backend openai_compat \
+              --model "$MODEL_ALIAS" \
+              --openai-base-url "http://127.0.0.1:${port}" \
+              --max-steps 12 \
+              --max-new-tokens 512
+            rc=$?
+            set -e
+
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            if [ "$rc" -ne 0 ]; then
+              tail -200 "$log" >&2 || true
+              return "$rc"
+            fi
+
+            ARM="$arm" PORT="$port" python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          arm = os.environ["ARM"]
+          shard = os.environ["SHARD_INDEX"]
+          path = Path(f"runs/results/test-{arm}-{shard}.json")
+          data = json.loads(path.read_text())
+          data["provenance"] = {
+              "schema_version": "closed-loop-v3d-comparison/v1",
+              "arm": arm,
+              "shard_index": int(shard),
+              "shard_count": int(os.environ["SHARD_COUNT"]),
+              "policy_seed": os.environ["POLICY_SEED"],
+              "model_sha256": os.environ["MODEL_SHA256"],
+              "runtime_commit": os.environ["GITHUB_SHA"],
+              "reasoning_budget": 0,
+              "temperature": 0,
+              "max_steps": 12,
+              "max_new_tokens": 512,
+              "server_port": int(os.environ["PORT"]),
+          }
+          path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+          print(json.dumps({
+              "arm": arm,
+              "shard": int(shard),
+              "correct": data["correct"],
+              "total": data["total"],
+              "completed": data["completed"],
+              "tool_calls": data["tool_calls"],
+              "tool_errors": data["tool_errors"],
+          }, indent=2, sort_keys=True))
+          PY
+          }
+
+          run_arm base "" 8080
+          run_arm v3b "adapters/v3b/qwen35-9b-qlora-v3b-adapter.gguf" 8081
+          run_arm v3d "adapters/v3d/qwen35-9b-qlora-v3d-adapter.gguf" 8082
+
+      - name: Upload closed-loop shard evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: closed-loop-v3d-shard-${{ matrix.shard }}
+          path: |
+            runs/results/test-base-${{ matrix.shard }}.json
+            runs/results/test-v3b-${{ matrix.shard }}.json
+            runs/results/test-v3d-${{ matrix.shard }}.json
+            runs/results/server-*-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 30
+
+  summarize:
+    name: Summarize closed-loop Base vs v3B vs v3D
+    needs: closed-loop
+    if: ${{ always() && needs.closed-loop.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download closed-loop shard evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: closed-loop-v3d-shard-*
+          path: runs/shards
+          merge-multiple: true
+
+      - name: Build preregistered comparison
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runs/summary
+          python - <<'PY'
+          import json, os
+          from collections import Counter
+          from pathlib import Path
+
+          def aggregate(arm):
+              paths = sorted(Path("runs/shards").glob(f"test-{arm}-*.json"))
+              if len(paths) != 10:
+                  raise SystemExit(f"{arm}: expected 10 shard files, found {len(paths)}")
+              rows = [json.loads(path.read_text()) for path in paths]
+              total = sum(int(row["total"]) for row in rows)
+              if total != 200:
+                  raise SystemExit(f"{arm}: expected 200 tasks, got {total}")
+              commits = {row["provenance"]["runtime_commit"] for row in rows}
+              if len(commits) != 1:
+                  raise SystemExit(f"{arm}: mixed runtime commits {commits}")
+              stops = Counter()
+              caps = {}
+              for row in rows:
+                  stops.update(row.get("stop_reasons") or {})
+                  for capability, metrics in (row.get("by_capability") or {}).items():
+                      bucket = caps.setdefault(capability, {
+                          "total": 0,
+                          "correct": 0,
+                          "completed": 0,
+                          "required_tools_satisfied": 0,
+                      })
+                      for key in bucket:
+                          bucket[key] += int(metrics.get(key, 0))
+              correct = sum(int(row["correct"]) for row in rows)
+              completed = sum(int(row["completed"]) for row in rows)
+              return {
+                  "arm": arm,
+                  "total": total,
+                  "correct": correct,
+                  "completed": completed,
+                  "exact_success_rate": correct * 100.0 / total,
+                  "completion_rate": completed * 100.0 / total,
+                  "required_tools_satisfied": sum(int(row["required_tools_satisfied"]) for row in rows),
+                  "tool_calls": sum(int(row["tool_calls"]) for row in rows),
+                  "tool_errors": sum(int(row["tool_errors"]) for row in rows),
+                  "duplicate_calls_blocked": sum(int(row["duplicate_calls_blocked"]) for row in rows),
+                  "stop_reasons": dict(stops),
+                  "by_capability": caps,
+                  "runtime_commit": next(iter(commits)),
+              }
+
+          arms = {arm: aggregate(arm) for arm in ("base", "v3b", "v3d")}
+          v3b = arms["v3b"]
+          v3d = arms["v3d"]
+          caps = sorted(set(v3b["by_capability"]) | set(v3d["by_capability"]))
+          cap_deltas = {
+              cap: int(v3d["by_capability"].get(cap, {}).get("correct", 0))
+              - int(v3b["by_capability"].get(cap, {}).get("correct", 0))
+              for cap in caps
+          }
+          correct_gain = int(v3d["correct"]) - int(v3b["correct"])
+          min_gain = int(os.environ["V3D_MIN_GAIN_CORRECT"])
+          max_capability_loss = int(os.environ["V3D_MAX_CAPABILITY_LOSS"])
+          worst_capability_delta = min(cap_deltas.values()) if cap_deltas else 0
+          promote_v3d = correct_gain >= min_gain and worst_capability_delta >= -max_capability_loss
+          champion = "v3d" if promote_v3d else "v3b"
+
+          result = {
+              "schema_version": "closed-loop-v3d-comparison/v1",
+              "protocol": {
+                  "tasks": 200,
+                  "policy_seed": os.environ["POLICY_SEED"],
+                  "shards": int(os.environ["SHARD_COUNT"]),
+                  "reasoning_budget": 0,
+                  "temperature": 0,
+                  "max_steps": 12,
+                  "max_new_tokens": 512,
+                  "same_runtime_commit_all_arms": len({a["runtime_commit"] for a in arms.values()}) == 1,
+              },
+              "arms": arms,
+              "deltas_pp": {
+                  "v3b_vs_base": v3b["exact_success_rate"] - arms["base"]["exact_success_rate"],
+                  "v3d_vs_base": v3d["exact_success_rate"] - arms["base"]["exact_success_rate"],
+                  "v3d_vs_v3b": v3d["exact_success_rate"] - v3b["exact_success_rate"],
+              },
+              "v3d_vs_v3b_capability_correct_delta": cap_deltas,
+              "promotion_rule": {
+                  "min_total_correct_gain": min_gain,
+                  "max_allowed_correct_loss_in_any_capability": max_capability_loss,
+                  "note": "Preregistered before closed-loop results. Tie or small gain keeps simpler v3B champion.",
+              },
+              "v3d_total_correct_gain": correct_gain,
+              "v3d_worst_capability_correct_delta": worst_capability_delta,
+              "promote_v3d": promote_v3d,
+              "champion": champion,
+          }
+          Path("runs/summary/closed-loop-v3d-summary.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload closed-loop summary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: closed-loop-v3d-summary
+          path: runs/summary/closed-loop-v3d-summary.json
+          if-no-files-found: error
+          retention-days: 30
