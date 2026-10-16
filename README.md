@@ -1,46 +1,132 @@
 <h1 align="center">Small-Agent QLoRA</h1>
 
 <p align="center">
-  <strong>Can a local 4B tool agent learn a better tool-use policy with QLoRA — without hiding behind a larger model or benchmark leakage?</strong>
+  <strong>Diagnose agent failures → design SFT data → run QLoRA → measure whether the agent actually gets better.</strong>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-111827?style=flat-square&logo=python" alt="Python" />
-  <img src="https://img.shields.io/badge/Qwen3.5--4B-111827?style=flat-square" alt="Qwen3.5-4B" />
+  <img src="https://img.shields.io/badge/Qwen3.5--9B-111827?style=flat-square" alt="Qwen3.5-9B" />
   <img src="https://img.shields.io/badge/QLoRA-111827?style=flat-square" alt="QLoRA" />
-  <img src="https://img.shields.io/badge/GAIA-111827?style=flat-square" alt="GAIA" />
-  <img src="https://img.shields.io/badge/Local_First-111827?style=flat-square" alt="Local-first" />
+  <img src="https://img.shields.io/badge/llama.cpp-111827?style=flat-square" alt="llama.cpp" />
+  <img src="https://img.shields.io/badge/GitHub_Actions-111827?style=flat-square&logo=githubactions" alt="GitHub Actions" />
 </p>
 
 <p align="center">
+  <a href="#result">Result</a> ·
+  <a href="#what-changed">What changed</a> ·
   <a href="#runtime">Runtime</a> ·
-  <a href="#the-experiment">Experiment</a> ·
-  <a href="#current-evidence">Evidence</a> ·
-  <a href="#quickstart">Quickstart</a> ·
-  <a href="#evaluation-contract">Evaluation</a>
+  <a href="#experiment-design">Experiment</a> ·
+  <a href="#reproduce">Reproduce</a> ·
+  <a href="docs/v3d-results.md">Full evidence</a>
 </p>
 
 ## At a glance
 
 | | |
 |---|---|
-| **Question** | What actually improves unseen GAIA performance for this local 4B agent, and does QLoRA add value beyond runtime/policy engineering? |
-| **What I built** | A single-model Qwen3.5-4B agent with `search`, `read`, `inspect`, and `python`, plus controlled GAIA evaluation, trajectory collection, QLoRA training, leakage guards, and paired comparison. |
-| **Runtime** | Local CLI with bounded tool I/O, explicit backend failure states, readiness checks, atomic run artifacts, and visible action traces. |
-| **Current answer** | **Unanswered.** The improvement framework exists, but there is no valid unseen GAIA improvement claim or Base-vs-LoRA result yet. |
-| **Design focus** | One hypothesis per candidate, blind promotion before final evaluation, and honest stop conditions under local hardware constraints. |
+| **Question** | Can targeted post-training improve a small tool agent's actual closed-loop behavior, not just its training loss? |
+| **Model used for the final experiment** | Qwen3.5-9B, evaluated as Q4_K_M with `llama.cpp` |
+| **Agent** | One model chooses a tool call or a final answer; no planner / router / critic graph |
+| **Training** | QLoRA / SFT on synthetic, independently generated policy trajectories |
+| **Final result** | **34.5% Base → 52.5% v3B → 62.0% v3D** on a frozen 200-task deterministic closed-loop test |
+| **Main lesson** | More trajectory supervision was not automatically better. State-aware corrective data worked better than the full-trajectory ablation. |
 
-> [!NOTE]
-> This repository treats **“the policy change did not generalize”** and **“QLoRA was not justified by the available evidence”** as valid outcomes. The goal is not to force an improvement story.
+The project is intentionally evidence-first: negative experiments stay in the record, promotion rules are fixed before the result, and the headline claim is bounded to what the evaluation actually measures.
+
+## Result
+
+The final matched closed-loop comparison used the same runtime commit, frozen 200-task test split, deterministic fixture-backed tools, temperature 0, reasoning budget 0, max 12 agent steps, and max 512 new tokens per call.
+
+| Arm | Correct | Exact success | Completion |
+|---|---:|---:|---:|
+| Base | 69 / 200 | 34.5% | 98.0% |
+| v3B | 105 / 200 | 52.5% | 100.0% |
+| **v3D** | **124 / 200** | **62.0%** | **99.5%** |
+
+**v3D vs v3B: +19 correct tasks / +9.5 percentage points.**
+
+The preregistered promotion rule required v3D to gain at least 5 correct tasks over v3B while losing no more than 2 correct tasks in any capability bucket. v3D passed with **+19 total correct** and a **worst capability delta of 0**.
+
+Evidence: GitHub Actions run [`38752732871`](https://github.com/kolihhan/small-agent-qlora/actions/runs/38752732871), artifact `closed-loop-v3d-summary`.
+
+### Where the gain came from
+
+| Capability | v3B | v3D | Delta |
+|---|---:|---:|---:|
+| argument_grounding | 12 / 25 | 12 / 25 | 0 |
+| duplicate_avoidance | 25 / 25 | 25 / 25 | 0 |
+| evidence_to_final | 12 / 25 | 12 / 25 | 0 |
+| failure_recovery | 0 / 25 | 0 / 25 | 0 |
+| multi_step | 25 / 25 | 25 / 25 | 0 |
+| **no_tool_stop** | **6 / 25** | **23 / 25** | **+17** |
+| **strategy_switch** | **0 / 25** | **2 / 25** | **+2** |
+| tool_selection | 25 / 25 | 25 / 25 | 0 |
+
+So the supported claim is not “v3D is better at everything.” The measured improvement is concentrated in **stopping correctly when a tool is unnecessary**, plus a smaller strategy-switch gain. Failure recovery remains unsolved.
+
+See [`docs/v3d-results.md`](docs/v3d-results.md) for the full evidence chain and caveats.
+
+## What changed
+
+The useful part of this project was not just running QLoRA. It was diagnosing why different training-data choices changed behavior.
+
+### v3B — strong first post-training baseline
+
+The frozen 64 next-action probe improved from:
+
+- Base: **20 / 64 (31.25%)**
+- v3B: **32 / 64 (50.0%)**
+
+v3B sharply improved tool-use decisions, but recovery and some finalization failures remained.
+
+### v3C — negative full-trajectory ablation
+
+The tempting next move was to supervise fuller trajectories so the model could see more recovery and multi-step context.
+
+That did **not** work overall:
+
+- v3B: **32 / 64**
+- v3C: **27 / 64**
+- v3C finals: **8 / 29** vs v3B **14 / 29**
+- v3C `wrong_final`: **21**
+
+The full-trajectory treatment improved a few recovery decisions but damaged finalization enough to fail the preregistered gate.
+
+Evidence: GitHub Actions run [`38497917564`](https://github.com/kolihhan/small-agent-qlora/actions/runs/38497917564).
+
+### v3D — state-aware corrective continuation
+
+The root data-design bug was that a capability label alone did not tell us **which state inside a trajectory** should be supervised. In recovery / strategy-switch examples, the first action was deliberately wrong; selecting by capability + action type could accidentally train that failure as the target behavior.
+
+v3D therefore selected 24 state-aware corrective decisions:
+
+- 12 tool calls + 12 final actions
+- task-unique
+- excludes v3B exposure task IDs
+- explicitly targets the corrective / later trajectory state
+- excludes deliberately failing first actions in recovery and strategy-switch trajectories
+
+The one-step probe did **not** show an aggregate win:
+
+| Arm | Frozen next-action exact |
+|---|---:|
+| Base | 20 / 64 (31.25%) |
+| v3B | 32 / 64 (50.0%) |
+| v3D | 32 / 64 (50.0%) |
+
+But the internal capability mix changed: multi-step and strategy-switch improved while evidence-to-final regressed. That is why the project did not stop at one-step scoring and moved to actual closed-loop evaluation.
+
+Evidence: GitHub Actions run [`38714014392`](https://github.com/kolihhan/small-agent-qlora/actions/runs/38714014392).
 
 ## Runtime
 
-The runtime intentionally stays small: one model chooses a tool call or a final answer, and the harness owns execution boundaries around it.
+The runtime stays deliberately small:
 
 ```text
 user task
    ↓
-Qwen3.5-4B
+Qwen model
    ↓
 choose next action
    ├─ search
@@ -53,225 +139,142 @@ observation
 next action or final answer
 ```
 
-Operational behavior is explicit rather than hidden behind a larger agent framework:
+The harness owns the execution boundaries around the model:
 
-- model timeouts, unavailable backends, capacity stops, and known model errors are recorded as distinct incomplete outcomes;
-- tool exceptions become bounded observations so the model can change strategy;
-- exact duplicate calls are blocked;
+- explicit model timeout / unavailable / error states;
+- tool exceptions become bounded observations instead of crashing the run;
+- exact duplicate tool calls are blocked;
 - URL reads block local/private destinations and stream within a source-size budget;
 - workspace files are size-checked before expensive parsing;
-- the Python tool runs in an isolated, time-limited subprocess with a restricted builtin surface;
-- `small-agent doctor` checks local readiness without loading model weights;
-- `small-agent run --output ...` writes an atomic `small-agent-run/v1` artifact with the answer, stop reason, metrics, trace, and effective runtime configuration.
+- Python runs in an isolated, time-limited subprocess with a restricted builtin surface;
+- `small-agent doctor` checks backend readiness;
+- `small-agent run --output ...` persists answer, stop reason, metrics, trace, and effective runtime configuration.
 
-This is a **production-style local runtime**, not a hardened multi-tenant service or hostile-code sandbox. There is no planner/router/critic graph.
+This is a production-style local harness, not a hardened multi-tenant sandbox.
 
-## The experiment
+## Experiment design
 
-The project separates engineering gains from fine-tuning gains instead of assuming QLoRA is the answer.
-
-```text
-Base agent
-   ↓
-Diagnostic25 (inspectable DEV)
-   ↓
-one general hypothesis
-   ↓
-frozen candidate
-   ↓
-Blind Shadow25
-   ├─ reject → stop that direction
-   └─ pass   → freeze final arms
-                  ↓
-             Evaluation100
-                  ↓
-        Base vs policy vs policy+QLoRA
-```
-
-Controlled comparisons keep the base model family, scorer, tool surface, step/token limits, and evaluation manifest matched unless that exact variable is the treatment under test.
-
-## Current status
-
-| Component | Status |
-|---|---|
-| Tool-using agent runtime | ✅ Implemented |
-| Runtime readiness / failure contracts | ✅ Implemented |
-| Diagnostic25 / Evaluation100 runner | ✅ Implemented |
-| Deterministic blind Shadow25 selector | ✅ Implemented |
-| Aggregate-only Shadow promotion gate | ✅ Implemented |
-| Visible trajectory logging | ✅ Implemented |
-| Verified trajectory collector | ✅ Implemented |
-| Training-data leakage guard | ✅ Implemented |
-| QLoRA training entry point | ✅ Implemented |
-| Base-vs-LoRA comparator | ✅ Implemented |
-| Shadow-passing policy candidate | ⏳ Not yet established |
-| Valid trained adapter for final comparison | ⏳ Not yet established |
-| Final unseen GAIA result | ⏳ Not yet established |
-
-## Current evidence
-
-An earlier diagnostic attempt stopped after **13 persisted tasks** because the machine crossed the RAM safety guard. It is preserved as debugging evidence, not presented as a complete benchmark.
-
-| Partial diagnostic fact | Result |
-|---|---:|
-| Persisted tasks | 13 / 25 |
-| Exact match | 2 / 13 |
-| Completed tasks | 6 / 13 |
-| Model calls | 118 |
-| Tool calls | 112 |
-| Tool success | 81.25% |
-| Stop reason | available RAM below guard threshold |
-
-> [!IMPORTANT]
-> These 13 tasks are an exposed **DEV prefix**, not a GAIA performance result. The diagnostic selection is level-ordered before truncation, so `--limit 13` is also distribution-biased and contains no Level 3 coverage. Historical first-13 experiments may inform debugging only; they cannot establish generalization or justify QLoRA.
-
-The preserved historical decision record is in [`docs/p4-decision.md`](docs/p4-decision.md).
-
-## Evaluation contract
-
-The pinned GAIA validation set is reserved into three roles:
+The final evidence ladder separates local policy diagnosis from actual end-to-end behavior:
 
 ```text
-Diagnostic25   inspectable DEV
-Shadow25       blind promotion gate
-Evaluation100  final measurement
+synthetic policy train split
+        ↓
+trajectory / state diagnosis
+        ↓
+QLoRA treatment
+        ↓
+frozen next-action probe
+        ↓
+deterministic closed-loop test
+        ↓
+external benchmark evidence (secondary)
 ```
 
-The exact Shadow quotas are `8 / 13 / 4` across GAIA Levels 1 / 2 / 3. Selection is deterministic and must be disjoint from the existing Diagnostic25 and Evaluation100 partitions; the selector fails rather than silently changing quotas if the pinned dataset cannot satisfy the reservation.
+The primary controlled result is the deterministic non-GAIA policy test because it gives a stable tool environment and lets Base / v3B / v3D run under the same harness.
 
-The contract is:
+GAIA is retained as external secondary evidence, not used to inflate the headline. Earlier matched GAIA evidence was weaker than the deterministic policy result and did not establish a convincing generalization win.
 
-1. Inspect **all Diagnostic25** tasks to identify a broad failure pattern. `--limit` is debug-only and never supports a performance claim.
-2. State one falsifiable hypothesis and change one treatment at a time.
-3. Freeze the candidate before blind evaluation.
-4. Compare baseline and candidate on the same **Shadow25** manifest. Shadow output is aggregate-only; case-level Shadow questions, answers, traces, and task IDs are not used for tuning.
-5. Promote only if the candidate gains at least **+2 exact-correct tasks**, completion regresses by no more than one task, and no new catastrophic runtime failure class appears. Better latency/tool efficiency alone is not a GAIA performance win.
-6. Limit this cycle to at most **three Shadow exposures**. A failed Shadow candidate is not debugged against Shadow cases.
-7. Before opening Evaluation100, freeze the final arms: Base, best policy/runtime candidate, and the same policy/runtime plus QLoRA if training is justified.
-8. Run the frozen **Evaluation100** arms and compare task-level transitions. Do not tune after seeing final results.
+## Training
 
-This is an **internal controlled evaluation setup**, not an official GAIA leaderboard submission.
+### v3B
 
-## Improvement and training
+v3B is the main earlier QLoRA checkpoint and the baseline for the corrective continuation. Its training used completion-only next-action supervision on selected policy decisions.
 
-The improvement ladder is deliberately boring:
+### v3D
 
-1. evaluator/protocol bug;
-2. tool or runtime correctness bug;
-3. small generic policy/control change;
-4. tool-quality change;
-5. non-GAIA curriculum change;
-6. QLoRA;
-7. architecture change only if earlier layers fail and evidence requires it.
+v3D continues from v3B with:
 
-The current synthetic curriculum is intentionally narrow. When Diagnostic25 exposes a general policy weakness, it may motivate new **independent non-GAIA** tasks that teach that abstract capability. GAIA questions, answers, traces, entities, and case-specific routes are forbidden from training data.
+- 24 corrective examples
+- 24 optimizer steps
+- learning rate `1e-4`
+- max length 1024
+- four sequential batches of six examples
+- optimizer state preserved between batches
+- **layer-31 LoRA parameters only trainable**
 
-Only verified trajectories are training-eligible: correct final answer, required tools satisfied, zero tool errors, zero duplicate blocks, complete provenance, and no protected GAIA question overlap.
+Training run: [`38561069365`](https://github.com/kolihhan/small-agent-qlora/actions/runs/38561069365).
 
-QLoRA is therefore evidence-gated. A low GAIA score by itself is not a reason to train.
+The restricted trainable scope is a compute compromise, not a claim that layer-31-only continuation is equivalent to the original all-linear QLoRA setup.
 
-## Training-data guard
+### Why only layer 31 on CPU?
 
-GAIA questions are hashed locally and checked against candidate training inputs. Sources marked as GAIA are rejected from the training path.
+Standard GitHub-hosted CPU runners could load the 9B model, but the Qwen3.5 recurrent kernels fell back to slow reference PyTorch implementations.
 
-This catches exact reuse. It **does not** detect a paraphrased benchmark question, so provenance still requires manual judgment.
+Measured feasibility:
 
-## Quickstart
+- all-layer CPU backward: still incomplete after ~5h51m, then cancelled;
+- shortest 754-token layer-31-only optimizer step: ~24.1 minutes;
+- `flash-linear-attention` Triton kernel: unavailable on the CPU runner (`0 active drivers`).
+
+That evidence led to the bounded layer-31 continuation instead of pretending an all-layer CPU run was practical.
+
+## Reproduce
+
+Key workflows:
+
+- [`.github/workflows/v3d-cpu-batched-continuation.yml`](.github/workflows/v3d-cpu-batched-continuation.yml) — sequential CPU corrective QLoRA
+- [`.github/workflows/v3d-heldout-next-action.yml`](.github/workflows/v3d-heldout-next-action.yml) — frozen 64 next-action comparison
+- [`.github/workflows/v3d-closed-loop.yml`](.github/workflows/v3d-closed-loop.yml) — matched 200-task Base / v3B / v3D closed-loop comparison
+
+Key implementation files:
+
+- [`src/gaia_small_agent/training/exposure_v3d.py`](src/gaia_small_agent/training/exposure_v3d.py) — state-aware corrective selector
+- [`src/gaia_small_agent/training/cpu_v3d_batches.py`](src/gaia_small_agent/training/cpu_v3d_batches.py) — batch continuity / partition helpers
+- [`scripts/run_v3d_cpu_batch.py`](scripts/run_v3d_cpu_batch.py) — resumable CPU training step
+- [`src/gaia_small_agent/training/policy_eval.py`](src/gaia_small_agent/training/policy_eval.py) — deterministic closed-loop evaluator
 
 ### Local runtime
 
-For the ordinary Ollama-backed agent, install only the runtime tool extras:
+For a lightweight local smoke test, install the runtime extras:
 
 ```powershell
 python -m pip install -e ".[search,files]"
-```
-
-With Ollama running and `qwen3.5:4b` available, check readiness before the first task:
-
-```powershell
 small-agent doctor
-```
-
-Then run a task and keep a reproducible JSON artifact:
-
-```powershell
 small-agent run "Find the relevant evidence and answer concisely." `
   --output runs/task/result.json
 ```
 
-The run artifact keeps the existing result fields and also records the backend/model identity, adapter path when applicable, step/token limits, thinking mode, tool surface, and observation cap.
+The local runtime can use a smaller local model for development; **the reported post-training experiment above uses Qwen3.5-9B**.
 
-### Evaluation and training extras
-
-Install evaluation support without the training stack when that is all you need:
+### Evaluation / training dependencies
 
 ```powershell
 python -m pip install -e ".[eval,search,files]"
 ```
 
-The Transformers / QLoRA path needs the heavier training dependencies and a compatible CUDA environment:
+The full Transformers / QLoRA path requires the heavier training extras and a compatible environment:
 
 ```powershell
 python -m pip install -e ".[eval,search,files,train]"
 small-agent doctor --backend transformers
 ```
 
-### Controlled improvement workflow
-
-Development uses Diagnostic25. Blind promotion is performed by `.github/workflows/gaia-shadow-gate.yml`, which runs baseline and candidate on the same GitHub runner and uploads only one sanitized aggregate verdict. Evaluation100 remains unopened until the final experiment arms are frozen.
-
-The older `scripts/run_p4_full_pipeline.ps1` is preserved for historical reproducibility; it is not the current promotion protocol.
-
-### Development commands
-
-Run the inspectable diagnostic partition:
-
-```powershell
-small-agent gaia-eval `
-  --partition diagnostic `
-  --backend transformers `
-  --work-root runs/gaia-diagnostic-base
-```
-
-`--partition shadow` exists for the controlled blind gate. Do not use it interactively to inspect or tune individual Shadow cases.
-
-Collect verified training trajectories:
-
-```powershell
-small-agent collect-trajectories `
-  --tasks data/policy-tasks.jsonl `
-  --output data/verified-trajectories.jsonl `
-  --backend transformers `
-  --protected-questions runs/gaia-protected-question-hashes.json
-```
-
-Train an adapter only when a training hypothesis is justified:
-
-```powershell
-small-agent train-qlora `
-  --data data/verified-trajectories.jsonl `
-  --output adapters/qwen3.5-4b-tool-policy `
-  --protected-questions runs/gaia-protected-question-hashes.json
-```
-
-`small-agent compare-evals` is a lower-level comparator for complete frozen Evaluation100 Base-vs-LoRA arms. It rejects partial runs and configuration drift other than the adapter treatment.
-
 ## What gets recorded
 
-A single `small-agent run --output` artifact records:
+A normal `small-agent run --output` artifact records:
 
-- schema version and effective runtime configuration
-- final answer, completion flag, and stop reason
-- step/tool metrics
-- visible action trace
+- effective runtime configuration;
+- final answer, completion flag, and stop reason;
+- step / tool metrics;
+- visible action trace.
 
-The GAIA runner additionally records correctness, latency, capability-gap flags, failure labels, failure signals, and aggregate stop reasons.
+Experiment workflows additionally preserve frozen selection metadata, model / adapter provenance, checksums, per-shard summaries, and aggregate comparison artifacts.
 
-Diagnostic case-level artifacts are development evidence. The blind Shadow workflow does **not** upload raw results, manifests, task IDs, traces, protected hashes, or workspaces; only its aggregate gate summary is retained.
+## Claim boundary
 
-It flags cases with known unsupported semantic image / audio / video attachments. That flag describes the current tool surface; it is not proof that the attachment was semantically necessary to answer the task.
+This repository supports the claim that:
 
-The current `inspect` tool reads document and tabular structure; it is **not** a general vision or audio model.
+> **A state-aware corrective QLoRA continuation improved exact success on the frozen deterministic 200-task closed-loop policy test from 52.5% (v3B) to 62.0%, after a negative full-trajectory ablation informed the data redesign.**
+
+It does **not** establish that:
+
+- v3D is universally better across every capability;
+- failure recovery is solved;
+- the synthetic deterministic test is a general real-world agent benchmark;
+- layer-31-only CPU continuation is equivalent to full all-layer QLoRA;
+- external GAIA generalization is proven.
+
+That distinction is intentional. The project is meant to show diagnosis, controlled post-training, reproducible evaluation, and honest failure analysis rather than a benchmark-only success story.
 
 ## Repository shape
 
@@ -283,6 +286,7 @@ small-agent-qlora/
 │   ├── tools/
 │   ├── benchmark/
 │   └── training/
+├── scripts/
 ├── docs/
 └── tests/
 ```
@@ -290,29 +294,22 @@ small-agent-qlora/
 ## Limits
 
 - The Python tool is process-isolated and time-limited, but not a hardened hostile-code sandbox.
-- `inspect` does not provide semantic image / audio / video understanding.
-- Search uses the live web, so exact results can change; matched baseline/candidate Shadow runs reduce but do not eliminate this variance.
+- `inspect` does not provide general semantic image / audio / video understanding.
+- Search can use live web data in normal runtime operation, so exact external results can change.
 - Runtime source-size limits reduce accidental memory blow-ups; they are not a complete security boundary.
-- Exact hash checks do not catch paraphrased benchmark leakage.
-- The current independent synthetic curriculum is deliberately small and does not cover every autonomous tool-selection pattern.
-- The Transformers / QLoRA path needs a compatible local CUDA / PyTorch / bitsandbytes setup.
-- No final GAIA or Base-vs-LoRA claim should be made until the frozen final experiment completes.
+- Exact hash leakage checks do not detect paraphrased benchmark questions.
+- The synthetic policy curriculum is intentionally bounded and does not cover every autonomous-agent failure mode.
+- `failure_recovery` remains a clear unresolved weakness in the final closed-loop result.
 
 ## Verification
 
-CPU-only CI verifies package installation, CLI entry-point loading, tests, and compilation on Linux and Windows. The blind Shadow workflow is a separate evidence gate; passing ordinary CI is not a benchmark result.
+CPU-only CI verifies package installation, CLI entry-point loading, tests, and compilation on Linux and Windows. Experiment success is verified separately by the frozen Actions workflows and their artifacts; ordinary CI passing is not treated as benchmark evidence.
 
-See [`docs/verification.md`](docs/verification.md) for the distinction between repository verification and preserved experiment evidence.
-
-## Verification
-
-CPU-only CI verifies package installation, CLI entry-point loading, tests, and compilation on Linux and Windows. Real model/GAIA evidence remains a separate local experiment contract; passing CI is not a benchmark result.
-
-See [`docs/verification.md`](docs/verification.md) for the distinction between repository verification and preserved experiment evidence.
+See [`docs/verification.md`](docs/verification.md) and [`docs/v3d-results.md`](docs/v3d-results.md).
 
 ## References
 
-- [Pi minimal harness](https://pi.dev/)
-- [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B)
+- [Qwen3.5-9B](https://huggingface.co/Qwen/Qwen3.5-9B)
 - [GAIA dataset](https://huggingface.co/datasets/gaia-benchmark/GAIA)
 - [GAIA scorer](https://huggingface.co/spaces/gaia-benchmark/leaderboard/blob/main/scorer.py)
+- [llama.cpp](https://github.com/ggml-org/llama.cpp)
