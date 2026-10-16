@@ -1,0 +1,275 @@
+name: Matched Qwen3.5 9B Base vs v3B vs v3D GAIA100
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/heldout-next-action-eval
+    paths:
+      - ".github/workflows/gaia-v3d-clean-same-runner.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  FROZEN_EVAL_COMMIT: "08fbcaa5ed82c5238188c45d5748993bae9bf1e1"
+  V3B_RUN_ID: "38156235327"
+  V3B_ARTIFACT: qwen35-9b-qlora-v3b-gguf
+  V3B_SHA256: e7caec609a905d21e056b107519d78916d3ef79e7bdc70db916e40d801d2187d
+  V3D_RUN_ID: "38714014392"
+  V3D_ARTIFACT: qwen35-9b-qlora-v3d-gguf
+  V3D_SHA256: 9bb1ae55d20c7ddeed737ec682e7ad9dc73844b59c0e8fd35685a4a6b57c23ca
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA256: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_RELEASE_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_RELEASE_SHA256: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  MODEL_ALIAS: qwen3.5-9b
+
+jobs:
+  paired-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - name: Checkout frozen Runtime v2 evaluator
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_EVAL_COMMIT }}
+
+      - name: Install evaluation dependencies
+        run: python -m pip install --quiet -e '.[search,files,eval]'
+
+      - name: Verify GAIA credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN_NOT_CONFIGURED"; exit 42; }
+
+      - name: Download and verify frozen base GGUF
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model matched-input/v3b matched-input/v3d /tmp/llama-bin
+          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf
+          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
+          curl -fL --retry 5 --retry-delay 3 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+
+      - name: Download frozen v3B adapter
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V3B_ARTIFACT }}
+          path: matched-input/v3b
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.V3B_RUN_ID }}
+
+      - name: Download frozen v3D adapter
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V3D_ARTIFACT }}
+          path: matched-input/v3d
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.V3D_RUN_ID }}
+
+      - name: Verify adapter checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s matched-input/v3b/qwen35-9b-qlora-v3b-adapter.gguf
+          test -s matched-input/v3d/qwen35-9b-qlora-v3d-adapter.gguf
+          echo "$V3B_SHA256  matched-input/v3b/qwen35-9b-qlora-v3b-adapter.gguf" | sha256sum -c -
+          echo "$V3D_SHA256  matched-input/v3d/qwen35-9b-qlora-v3d-adapter.gguf" | sha256sum -c -
+
+      - name: Run matched Base, v3B, then v3D on the same runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          shard="${{ matrix.shard }}"
+
+          run_arm() {
+            arm="$1"
+            out="runs/${arm}/shard-${shard}"
+            mkdir -p "$out"
+            extra=()
+            if [ "$arm" = "qlora-v3b" ]; then
+              extra=(--lora matched-input/v3b/qwen35-9b-qlora-v3b-adapter.gguf)
+            elif [ "$arm" = "qlora-v3d" ]; then
+              extra=(--lora matched-input/v3d/qwen35-9b-qlora-v3d-adapter.gguf)
+            fi
+
+            "$LLAMA_SERVER" \
+              -m model/Qwen3.5-9B-Q4_K_M.gguf \
+              "${extra[@]}" \
+              --alias "$MODEL_ALIAS" \
+              --host 127.0.0.1 --port 8080 \
+              --ctx-size 16384 --threads 4 --parallel 1 \
+              --jinja --reasoning-budget 0 --temperature 0 \
+              > "$out/llama-server.log" 2>&1 &
+            pid=$!
+            echo "$pid" > "$out/llama-server.pid"
+            cleanup() {
+              kill "$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+            }
+            trap cleanup RETURN
+
+            for i in {1..180}; do
+              if curl -fsS http://127.0.0.1:8080/health >/dev/null; then break; fi
+              sleep 2
+            done
+            curl -fsS http://127.0.0.1:8080/health >/dev/null
+
+            python scripts/run_gaia_eval_shard.py \
+              --backend openai_compat \
+              --model "$MODEL_ALIAS" \
+              --openai-base-url http://127.0.0.1:8080 \
+              --hf-token "$HF_TOKEN" \
+              --shard-index "$shard" \
+              --shard-count 20 \
+              --work-root "$out" \
+              --output "$out/shard.json"
+
+            cleanup
+            trap - RETURN
+            sleep 2
+          }
+
+          run_arm base
+          run_arm qlora-v3b
+          run_arm qlora-v3d
+
+      - name: Upload paired shard evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matched-gaia-v3d-shard-${{ matrix.shard }}
+          path: runs
+          if-no-files-found: error
+          retention-days: 14
+
+  summarize:
+    needs: paired-eval
+    if: ${{ always() && needs.paired-eval.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout frozen Runtime v2 evaluator
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_EVAL_COMMIT }}
+
+      - name: Install package
+        run: python -m pip install --quiet -e .
+
+      - name: Download all paired shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: matched-gaia-v3d-shard-*
+          path: evidence
+
+      - name: Build matched GAIA100 summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from gaia_small_agent.benchmark.gaia100 import summarize_results
+
+          arms = ("base", "qlora-v3b", "qlora-v3d")
+          summaries = {}
+          ids_by_arm = {}
+          for arm in arms:
+              rows = []
+              ids = set()
+              files = sorted(Path("evidence").glob(f"matched-gaia-v3d-shard-*/{arm}/shard-*/results.jsonl"))
+              if len(files) != 20:
+                  raise SystemExit(f"{arm}: expected 20 results.jsonl, got {len(files)}")
+              for path in files:
+                  for line in path.read_text(encoding="utf-8").split("\n"):
+                      if not line.strip():
+                          continue
+                      row = json.loads(line)
+                      tid = str(row["task_id"])
+                      if tid in ids:
+                          raise SystemExit(f"{arm}: duplicate task {tid}")
+                      ids.add(tid)
+                      rows.append(row)
+              if len(rows) != 100:
+                  raise SystemExit(f"{arm}: expected 100 rows, got {len(rows)}")
+              summaries[arm] = summarize_results(rows)
+              ids_by_arm[arm] = ids
+
+          if not (ids_by_arm["base"] == ids_by_arm["qlora-v3b"] == ids_by_arm["qlora-v3d"]):
+              raise SystemExit("Base, v3B, and v3D task identities differ")
+
+          b = summaries["base"]
+          b3 = summaries["qlora-v3b"]
+          d3 = summaries["qlora-v3d"]
+          payload = {
+              "schema_version": "matched-gaia-base-v3b-v3d/v1",
+              "protocol": {
+                  "benchmark": "GAIA 2023 validation / frozen Evaluation100",
+                  "pairing": "same GitHub runner per shard, sequential Base then v3B then v3D",
+                  "runtime_commit": os.environ["FROZEN_EVAL_COMMIT"],
+                  "context_tokens": 16384,
+                  "max_new_tokens": 512,
+                  "agent_max_steps": 12,
+                  "model_timeout_s": 180,
+                  "reasoning_budget": 0,
+                  "temperature": 0,
+                  "base_gguf_sha256": os.environ["MODEL_SHA256"],
+                  "v3b_adapter_sha256": os.environ["V3B_SHA256"],
+                  "v3d_adapter_sha256": os.environ["V3D_SHA256"],
+              },
+              "base": b,
+              "qlora_v3b": b3,
+              "qlora_v3d": d3,
+              "delta_v3b_vs_base": {
+                  "correct_absolute": b3["correct"] - b["correct"],
+                  "accuracy_pp": (b3["accuracy"] - b["accuracy"]) * 100,
+                  "completion_rate_pp": (b3["completion_rate"] - b["completion_rate"]) * 100,
+                  "tool_errors": b3["tool_errors"] - b["tool_errors"],
+                  "duplicate_calls_blocked": b3["duplicate_calls_blocked"] - b["duplicate_calls_blocked"],
+              },
+              "delta_v3d_vs_v3b": {
+                  "correct_absolute": d3["correct"] - b3["correct"],
+                  "accuracy_pp": (d3["accuracy"] - b3["accuracy"]) * 100,
+                  "completion_rate_pp": (d3["completion_rate"] - b3["completion_rate"]) * 100,
+                  "tool_errors": d3["tool_errors"] - b3["tool_errors"],
+                  "duplicate_calls_blocked": d3["duplicate_calls_blocked"] - b3["duplicate_calls_blocked"],
+              },
+              "delta_v3d_vs_base": {
+                  "correct_absolute": d3["correct"] - b["correct"],
+                  "accuracy_pp": (d3["accuracy"] - b["accuracy"]) * 100,
+                  "completion_rate_pp": (d3["completion_rate"] - b["completion_rate"]) * 100,
+                  "tool_errors": d3["tool_errors"] - b["tool_errors"],
+                  "duplicate_calls_blocked": d3["duplicate_calls_blocked"] - b["duplicate_calls_blocked"],
+              },
+          }
+          Path("matched-gaia-v3d-summary.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload matched GAIA summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: matched-gaia-v3d-summary
+          path: matched-gaia-v3d-summary.json
+          if-no-files-found: error
+          retention-days: 30
