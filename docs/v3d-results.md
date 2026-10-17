@@ -10,7 +10,7 @@ That is **+9.5 percentage points / +19 correct tasks over v3B** and **+27.5 perc
 
 The preregistered v3D promotion rule required at least +5 correct tasks over v3B and no capability losing more than 2 correct tasks. v3D passed: total gain was +19 and the worst capability delta was 0.
 
-**Champion: v3D.**
+**Champion: v3D on the controlled deterministic policy evaluation.**
 
 Evidence: GitHub Actions run `38752732871`, artifact `closed-loop-v3d-summary`.
 
@@ -124,6 +124,24 @@ Evidence from the feasibility work:
 
 The final v3D training therefore used the smallest trainable scope that was operationally feasible on standard GitHub CPU resources.
 
+## Matched external GAIA100
+
+The final adapters were also evaluated on **GAIA 2023 validation / frozen Evaluation100** with a matched same-runner protocol: each five-task shard ran Base → v3B → v3D sequentially under the same Runtime v2 evaluator.
+
+| Arm | Correct | Accuracy | Completion | `invalid_final` | Duplicate calls blocked |
+|---|---:|---:|---:|---:|---:|
+| Base | 9 / 100 | 9% | 45% | 42 | 78 |
+| v3B | 18 / 100 | 18% | 44% | 51 | 66 |
+| v3D | 18 / 100 | 18% | 25% | 69 | 127 |
+
+Evidence: GitHub Actions run `38911211243`, artifact `matched-gaia-v3d-summary`.
+
+The external result supports a **v3B-over-Base gain (9% → 18%)**, but v3D added **no further GAIA accuracy gain (18% → 18%)**. Paired trace analysis identified a stopping regression: v3D had 20 v3B-final → v3D-non-final transitions versus 1 in the opposite direction, made more tool calls, and triggered substantially more duplicate-call blocks while tool errors did not increase.
+
+The dominant external failure mode is therefore **over-search / failure to finalize**, not a generic loss of tool competence. This is deliberately kept as secondary evidence rather than used to inflate the controlled synthetic headline.
+
+See `docs/gaia-v3d-results.md` for the full paired failure analysis and claim boundaries.
+
 ## Claim boundary
 
 What this project can claim:
@@ -132,7 +150,8 @@ What this project can claim:
 - failure analysis changed the training-data design;
 - a negative full-trajectory ablation was measured and rejected;
 - a state-aware corrective continuation was trained reproducibly under a constrained CPU setup;
-- the resulting v3D adapter improved held-out deterministic closed-loop exact success from 52.5% (v3B) to 62.0%, with a preregistered promotion rule.
+- the resulting v3D adapter improved held-out deterministic closed-loop exact success from 52.5% (v3B) to 62.0%, with a preregistered promotion rule;
+- under the matched GAIA100 external check, v3B improved over Base from 9% to 18%.
 
 What it should **not** claim:
 
@@ -140,9 +159,10 @@ What it should **not** claim:
 - that failure recovery is solved (it remains 0/25 on the closed-loop test);
 - that the layer-31 CPU continuation is equivalent to full all-layer QLoRA;
 - that the synthetic deterministic benchmark is a general real-world agent benchmark;
-- that external GAIA generalization has been proven by the v3D result.
+- that v3D is better than v3B on external GAIA;
+- that one 100-task GAIA subset establishes broad real-world generalization.
 
-Earlier matched GAIA evidence was weaker than the deterministic policy result, so GAIA is treated as secondary evidence rather than used to inflate the headline.
+The evidence is therefore split cleanly: **v3D is the controlled deterministic-policy champion; v3B provides the observed external GAIA gain over Base; v3D's GAIA trace exposes a separate termination weakness.**
 
 ## Reproduce the evidence
 
@@ -151,6 +171,7 @@ Key workflows:
 - `.github/workflows/v3d-cpu-batched-continuation.yml` — sequential CPU corrective training
 - `.github/workflows/v3d-heldout-next-action.yml` — frozen 64 next-action comparison
 - `.github/workflows/v3d-closed-loop.yml` — matched 200-task Base / v3B / v3D closed-loop comparison
+- `.github/workflows/gaia-v3d-clean-same-runner.yml` — matched external GAIA100 Base / v3B / v3D comparison
 
 Key implementation files:
 
