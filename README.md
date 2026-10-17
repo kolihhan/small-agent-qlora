@@ -14,6 +14,7 @@
 
 <p align="center">
   <a href="#result">Result</a> ·
+  <a href="#external-gaia-check">External GAIA</a> ·
   <a href="#what-changed">What changed</a> ·
   <a href="#runtime">Runtime</a> ·
   <a href="#experiment-design">Experiment</a> ·
@@ -30,7 +31,8 @@
 | **Agent** | One model chooses a tool call or a final answer; no planner / router / critic graph |
 | **Training** | QLoRA / SFT on synthetic, independently generated policy trajectories |
 | **Final result** | **34.5% Base → 52.5% v3B → 62.0% v3D** on a frozen 200-task deterministic closed-loop test |
-| **Main lesson** | More trajectory supervision was not automatically better. State-aware corrective data worked better than the full-trajectory ablation. |
+| **External check** | Matched GAIA100: **9% Base → 18% v3B → 18% v3D**; v3D exposed an over-search / finalization regression |
+| **Main lesson** | More trajectory supervision was not automatically better. State-aware corrective data worked better than the full-trajectory ablation, but the external benchmark exposed a stopping-policy weakness. |
 
 The project is intentionally evidence-first: negative experiments stay in the record, promotion rules are fixed before the result, and the headline claim is bounded to what the evaluation actually measures.
 
@@ -65,7 +67,23 @@ Evidence: GitHub Actions run [`38752732871`](https://github.com/kolihhan/small-a
 
 So the supported claim is not “v3D is better at everything.” The measured improvement is concentrated in **stopping correctly when a tool is unnecessary**, plus a smaller strategy-switch gain. Failure recovery remains unsolved.
 
-See [`docs/v3d-results.md`](docs/v3d-results.md) for the full evidence chain and caveats.
+See [`docs/v3d-results.md`](docs/v3d-results.md) for the controlled experiment evidence and caveats.
+
+## External GAIA check
+
+The final adapters were also run on a frozen, matched **GAIA 2023 validation Evaluation100** check. Each five-task shard ran Base → v3B → v3D sequentially on the same GitHub runner with the same evaluator, temperature 0, reasoning budget 0, and a 12-step ceiling.
+
+| Arm | Correct | Accuracy | Completion | `invalid_final` | Duplicate calls blocked |
+|---|---:|---:|---:|---:|---:|
+| Base | 9 / 100 | 9% | 45% | 42 | 78 |
+| v3B | 18 / 100 | 18% | 44% | 51 | 66 |
+| v3D | 18 / 100 | 18% | 25% | 69 | 127 |
+
+The external result supports a v3B gain over Base, but **v3D did not improve GAIA accuracy over v3B**. Paired trace analysis showed a stopping regression instead: v3D more often kept calling tools until the 12-step ceiling, with 20 v3B-final → v3D-non-final transitions versus 1 in the opposite direction. Tool errors did not increase.
+
+This does not replace the primary controlled result. It narrows the conclusion: v3D improved the targeted deterministic policy benchmark, while GAIA exposed an **over-search / failure-to-finalize** weakness on longer external trajectories.
+
+Evidence: GitHub Actions run [`38911211243`](https://github.com/kolihhan/small-agent-qlora/actions/runs/38911211243), artifact `matched-gaia-v3d-summary`. See [`docs/gaia-v3d-results.md`](docs/gaia-v3d-results.md) for the paired failure analysis.
 
 ## What changed
 
@@ -172,7 +190,7 @@ external benchmark evidence (secondary)
 
 The primary controlled result is the deterministic non-GAIA policy test because it gives a stable tool environment and lets Base / v3B / v3D run under the same harness.
 
-GAIA is retained as external secondary evidence, not used to inflate the headline. Earlier matched GAIA evidence was weaker than the deterministic policy result and did not establish a convincing generalization win.
+GAIA is retained as external secondary evidence, not used to inflate the headline. The matched GAIA100 check showed **9% Base → 18% v3B → 18% v3D**: v3B generalized beyond the synthetic policy test, while v3D added no further external accuracy and exposed an over-search / finalization regression.
 
 ## Training
 
@@ -215,6 +233,7 @@ Key workflows:
 - [`.github/workflows/v3d-cpu-batched-continuation.yml`](.github/workflows/v3d-cpu-batched-continuation.yml) — sequential CPU corrective QLoRA
 - [`.github/workflows/v3d-heldout-next-action.yml`](.github/workflows/v3d-heldout-next-action.yml) — frozen 64 next-action comparison
 - [`.github/workflows/v3d-closed-loop.yml`](.github/workflows/v3d-closed-loop.yml) — matched 200-task Base / v3B / v3D closed-loop comparison
+- [`.github/workflows/gaia-v3d-clean-same-runner.yml`](.github/workflows/gaia-v3d-clean-same-runner.yml) — matched external GAIA100 Base / v3B / v3D check
 
 Key implementation files:
 
@@ -266,13 +285,15 @@ This repository supports the claim that:
 
 > **A state-aware corrective QLoRA continuation improved exact success on the frozen deterministic 200-task closed-loop policy test from 52.5% (v3B) to 62.0%, after a negative full-trajectory ablation informed the data redesign.**
 
+It also records matched external evidence showing Base **9%**, v3B **18%**, and v3D **18%** on GAIA100. That supports the v3B-over-Base generalization result, but it does **not** establish an additional external accuracy gain from v3D.
+
 It does **not** establish that:
 
 - v3D is universally better across every capability;
 - failure recovery is solved;
 - the synthetic deterministic test is a general real-world agent benchmark;
 - layer-31-only CPU continuation is equivalent to full all-layer QLoRA;
-- external GAIA generalization is proven.
+- v3D is better than v3B on external GAIA.
 
 That distinction is intentional. The project is meant to show diagnosis, controlled post-training, reproducible evaluation, and honest failure analysis rather than a benchmark-only success story.
 
@@ -300,12 +321,13 @@ small-agent-qlora/
 - Exact hash leakage checks do not detect paraphrased benchmark questions.
 - The synthetic policy curriculum is intentionally bounded and does not cover every autonomous-agent failure mode.
 - `failure_recovery` remains a clear unresolved weakness in the final closed-loop result.
+- v3D's GAIA100 trace shows a separate over-search / finalization weakness on longer external trajectories.
 
 ## Verification
 
 CPU-only CI verifies package installation, CLI entry-point loading, tests, and compilation on Linux and Windows. Experiment success is verified separately by the frozen Actions workflows and their artifacts; ordinary CI passing is not treated as benchmark evidence.
 
-See [`docs/verification.md`](docs/verification.md) and [`docs/v3d-results.md`](docs/v3d-results.md).
+See [`docs/verification.md`](docs/verification.md), [`docs/v3d-results.md`](docs/v3d-results.md), and [`docs/gaia-v3d-results.md`](docs/gaia-v3d-results.md).
 
 ## References
 
