@@ -1,4 +1,0 @@
-model=qwen3.5:9b
-partition=evaluation
-shards=5
-reason=retry-after-tool-name-fix
