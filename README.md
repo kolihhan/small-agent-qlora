@@ -1,24 +1,6 @@
 # Small-Agent QLoRA
 
-**Post-training a Qwen3.5-9B tool agent, then testing whether the behavior actually improves.**
-
-<p align="center">
-  <a href="https://github.com/kolihhan/small-agent-qlora/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/kolihhan/small-agent-qlora/ci.yml?branch=main&style=flat-square&label=CI" alt="CI" /></a>
-  <img src="https://img.shields.io/github/stars/kolihhan/small-agent-qlora?style=flat-square" alt="GitHub stars" />
-  <img src="https://img.shields.io/github/last-commit/kolihhan/small-agent-qlora?style=flat-square" alt="Last commit" />
-  <img src="https://img.shields.io/github/repo-size/kolihhan/small-agent-qlora?style=flat-square" alt="Repo size" />
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-%E2%89%A53.11-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python >=3.11" />
-  <img src="https://img.shields.io/badge/Model-Qwen3.5--9B-111827?style=flat-square" alt="Qwen3.5-9B" />
-  <img src="https://img.shields.io/badge/Post--training-QLoRA-6f42c1?style=flat-square" alt="QLoRA" />
-  <img src="https://img.shields.io/badge/Inference-llama.cpp-111827?style=flat-square" alt="llama.cpp" />
-  <img src="https://img.shields.io/badge/Controlled-62.0%25-success?style=flat-square" alt="Controlled 62.0%" />
-  <img src="https://img.shields.io/badge/GAIA100-18%25-blue?style=flat-square" alt="GAIA100 18%" />
-</p>
-
-Most tuning demos stop at training loss. This project focuses on agent behavior: diagnose failure modes, change the supervision, run QLoRA/SFT, and verify the result on frozen closed-loop evaluations.
+Post-training a Qwen3.5-9B tool agent and evaluating how its behavior changes.
 
 ## Results
 
@@ -140,15 +122,6 @@ small-agent doctor --backend transformers
 - [`docs/gaia-v3d-results.md`](docs/gaia-v3d-results.md) — matched GAIA100 paired failure analysis
 - [`docs/verification.md`](docs/verification.md) — runtime and verification notes
 - `evidence/` and `evals/` — frozen evaluation inputs and saved summaries used during development
-
-## What this project demonstrates
-
-- diagnosing agent-policy failures instead of tuning blindly;
-- designing SFT/QLoRA supervision from observed failure states;
-- rejecting a negative ablation rather than cherry-picking it;
-- separating one-step policy probes from closed-loop evaluation;
-- running matched external evaluation and tracing regressions back to behavior;
-- keeping claims bounded to what the evidence actually supports.
 
 ## Limits
 
