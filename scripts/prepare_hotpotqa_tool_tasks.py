@@ -11,15 +11,63 @@ import json
 from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import urlopen
+from urllib.error import HTTPError, URLError
+import hashlib
+import tempfile
 
 from gaia_small_agent.training.protection import question_hash
 
 DATASET = "hotpotqa/hotpot_qa"
 DATASET_LICENSE = "CC-BY-SA-4.0"
+# Content-addressed verified mirror of the canonical HotpotQA Parquet conversion.
+# Dataset Viewer can return 5xx; never silently switch to arbitrary data.
+_PARQUET_FALLBACK = {
+    "train": (
+        "https://huggingface.co/datasets/huang-haonan/hotpot_qa/resolve/main/distractor/train-00000-of-00002.parquet",
+        "76d3bb3048a7cc73c1958107c0c5872a00d7e7d00c105b81e92f6769e7822e68",
+    ),
+    "validation": (
+        "https://huggingface.co/datasets/huang-haonan/hotpot_qa/resolve/main/distractor/validation-00000-of-00001.parquet",
+        "c20b638ca82b21d04fe12e14ff417ad05153d4d215a65de54497fca4e972f7c6",
+    ),
+}
 INSTRUCTION = (
     "Find the answer using only the local article files. Read index.txt first, "
     "then read the articles you need. Return only the short answer. Question: "
 )
+
+
+def _fetch_parquet_fallback(*, split: str, offset: int, count: int) -> list[dict]:
+    """Read a bounded page from a checksum-pinned HotpotQA Parquet mirror."""
+    try:
+        import pyarrow.parquet as parquet
+    except ImportError as exc:
+        raise RuntimeError("Data viewer failed; install pyarrow for pinned Parquet fallback") from exc
+    url, expected_sha256 = _PARQUET_FALLBACK[split]
+    with tempfile.TemporaryDirectory(prefix="hotpot-parquet-") as temp:
+        target = Path(temp) / "source.parquet"
+        digest = hashlib.sha256()
+        length = 0
+        with urlopen(url, timeout=120) as response, target.open("wb") as output:
+            while block := response.read(1024 * 1024):
+                length += len(block)
+                if length > 200 * 1024 * 1024:
+                    raise ValueError("unreasonably large Parquet download")
+                output.write(block)
+                digest.update(block)
+        if digest.hexdigest() != expected_sha256:
+            raise ValueError("pinned HotpotQA Parquet checksum mismatch")
+        table = parquet.ParquetFile(target)
+        results: list[dict] = []
+        pos = 0
+        for batch in table.iter_batches(batch_size=64):
+            for row in batch.to_pylist():
+                if pos >= offset and len(results) < count:
+                    results.append(row)
+                pos += 1
+                if len(results) == count:
+                    return results
+    raise ValueError("pinned Parquet file has insufficient rows")
 
 
 def fetch_rows(*, split: str, offset: int, count: int) -> list[dict]:
@@ -29,12 +77,19 @@ def fetch_rows(*, split: str, offset: int, count: int) -> list[dict]:
         "dataset": DATASET, "config": "distractor", "split": split,
         "offset": offset, "length": count,
     })
-    with urlopen("https://datasets-server.huggingface.co/rows?" + query, timeout=90) as response:
-        payload = json.load(response)
-    entries = payload.get("rows")
-    if not isinstance(entries, list) or len(entries) != count:
-        raise ValueError("incomplete HotpotQA dataset response")
-    return [x["row"] for x in entries]
+    try:
+        with urlopen("https://datasets-server.huggingface.co/rows?" + query, timeout=35) as response:
+            payload = json.load(response)
+        entries = payload.get("rows")
+        if not isinstance(entries, list) or len(entries) != count:
+            raise ValueError("incomplete HotpotQA dataset response")
+        return [x["row"] for x in entries]
+    except (HTTPError, URLError) as error:
+        # A public dataset mirror is acceptable only when the artifact matches
+        # independently pinned SHA256 bytes. Never mask 400/401/403.
+        if isinstance(error, HTTPError) and error.code < 500:
+            raise
+        return _fetch_parquet_fallback(split=split, offset=offset, count=count)
 
 
 def convert_row(row: dict, *, split: str, max_article_chars: int = 1800) -> dict:
