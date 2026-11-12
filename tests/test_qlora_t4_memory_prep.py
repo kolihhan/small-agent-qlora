@@ -96,3 +96,20 @@ def test_t4_safe_loading_explicitly_sets_half_dtype_without_affecting_legacy():
         memory_safe_half_weights=False, compute_dtype="fp16",
     )
     assert "dtype" not in default
+
+
+def test_t4_uses_native_loss_instead_of_sm80_only_trl_fused_gemm():
+    from gaia_small_agent.training.qlora import _training_runtime_defaults
+
+    t4 = _training_runtime_defaults(cuda_available=True, cuda_bf16_supported=False)
+    assert t4["compute_dtype_name"] == "float16"
+    assert t4["trainer_loss_path"] == "native-t4"
+    assert t4["use_gradient_checkpointing"] is True
+
+    sm80 = _training_runtime_defaults(cuda_available=True, cuda_bf16_supported=True)
+    assert sm80["trainer_loss_path"] == "trl-fused"
+    assert sm80["compute_dtype_name"] == "bfloat16"
+
+    cpu = _training_runtime_defaults(cuda_available=False, cuda_bf16_supported=False)
+    assert cpu["trainer_loss_path"] == "native-cpu"
+    assert cpu["use_gradient_checkpointing"] is False
