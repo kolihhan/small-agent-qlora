@@ -97,8 +97,25 @@ def main() -> None:
         torch.cuda.is_bf16_supported = lambda *args, **kwargs: False
     print("SHADOW_GPU",json.dumps({"device":device, "capability":capability}),flush=True)
 
-    if not REPO.is_dir():
-        raise FileNotFoundError("frozen checkout required in Colab")
+    import subprocess
+    if REPO.exists():
+        raise FileExistsError("unverified prior checkout found on Colab")
+    subprocess.run(
+        ["git","clone","--depth","100","--branch",
+         "fix/qlora-v4-t4-4bit-memory-20261112",
+         "https://github.com/kolihhan/small-agent-qlora.git",str(REPO)],
+        check=True)
+    pinned_sha="144c0a3ef6df7089cdafa3ae8ca17b375804f542"
+    subprocess.run(["git","-C",str(REPO),"checkout","--detach",pinned_sha],check=True)
+    actual=subprocess.check_output(
+        ["git","-C",str(REPO),"rev-parse","HEAD"],text=True).strip()
+    if actual != pinned_sha:
+        raise ValueError("evaluation runtime source commit changed")
+    subprocess.run(
+        [sys.executable,"-m","pip","install","-q",
+         "-e",str(REPO)+"[train,eval,files,search]","jinja2>=3.1"],
+        check=True)
+    # Colab's already-live kernel does not reload editable-install .pth files.
     sys.path[:0]=[str(REPO),str(REPO/"src")]
     from gaia_small_agent.agent.loop import AgentRuntime
     from gaia_small_agent.benchmark.gaia100 import (
