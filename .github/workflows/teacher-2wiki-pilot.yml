@@ -1,0 +1,132 @@
+name: QLoRA 2WikiMultiHopQA cross-source teacher pilot
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/verified-teacher-trajectory-v0-20261112]
+    paths: [.github/TEACHER_2WIKI_TRIGGER]
+
+permissions:
+  contents: read
+
+env:
+  OLLAMA_MODEL: qwen3.5:9b-q4_K_M
+
+jobs:
+  rollouts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install agent and source prerequisites
+        run: python -m pip install -e ".[dev,eval,files]"
+      - name: Test source converter and multi-article evidence constraints
+        run: python -m pytest -q tests/test_2wiki_tool_tasks.py tests/test_teacher_curation.py
+      - name: Protect real GAIA validation questions
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || exit 42
+          mkdir -p runs
+          python - <<'PY'
+          from gaia_small_agent.benchmark.gaia100 import load_validation
+          from gaia_small_agent.training.protection import build_protected_question_hashes
+          hashes=build_protected_question_hashes(load_validation(token=None),"runs/gaia-protected-hashes.json")
+          assert len(hashes)>=100
+          print("ACTUAL_GAIA_PROTECTION",len(hashes))
+          PY
+      - name: Fetch pinned 2Wiki source TRAIN and validation, prepare 24 trials
+        run: |
+          set -euo pipefail
+          python -m scripts.prepare_2wiki_tool_tasks \
+            --split validation --offset 0 --scan-count 250 --limit 12 \
+            --output runs/2wiki-validation.jsonl \
+            --report runs/2wiki-validation-source.json \
+            --holdout-hashes runs/2wiki-validation-hashes.json
+          python -m scripts.prepare_2wiki_tool_tasks \
+            --split train --offset 0 --scan-count 250 --limit 12 \
+            --output runs/2wiki-train.jsonl \
+            --report runs/2wiki-train-source.json
+          python -m scripts.prepare_teacher_trials \
+            --tasks runs/2wiki-train.jsonl --samples 2 \
+            --output runs/2wiki-teacher-trials.jsonl
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          from gaia_small_agent.training.protection import load_protected_question_hashes,question_hash
+          samples=[json.loads(x) for x in Path("runs/2wiki-teacher-trials.jsonl").read_text().splitlines() if x.strip()]
+          gaia=load_protected_question_hashes("runs/gaia-protected-hashes.json")
+          heldout=load_protected_question_hashes("runs/2wiki-validation-hashes.json")
+          assert len(samples)==24 and len({x["id"] for x in samples})==24
+          assert all(x["source"]=="2wikimultihopqa-train" for x in samples)
+          assert not any(question_hash(x["question"]) in gaia | heldout for x in samples)
+          print("TWO_WIKI_READY",len(samples),json.loads(Path("runs/2wiki-train-source.json").read_text())["dataset_commit_sha"])
+          PY
+      - name: Install CPU Ollama and Qwen3.5-9B teacher
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+          ollama serve > /tmp/ollama-2wiki.log 2>&1 &
+          for i in {1..40}; do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then break; fi
+            sleep 1
+          done
+          ollama pull "$OLLAMA_MODEL"
+      - name: Collect 24 real Qwen tool traces from 2Wiki QA
+        run: |
+          python - <<'PY'
+          import json
+          from gaia_small_agent.agent.loop import AgentRuntime
+          from gaia_small_agent.model.ollama import OllamaModel
+          from gaia_small_agent.tools.read import ReadTool
+          from gaia_small_agent.training.trajectories import collect_verified_trajectories
+          def runtime_factory():
+              return AgentRuntime(
+                  model=OllamaModel(
+                      model="qwen3.5:9b-q4_K_M",temperature=0.45,
+                      max_new_tokens=512,timeout_s=600,enable_thinking=False),
+                  tools=[ReadTool()],max_steps=12)
+          stats=collect_verified_trajectories(
+              tasks_path="runs/2wiki-teacher-trials.jsonl",
+              output_path="runs/2wiki-observed.jsonl",
+              runtime_factory=runtime_factory,
+              work_root="runs/2wiki-work",
+              protected_questions_path="runs/gaia-protected-hashes.json")
+          assert stats["total"]==24 and stats["rejected_gaia"]==0 and stats["rejected_protected"]==0
+          print("TWO_WIKI_ROLLOUT_FINAL",json.dumps(stats,sort_keys=True))
+          PY
+      - name: Strict native multi-tool/2-article curation
+        run: |
+          python -m gaia_small_agent.training.teacher_curation \
+            --input runs/2wiki-observed.jsonl \
+            --protected runs/gaia-protected-hashes.json \
+            --holdout-hashes runs/2wiki-validation-hashes.json \
+            --min-actions 3 --min-long-trajectories 1 \
+            --output runs/2wiki-strict-curated.jsonl \
+            --report runs/2wiki-strict-curated-report.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path("runs/2wiki-strict-curated-report.json").read_text())
+          assert report["accepted_tasks"]>=1
+          print("TWO_WIKI_STRICT_FINAL",json.dumps(report,sort_keys=True))
+          PY
+      - name: Archive observed and curated evidence excluding GAIA hashes
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: two-wiki-teacher-pilot
+          path: |
+            runs/2wiki-observed.jsonl
+            runs/2wiki-observed.jsonl.summary.json
+            runs/2wiki-observed.jsonl.progress.jsonl
+            runs/2wiki-strict-curated.jsonl
+            runs/2wiki-strict-curated-report.json
+            runs/2wiki-train-source.json
+          if-no-files-found: warn
+          retention-days: 30
