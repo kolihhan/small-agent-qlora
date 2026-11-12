@@ -1,0 +1,5 @@
+ONE_SHOT=2026-11-12
+ARMS=same-v3D-baseline,same-v3D-terminal-recovery
+PARTITION=shadow25
+NO_RAW_GAIA_ARTIFACTS=1
+PROMOTION_METRIC=paired_correctness

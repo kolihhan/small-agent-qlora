@@ -53,6 +53,7 @@ class RunMetrics:
     duplicate_calls_blocked: int = 0
     invalid_tool_calls: int = 0
     tool_retries: int = 0
+    terminal_recovery_calls: int = 0
 
 
 @dataclass
@@ -64,10 +65,15 @@ class AgentResult:
     metrics: RunMetrics
 
     def to_dict(self) -> dict[str, Any]:
+        metrics = asdict(self.metrics)
+        # Keep the established JSON contract identical when the optional
+        # treatment is disabled; the extra counter appears only when used.
+        if not metrics["terminal_recovery_calls"]:
+            metrics.pop("terminal_recovery_calls")
         return {
             "answer": self.answer,
             "completed": self.completed,
             "stop_reason": self.stop_reason,
-            "metrics": asdict(self.metrics),
+            "metrics": metrics,
             "trace": [event.to_dict() for event in self.trace],
         }
