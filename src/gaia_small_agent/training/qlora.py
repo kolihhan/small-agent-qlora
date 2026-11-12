@@ -362,10 +362,18 @@ def _cpu_safe_compute_loss(model, inputs: dict, *, return_outputs: bool = False)
 
 
 def _training_runtime_defaults(*, cuda_available: bool, cuda_bf16_supported: bool) -> dict[str, Any]:
+    # TRL's chunked_logprob backward calls torch.addmm(out_dtype=float32), which
+    # requires SM80+. T4 is SM75 even when the model loads in float16.
+    if not cuda_available:
+        loss_path = "native-cpu"
+    elif not cuda_bf16_supported:
+        loss_path = "native-t4"
+    else:
+        loss_path = "trl-fused"
     return {
         "compute_dtype_name": "bfloat16" if (not cuda_available or cuda_bf16_supported) else "float16",
         "use_gradient_checkpointing": bool(cuda_available),
-        "trainer_loss_path": "trl-fused" if cuda_available else "native-cpu",
+        "trainer_loss_path": loss_path,
     }
 
 
@@ -633,12 +641,12 @@ def train_qlora(
     config = SFTConfig(**config_kwargs)
 
     trainer_cls = SFTTrainer
-    if not cuda_available:
-        class CpuSafeSFTTrainer(SFTTrainer):
+    if runtime_defaults["trainer_loss_path"] != "trl-fused":
+        class NativeCausalLossSFTTrainer(SFTTrainer):
             def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
                 return _cpu_safe_compute_loss(model, inputs, return_outputs=return_outputs)
 
-        trainer_cls = CpuSafeSFTTrainer
+        trainer_cls = NativeCausalLossSFTTrainer
 
     trainer = trainer_cls(
         model=language_model,
