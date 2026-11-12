@@ -84,7 +84,7 @@ def fetch_rows(*, split: str, offset: int, count: int) -> list[dict]:
         if not isinstance(entries, list) or len(entries) != count:
             raise ValueError("incomplete HotpotQA dataset response")
         return [x["row"] for x in entries]
-    except (HTTPError, URLError) as error:
+    except (HTTPError, URLError, TimeoutError) as error:
         # A public dataset mirror is acceptable only when the artifact matches
         # independently pinned SHA256 bytes. Never mask 400/401/403.
         if isinstance(error, HTTPError) and error.code < 500:
