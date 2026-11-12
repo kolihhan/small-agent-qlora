@@ -4,6 +4,7 @@ import pytest
 
 from gaia_small_agent.training.qlora import (
     _prepare_4bit_model_preserving_large_half_weights,
+    _qlora_model_load_kwargs,
 )
 
 
@@ -81,3 +82,17 @@ def test_t4_prep_can_disable_checkpointing_and_reject_invalid_threshold():
             model, torch=DTYPES, use_gradient_checkpointing=True,
             max_upcast_elements=0,
         )
+
+
+def test_t4_safe_loading_explicitly_sets_half_dtype_without_affecting_legacy():
+    t4 = _qlora_model_load_kwargs(
+        "Qwen/Qwen3.5-9B", quantization_config="nf4",
+        memory_safe_half_weights=True, compute_dtype="fp16",
+    )
+    assert t4["dtype"] == "fp16"
+    assert t4["quantization_config"] == "nf4"
+    default = _qlora_model_load_kwargs(
+        "Qwen/Qwen3.5-9B", quantization_config="nf4",
+        memory_safe_half_weights=False, compute_dtype="fp16",
+    )
+    assert "dtype" not in default
