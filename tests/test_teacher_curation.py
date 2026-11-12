@@ -205,3 +205,28 @@ def test_hotpot_parallel_article_reads_preserve_two_article_grounding():
     indices, stats = _check_row(row, {"protected"}, set(), 3)
     assert indices == [2, 4, 7]
     assert stats["hotpot_distinct_article_reads"] == 2
+
+
+def test_2wiki_requires_same_observed_article_chain_as_hotpot():
+    row = make_row("2wiki-case::sample-1", ntools=3)
+    row["source"] = "2wikimultihopqa-train"
+    for pos, filename in [(2, "index.txt"), (4, "article_00.txt"), (6, "article_01.txt")]:
+        row["messages"][pos]["tool_calls"][0]["function"]["arguments"]["source"] = filename
+    indices, stats = _check_row(row, {"protected"}, set(), 3)
+    assert indices == [2, 4, 6, 8]
+    assert stats["hotpot_distinct_article_reads"] == 2
+
+    validation = deepcopy(row)
+    validation["source"] = "2wikimultihopqa-validation"
+    with pytest.raises(ValueError, match="forbidden_2wiki_holdout_split"):
+        _check_row(validation, {"protected"}, set(), 3)
+
+    only_one = deepcopy(row)
+    only_one["messages"][6]["tool_calls"][0]["function"]["arguments"]["source"] = "article_00.txt"
+    with pytest.raises(ValueError, match="duplicate_tool_call"):
+        _check_row(only_one, {"protected"}, set(), 3)
+
+    missing = deepcopy(row)
+    missing["messages"][6]["tool_calls"][0]["function"]["arguments"]["source"] = "unrelated.txt"
+    with pytest.raises(ValueError, match="hotpot_missing_index_or_two_articles"):
+        _check_row(missing, {"protected"}, set(), 3)
