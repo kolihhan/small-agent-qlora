@@ -249,6 +249,41 @@ def _select_diagnostic_exposure_examples(
     )
 
 
+def _select_v3e_clean_exposure_examples(
+    examples: list[dict[str, Any]],
+    *,
+    count: int = 64,
+    seed: str = "qlora-v3b-exposure",
+) -> list[dict[str, Any]]:
+    """Clean v3B ablation: same 64 quotas and seed, but never supervise deliberate misses.
+
+    Synthetic v3 recovery and strategy-switch tasks deliberately start with a
+    search tool call known to return SEARCH_FIXTURE_MISS. Under the original
+    v3B exposure selection, four such first calls became supervised targets.
+    Only those index-2 tool choices are excluded; the actual successful
+    index-4 correction remains eligible. No GAIA data is used.
+    """
+    kept = []
+    for example in examples:
+        metadata = example.get("metadata")
+        if not isinstance(metadata, dict):
+            raise ValueError("v3E requires complete trace metadata")
+        unsafe = (
+            metadata.get("capability") in {"failure_recovery", "strategy_switch"}
+            and metadata.get("action_type") == "tool_call"
+            and metadata.get("assistant_message_index") == 2
+        )
+        if not unsafe:
+            kept.append(example)
+    return _select_exposure_by_quotas(
+        kept,
+        quotas_by_capability=_V3B_EXPOSURE_QUOTAS,
+        count=count,
+        seed=seed,
+        profile_name="v3E clean v3B ablation",
+    )
+
+
 def _build_training_exposure_report(
     selected: list[dict[str, Any]],
     *,
@@ -425,6 +460,8 @@ def train_qlora(
             selector = _select_balanced_exposure_examples
         elif exposure_profile == "v3b-diagnostic":
             selector = _select_diagnostic_exposure_examples
+        elif exposure_profile == "v3e-cleaned":
+            selector = _select_v3e_clean_exposure_examples
         else:
             raise ValueError(f"unknown exposure_profile: {exposure_profile}")
         examples = selector(
