@@ -21,6 +21,8 @@ def analyze_examples(examples:list[dict],tokenizer,source_by_task:dict[str,str])
     sizes=[]
     by_source=defaultdict(lambda:Counter())
     by_action=Counter()
+    by_action_fit=defaultdict(Counter)
+    by_task=defaultdict(Counter)
     for index,ex in enumerate(examples):
         prompt=ex["prompt"]
         completion=ex["completion"]
@@ -35,7 +37,17 @@ def analyze_examples(examples:list[dict],tokenizer,source_by_task:dict[str,str])
         sizes.append(size)
         source=source_by_task[task_id]
         by_source[source]["actions"]+=1
-        by_action[metadata["action_type"]]+=1
+        action_type=str(metadata["action_type"])
+        by_action[action_type]+=1
+        by_task[task_id]["actions"]+=1
+        if action_type=="final":
+            by_task[task_id]["final_seen"]+=1
+        if size<=1024:
+            by_task[task_id]["fits_1024"]+=1
+            by_action_fit[action_type]["fits_1024"]+=1
+        if size<=2048:
+            by_task[task_id]["fits_2048"]+=1
+            by_action_fit[action_type]["fits_2048"]+=1
         for budget in (1024,1536,2048,4096):
             if size<=budget: by_source[source][f"fits_{budget}"]+=1
         if len(b)>1024:by_source[source]["completion_longer_than_t4_budget"]+=1
@@ -48,6 +60,15 @@ def analyze_examples(examples:list[dict],tokenizer,source_by_task:dict[str,str])
         "unique_tasks":len(source_by_task),
         "native_train_actions":len(examples),
         "action_type_counts":dict(sorted(by_action.items())),
+        "action_type_token_fit":{k:dict(sorted(v.items())) for k,v in sorted(by_action_fit.items())},
+        "fully_supported_tasks_at_1024":sum(
+            v["actions"]==v["fits_1024"] and v["final_seen"]==1
+            for v in by_task.values()),
+        "fully_supported_tasks_at_2048":sum(
+            v["actions"]==v["fits_2048"] and v["final_seen"]==1
+            for v in by_task.values()),
+        "tasks_with_complete_final_action":sum(
+            v["final_seen"]==1 for v in by_task.values()),
         "source_token_fit":{k:dict(sorted(v.items())) for k,v in sorted(by_source.items())},
         "max_total_tokens":max(sizes),
         "median_total_tokens":percentile(0.5),
