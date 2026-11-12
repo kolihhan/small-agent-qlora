@@ -96,6 +96,28 @@ jobs:
           set -euo pipefail
           python -m pip install --quiet 'google-colab-cli==0.8.0'
           timeout 110 colab --auth=adc usage
+      - name: Wait for Colab account to release the SQL GPU session
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A concurrently active SQL SFT job is already using this same
+          # Google account. Reserve QLoRA for the NEXT free slot, not now.
+          for attempt in {1..18}; do
+            usage="$(timeout 70 colab --auth=adc usage)"
+            active="$(printf '%s\n' "$usage" | awk '/^Active assignments:/ {print $3}')"
+            if ! [[ "$active" =~ ^[0-9]+$ ]]; then
+              echo "Unknown Colab active assignment count; refusing speculative allocation"
+              exit 70
+            fi
+            echo "COLAB_SLOT_GATE attempt=$attempt/18 active_assignments=$active"
+            if [ "$active" = "0" ]; then
+              echo "COLAB_SLOT_AVAILABLE"
+              exit 0
+            fi
+            if [ "$attempt" != "18" ]; then sleep 300; fi
+          done
+          echo "COLAB_SLOT_UNAVAILABLE: never start a competing 9B GPU job"
+          exit 75
       - name: Allocate GPU, train fully, download verified model, release compute
         shell: bash
         run: |
