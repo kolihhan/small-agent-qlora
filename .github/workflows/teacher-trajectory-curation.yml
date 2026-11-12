@@ -44,6 +44,8 @@ jobs:
             tests/test_training_exposure_v3b.py \
             tests/test_training_exposure_v3d.py \
             tests/test_qlora_completion_preserving_tokens.py
+      - name: Install Parquet fallback for unreliable public dataset viewer
+        run: python -m pip install --quiet 'pyarrow>=18,<24'
       - name: Fetch separate train/validation public multi-hop input pages (NO model training)
         shell: bash
         run: |
