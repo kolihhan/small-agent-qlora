@@ -16,6 +16,9 @@ def test_official_colab_action_does_not_allocate_before_auth_and_cleans_up_gpu()
     assert "colab --auth=adc download" in text
     assert "actions/upload-artifact@" in text
     assert "workflow_dispatch:" in text
+    assert "COLAB_SLOT_GATE" in text
+    assert text.index("COLAB_SLOT_AVAILABLE") < text.index("colab --auth=adc run")
+    assert "active_assignments=$active" in text
     assert ".github/COLAB_GPU_START" in text
     assert 'if: always()' in text
     assert "colab drivemount" not in text
