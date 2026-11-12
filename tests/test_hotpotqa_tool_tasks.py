@@ -75,3 +75,18 @@ def test_hotpotqa_conversion_skips_bad_rows_but_fail_closed_when_none():
     assert report["rejected"]["article too long; do not truncate evidence"] == 1
     with pytest.raises(ValueError, match="no acceptable"):
         convert_page([bad], split="train", limit=1)
+
+def test_hotpotqa_viewer_timeout_uses_checksum_pinned_fallback(monkeypatch):
+    from scripts import prepare_hotpotqa_tool_tasks as converter
+    calls = []
+    def timed_out_viewer(*args, **kwargs):
+        calls.append("viewer")
+        raise TimeoutError("read operation timed out")
+    def verified_parquet(*, split, offset, count):
+        calls.append("parquet")
+        assert (split, offset, count) == ("validation", 0, 2)
+        return [make_record(), make_record()]
+    monkeypatch.setattr(converter, "urlopen", timed_out_viewer)
+    monkeypatch.setattr(converter, "_fetch_parquet_fallback", verified_parquet)
+    assert len(converter.fetch_rows(split="validation", offset=0, count=2)) == 2
+    assert calls == ["viewer", "parquet"]
