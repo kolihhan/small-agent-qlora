@@ -11,6 +11,8 @@ on:
       - 'scripts/prepare_teacher_trials.py'
       - 'tests/test_teacher_curation.py'
       - 'tests/test_training_action_audit.py'
+      - 'tests/test_hotpotqa_tool_tasks.py'
+      - 'scripts/prepare_hotpotqa_tool_tasks.py'
       - '.github/workflows/teacher-trajectory-curation.yml'
 
 permissions:
@@ -37,10 +39,35 @@ jobs:
           python -m pytest -q \
             tests/test_teacher_curation.py \
             tests/test_training_action_audit.py \
+            tests/test_hotpotqa_tool_tasks.py \
             tests/test_trajectory_collection.py \
             tests/test_training_exposure_v3b.py \
             tests/test_training_exposure_v3d.py \
             tests/test_qlora_completion_preserving_tokens.py
+      - name: Fetch separate train/validation public multi-hop input pages (NO model training)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.prepare_hotpotqa_tool_tasks \
+            --split train --offset 0 --count 40 --limit 4 \
+            --output /tmp/hotpot-train.jsonl --report /tmp/hotpot-train-report.json
+          python -m scripts.prepare_hotpotqa_tool_tasks \
+            --split validation --offset 0 --count 40 --limit 4 \
+            --output /tmp/hotpot-validation.jsonl --report /tmp/hotpot-validation-report.json \
+            --holdout-hashes /tmp/hotpot-holdout-hashes.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from gaia_small_agent.training.protection import question_hash
+          train = [json.loads(line) for line in Path('/tmp/hotpot-train.jsonl').read_text().splitlines()]
+          validation = [json.loads(line) for line in Path('/tmp/hotpot-validation.jsonl').read_text().splitlines()]
+          train_hashes = {question_hash(x['question']) for x in train}
+          eval_hashes = set(json.loads(Path('/tmp/hotpot-holdout-hashes.json').read_text())['hashes'])
+          assert len(train) == 4 and len(validation) == 4
+          assert not train_hashes.intersection(eval_hashes), 'train/validation leakage'
+          assert len(eval_hashes) == 4
+          print('HOTPOТQA_CPU_PREFLIGHT', json.dumps({'train':len(train),'validation':len(validation),'distinct_hashes':len(train_hashes|eval_hashes)}))
+          PY
       - name: Upload audit (no protected questions or model trajectories)
         uses: actions/upload-artifact@v4
         with:
