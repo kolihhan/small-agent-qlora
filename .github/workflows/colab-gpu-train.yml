@@ -106,10 +106,19 @@ jobs:
           }
           trap cleanup EXIT
           echo "Starting official Colab CLI GPU job; model=Qwen3.5-9B full v4 QLoRA; accelerator=$COLAB_GPU"
+          # Capture any verified adapter even if DEV evaluation fails after SFT.
+          # Keep the Colab VM alive until artifact recovery, then release via trap.
+          set +e
           colab --auth=adc run -s "$session" --gpu "$COLAB_GPU" --keep --timeout 0 "scripts/colab_full_v4_remote.py"
+          remote_rc=$?
+          set -e
           mkdir -p exported
-          colab --auth=adc download -s "$session" "/content/qlora-full-v4-adapter.zip" "exported/qlora-full-v4-adapter.zip"
-          colab --auth=adc log -s "$session" -o "exported/colab-execution.ipynb"
+          colab --auth=adc download -s "$session" "/content/qlora-full-v4-adapter.zip" "exported/qlora-full-v4-adapter.zip" || echo "No verified adapter available for recovery"
+          colab --auth=adc log -s "$session" -o "exported/colab-execution.ipynb" || true
+          if [ "$remote_rc" -ne 0 ]; then
+            echo "Colab training/evaluation returned nonzero exit code $remote_rc; any verified adapter is preserved"
+            exit "$remote_rc"
+          fi
           test -s "exported/qlora-full-v4-adapter.zip"
           python - <<'PY'
           import hashlib,pathlib
