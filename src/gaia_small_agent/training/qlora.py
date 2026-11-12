@@ -87,8 +87,18 @@ def _render_turn_examples(processor, rows: list[dict]) -> list[dict[str, Any]]:
         tools = row.get("tools") or []
         task_id = str(row.get("task_id") or f"row-{row_index}")
         capability = str(row.get("capability") or "unspecified")
+        allowed_indices = row.get("training_action_indices")
+        if allowed_indices is not None:
+            if (not isinstance(allowed_indices, list) or not allowed_indices
+                or any(type(i) is not int or i < 0 or i >= len(messages) for i in allowed_indices)
+                or len(allowed_indices) != len(set(allowed_indices))
+                or any(messages[i].get("role") != "assistant" for i in allowed_indices)):
+                raise ValueError(f"invalid training_action_indices in {task_id}")
+            allowed_indices = set(allowed_indices)
         for index, message in enumerate(messages):
             if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            if allowed_indices is not None and index not in allowed_indices:
                 continue
             prefix = messages[:index]
             if not prefix:
