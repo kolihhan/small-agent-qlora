@@ -382,6 +382,46 @@ def _normalize_lora_target_modules(value: str | list[str]) -> str | list[str]:
     return modules
 
 
+def _prepare_4bit_model_preserving_large_half_weights(
+    model,
+    *,
+    torch,
+    use_gradient_checkpointing: bool,
+    max_upcast_elements: int = 1_000_000,
+):
+    """Freeze a 4-bit backbone without PEFT's expensive full-precision embedding cast.
+
+    PEFT's default k-bit preparation upcasts every non-Params4bit half tensor to
+    float32. Qwen3.5-9B has very large unquantized embedding/head tensors; on a
+    15 GiB T4 one such cast can request ~3.8 GiB and OOM before training starts.
+    Keep those frozen large tensors in their original half dtype. Upcast only
+    small floating-point tensors (e.g. normalization weights) for stability.
+    This explicit opt-in has no effect on historical training configurations.
+    """
+    if max_upcast_elements <= 0:
+        raise ValueError("max_upcast_elements must be positive")
+    for param in model.parameters():
+        param.requires_grad = False
+        if (
+            param.__class__.__name__ != "Params4bit"
+            and param.dtype in (torch.float16, torch.bfloat16)
+            and param.numel() <= max_upcast_elements
+        ):
+            param.data = param.data.to(torch.float32)
+
+    if use_gradient_checkpointing:
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        else:
+            def require_grad_on_embedding_output(_module, _inputs, output):
+                output.requires_grad_(True)
+            model.get_input_embeddings().register_forward_hook(
+                require_grad_on_embedding_output
+            )
+        model.gradient_checkpointing_enable()
+    return model
+
+
 def train_qlora(
     data_path: str | Path,
     output_dir: str | Path,
@@ -402,6 +442,7 @@ def train_qlora(
     exposure_seed: str = "qlora-v3a-exposure",
     exposure_profile: str = "v3a-balanced",
     require_full_prompt: bool = False,
+    preserve_large_half_parameters: bool = False,
 ) -> None:
     rows = load_verified_rows(data_path, protected_questions_path=protected_questions_path)
     try:
@@ -433,10 +474,17 @@ def train_qlora(
         device_map="auto",
         trust_remote_code=True,
     )
-    language_model = prepare_model_for_kbit_training(
-        language_model,
-        use_gradient_checkpointing=runtime_defaults["use_gradient_checkpointing"],
-    )
+    if preserve_large_half_parameters and cuda_available:
+        language_model = _prepare_4bit_model_preserving_large_half_weights(
+            language_model,
+            torch=torch,
+            use_gradient_checkpointing=runtime_defaults["use_gradient_checkpointing"],
+        )
+    else:
+        language_model = prepare_model_for_kbit_training(
+            language_model,
+            use_gradient_checkpointing=runtime_defaults["use_gradient_checkpointing"],
+        )
     target_modules = _normalize_lora_target_modules(lora_target_modules)
     peft_cfg = LoraConfig(
         r=lora_r,
@@ -528,6 +576,7 @@ def train_qlora(
         "scope": "text-only causal language model",
         "trainer_loss_path": runtime_defaults["trainer_loss_path"],
         "gradient_checkpointing": runtime_defaults["use_gradient_checkpointing"],
+        "preserve_large_half_parameters": preserve_large_half_parameters,
     }
     (output_dir / "run_config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
 
