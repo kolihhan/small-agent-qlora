@@ -28,6 +28,8 @@ def test_full_qlora_notebook_can_run_all_and_save_real_adapter():
         "resume_from_checkpoint=", "drive.mount(", "adapter_model.safetensors",
     ):
         assert token in body, token
+    assert "MAX_LENGTH=1024 if VRAM<20 else 2048" in body
+    assert "max_length=MAX_LENGTH" in body
     assert "exposure_count=64" not in body
     assert "hf-zero-gpu" not in body.lower()
     assert "gaia-benchmark" not in body.lower()
