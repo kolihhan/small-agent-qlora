@@ -14,9 +14,11 @@ class FinalToolMarkupModel:
 
     def complete_final(self, messages, tools):
         self.calls.append(("final", len(tools), messages[-1]["role"]))
-        if messages[-1]["role"] == "user":
-            return AssistantTurn(self.recovery, [])
-        return AssistantTurn("<tool_call>another query</tool_call>", [])
+        # First forced-final response represents the original failure. The
+        # one additional final call is the *only* opportunity for recovery.
+        if len(self.calls) == 1:
+            return AssistantTurn("<tool_call>another query</tool_call>", [])
+        return AssistantTurn(self.recovery, [])
 
 
 def test_default_loop_retains_exact_prior_invalid_final_behavior(tmp_path):
