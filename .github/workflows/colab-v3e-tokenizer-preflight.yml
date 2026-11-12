@@ -1,0 +1,61 @@
+name: Colab v3E real Qwen tokenizer CPU preflight
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/verified-teacher-trajectory-v0-20261112]
+    paths:
+      - notebooks/colab_qlora_v3e_clean_ablation.ipynb
+      - .github/workflows/colab-v3e-tokenizer-preflight.yml
+permissions:
+  contents: read
+jobs:
+  tokenize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install tokenizer + pure CPU repo
+        run: |
+          python -m pip install -e ".[dev]"
+          python -m pip install "transformers>=5.15,<6"
+      - name: Tokenize exact real 9B v3E training exposure, fail before GPU if >1024
+        env:
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: |
+          python - <<'PY'
+          from collections import Counter
+          from pathlib import Path
+          import json
+          import tempfile
+          from transformers import AutoTokenizer
+          from gaia_small_agent.training.oracle_policy_v3 import generate_oracle_policy_v3_dataset
+          from gaia_small_agent.training.qlora import (
+              load_verified_rows,
+              _render_turn_examples,
+              _select_diagnostic_exposure_examples,
+              _select_v3e_clean_exposure_examples,
+              _tokenize_completion_examples,
+          )
+          with tempfile.TemporaryDirectory() as tmp:
+              data = generate_oracle_policy_v3_dataset(Path(tmp), seed="small-agent-policy-v3")
+              rows = load_verified_rows(data["train"])
+              processor = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-9B", trust_remote_code=True)
+              actions = _render_turn_examples(processor, rows)
+              baseline = _select_diagnostic_exposure_examples(actions, count=64, seed="qlora-v3b-exposure")
+              cleaned = _select_v3e_clean_exposure_examples(actions, count=64, seed="qlora-v3b-exposure")
+              assert len(rows) == 1600
+              assert len(actions) == 3600
+              assert len(cleaned) == len(baseline) == 64
+              assert Counter(a["metadata"]["action_type"] for a in cleaned) == {"final":29,"tool_call":35}
+              tokens = _tokenize_completion_examples(processor, cleaned, max_length=1024, require_full_prompt=True)
+              assert len(tokens) == 64
+              assert all(any(i != -100 for i in t["labels"]) for t in tokens)
+              bad = lambda a: a["metadata"]["capability"] in {"failure_recovery","strategy_switch"} and a["metadata"]["action_type"] == "tool_call" and a["metadata"]["assistant_message_index"] == 2
+              assert sum(bad(x) for x in baseline) == 4
+              assert sum(bad(x) for x in cleaned) == 0
+              print("REAL_TOKENIZER_CPU_PREFLIGHT", json.dumps({"rows":len(rows),"source_actions":len(actions),"selected":len(cleaned),"v3b_failed_labels":4,"v3e_failed_labels":0,"max_length":max(len(t["input_ids"]) for t in tokens)}, sort_keys=True))
+          PY
