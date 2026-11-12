@@ -39,6 +39,9 @@ def test_noninteractive_remote_script_parses_and_only_claims_success_after_adapt
     assert 'Authorization' not in source
     assert 'prerequisite_colab_secret' not in source
     assert 'max_steps=400' in source
+    assert 'sys.path.insert(0,str(repo / "src"))' in source
+    assert source.index('sys.path.insert(0,str(repo / "src"))') < source.index("from gaia_small_agent.training.oracle_policy_v3")
+    assert '(repo / "src/gaia_small_agent/__init__.py").is_file()' in source
     assert 'total_trainable_actions' in source
     assert 'removed_intentionally_bad_actions' in source
     assert 'require_full_prompt=True' in source
