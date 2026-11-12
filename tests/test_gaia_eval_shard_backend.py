@@ -64,3 +64,12 @@ def test_eval_preflight_is_static_and_does_not_make_live_search(monkeypatch, tmp
     assert seen["workspace"] == tmp_path
     assert seen["live_search"] is False
     assert report["tool_names"] == ["search", "read", "inspect", "python"]
+
+
+def test_shadow_partition_is_explicit_opt_in():
+    base = [
+        "--hf-token", "token", "--shard-index", "0",
+        "--work-root", "runs/test", "--output", "runs/test.json",
+    ]
+    assert shard_eval.build_parser().parse_args(base).partition == "evaluation"
+    assert shard_eval.build_parser().parse_args(base + ["--partition", "shadow"]).partition == "shadow"
