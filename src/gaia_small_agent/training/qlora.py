@@ -648,12 +648,57 @@ def train_qlora(
 
         trainer_cls = NativeCausalLossSFTTrainer
 
-    trainer = trainer_cls(
-        model=language_model,
-        args=config,
-        train_dataset=dataset,
-        processing_class=tokenizer,
-    )
+    if runtime_defaults["trainer_loss_path"] == "native-t4":
+        # SFTTrainer attaches TRL's chunked-LM-head hooks during __init__,
+        # even when compute_loss is overridden. The hooks still call
+        # torch.addmm(out_dtype=float32) during backward, requiring CUDA SM80.
+        # Tesla T4 is SM75: bypass SFTTrainer entirely on this backend.
+        from transformers import Trainer, TrainingArguments
+
+        def collate_tokenized_actions(features):
+            from torch.nn.utils.rnn import pad_sequence
+
+            pad_id = tokenizer.pad_token_id
+            if pad_id is None:
+                pad_id = tokenizer.eos_token_id
+            if pad_id is None:
+                raise ValueError("Tokenizer lacks both pad_token_id and eos_token_id")
+            pad_values = {"input_ids": pad_id, "attention_mask": 0, "labels": -100}
+            return {
+                name: pad_sequence(
+                    [torch.tensor(row[name], dtype=torch.long) for row in features],
+                    batch_first=True, padding_value=padding_value,
+                )
+                for name, padding_value in pad_values.items()
+            }
+
+        native_args = {
+            key: value for key, value in config_kwargs.items()
+            if key not in {"max_length", "completion_only_loss", "loss_type"}
+        }
+        native_args["remove_unused_columns"] = False
+        # Already enabled on the frozen k-bit backbone, not via Trainer.
+        native_args["gradient_checkpointing"] = False
+        native_args["label_names"] = ["labels"]
+        print("QLORA_T4_TRAINER_BACKEND", {
+            "trainer": "transformers.Trainer",
+            "loss": "model-native causal LM cross entropy",
+            "trl_fused_head": False, "dtype": str(compute_dtype),
+        }, flush=True)
+        trainer = Trainer(
+            model=language_model,
+            args=TrainingArguments(**native_args),
+            train_dataset=dataset,
+            processing_class=tokenizer,
+            data_collator=collate_tokenized_actions,
+        )
+    else:
+        trainer = trainer_cls(
+            model=language_model,
+            args=config,
+            train_dataset=dataset,
+            processing_class=tokenizer,
+        )
     trainer.train(resume_from_checkpoint=str(resume_path) if resume_path else None)
     trainer.save_model(str(output_dir))
     tokenizer.save_pretrained(str(output_dir))
