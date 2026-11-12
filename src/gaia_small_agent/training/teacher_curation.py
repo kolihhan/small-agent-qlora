@@ -33,10 +33,13 @@ def _check_row(row: dict, protected_hashes: set[str], holdout_hashes: set[str], 
     source = str(row.get("source") or "")
     if not source or "gaia" in source.casefold():
         raise ValueError("forbidden_source")
-    if source.startswith("hotpotqa-distractor-") and source != "hotpotqa-distractor-train":
-        # Do not depend solely on a caller-supplied hash set to prevent
-        # accidental inclusion of public validation/held-out questions in SFT.
-        raise ValueError("forbidden_hotpot_holdout_split")
+    multi_hop_train_sources = {"hotpotqa-distractor-train", "2wikimultihopqa-train"}
+    if ((source.startswith("hotpotqa-distractor-") or
+         source.startswith("2wikimultihopqa-")) and
+        source not in multi_hop_train_sources):
+        # Explicit split pin: caller-supplied holdout hashes may be incomplete.
+        raise ValueError("forbidden_multihop_holdout_split")
+    grounded_multihop = source in multi_hop_train_sources
     verification = row.get("verification")
     if not isinstance(verification, dict) or any(verification.get(k) is not True for k in _REQUIRED_VERIFICATION):
         raise ValueError("unverified_process")
@@ -149,7 +152,7 @@ def _check_row(row: dict, protected_hashes: set[str], holdout_hashes: set[str], 
 
     if tool_calls < min_actions:
         raise ValueError("too_shallow")
-    if source.startswith("hotpotqa-distractor-"):
+    if grounded_multihop:
         # Three generic read calls are not proof of two-hop grounding.
         articles = {filename for filename in hotpot_read_sources
                     if filename.startswith("article_") and filename.endswith(".txt")}
@@ -179,7 +182,7 @@ def _check_row(row: dict, protected_hashes: set[str], holdout_hashes: set[str], 
         "observation_chars": tool_observation_chars,
         "hotpot_distinct_article_reads": len({
             x for x in hotpot_read_sources if x.startswith("article_") and x.endswith(".txt")
-        }) if source.startswith("hotpotqa-distractor-") else None,
+        }) if grounded_multihop else None,
     }
 
 
