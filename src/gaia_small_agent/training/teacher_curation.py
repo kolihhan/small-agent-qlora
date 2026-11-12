@@ -33,6 +33,10 @@ def _check_row(row: dict, protected_hashes: set[str], holdout_hashes: set[str], 
     source = str(row.get("source") or "")
     if not source or "gaia" in source.casefold():
         raise ValueError("forbidden_source")
+    if source.startswith("hotpotqa-distractor-") and source != "hotpotqa-distractor-train":
+        # Do not depend solely on a caller-supplied hash set to prevent
+        # accidental inclusion of public validation/held-out questions in SFT.
+        raise ValueError("forbidden_hotpot_holdout_split")
     verification = row.get("verification")
     if not isinstance(verification, dict) or any(verification.get(k) is not True for k in _REQUIRED_VERIFICATION):
         raise ValueError("unverified_process")
