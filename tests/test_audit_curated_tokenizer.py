@@ -31,7 +31,9 @@ def test_real_context_budget_is_measurement_not_silent_truncation():
     assert r["action_type_counts"]=={"final":1,"tool_call":2}
     assert r["fully_supported_tasks_at_1024"]==0
     assert r["fully_supported_tasks_at_2048"]==1
-    assert r["tasks_with_complete_final_action"]==1
+    assert r["tasks_with_final_action"]==1
+    assert r["final_actions_fit_1024"]==0
+    assert r["final_actions_fit_2048"]==1
     assert r["action_type_token_fit"]["final"]["fits_2048"]==1
     assert r["untruncated_training_ran"] is False
     assert r["gaia_evaluated"] is False
