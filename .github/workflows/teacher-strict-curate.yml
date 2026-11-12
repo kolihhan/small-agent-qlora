@@ -93,7 +93,10 @@ jobs:
           report=json.loads(Path("runs/teacher-strict-curated-summary.json").read_text())
           assert len(rows)==report["accepted_tasks"]>=6
           assert len({r["task_id"] for r in rows})==len(rows)
-          assert all(len(r["training_action_indices"])>=4 for r in rows)
+          # A native assistant turn may safely bundle two tool calls.
+          # Gate on observed tool depth, not number of model-completion turns.
+          assert all(r["selection_provenance"]["tool_calls"]>=3 for r in rows)
+          assert all(len(r["training_action_indices"])>=3 for r in rows)
           assert all(r["source"]=="hotpotqa-distractor-train" for r in rows)
           print("STRICT_CURATED_FINAL",json.dumps(report,sort_keys=True))
           PY
