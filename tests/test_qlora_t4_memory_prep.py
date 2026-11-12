@@ -144,3 +144,30 @@ def test_t4_native_trainer_args_preserve_optimization_and_strip_trl_hooks():
     assert "loss_type" not in actual
     assert "completion_only_loss" not in actual
     assert "max_length" not in actual
+
+
+def test_native_bf16_gate_checks_real_cuda_arch_even_when_torch_emulates_bf16():
+    from gaia_small_agent.training.qlora import _native_cuda_bf16_supported
+
+    def fake_torch(*, available, major, reports_bf16):
+        return SimpleNamespace(cuda=SimpleNamespace(
+            is_available=lambda: available,
+            current_device=lambda: 0,
+            get_device_capability=lambda idx: (major, 5 if major == 7 else 0),
+            is_bf16_supported=lambda: reports_bf16,
+        ))
+
+    # The exact failure: torch may report BF16 support on an SM75 T4
+    # via emulation, although TRL's BF16 backward GEMM requires SM80.
+    assert not _native_cuda_bf16_supported(fake_torch(
+        available=True, major=7, reports_bf16=True,
+    ))
+    assert not _native_cuda_bf16_supported(fake_torch(
+        available=True, major=8, reports_bf16=False,
+    ))
+    assert _native_cuda_bf16_supported(fake_torch(
+        available=True, major=8, reports_bf16=True,
+    ))
+    assert not _native_cuda_bf16_supported(fake_torch(
+        available=False, major=8, reports_bf16=True,
+    ))
