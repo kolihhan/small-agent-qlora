@@ -65,6 +65,8 @@ def test_full_trained_adapter_integrity_cannot_be_bypassed(tmp_path):
     bad=tmp_path/"malicious.zip"
     with zipfile.ZipFile(bad,"w") as z:
         z.writestr("../x","unsafe")
+        # Exercise the traversal guard AFTER the independent minimum-size gate.
+        z.writestr("padding.bin",b"x"*1048576)
     with pytest.raises(ValueError,match="unsafe"):
         assert_safe_adapter(bad,tmp_path/"bad")
 
