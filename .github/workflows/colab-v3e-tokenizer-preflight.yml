@@ -21,7 +21,7 @@ jobs:
       - name: Install tokenizer + pure CPU repo
         run: |
           python -m pip install -e ".[dev]"
-          python -m pip install "transformers>=5.15,<6"
+          python -m pip install "transformers>=5.15,<6" "jinja2>=3.1"
       - name: Tokenize exact real 9B v3E training exposure, fail before GPU if >1024
         env:
           HF_HUB_DISABLE_TELEMETRY: "1"
