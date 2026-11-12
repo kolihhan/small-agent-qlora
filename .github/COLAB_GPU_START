@@ -1,7 +1,7 @@
 MODE=smoke
-ATTEMPT=2026-11-12-T4-TRANSFORMERS-TRAINER-2STEP-SMOKE
+ATTEMPT=2026-11-12-T4-NATIVE-SM75-GATE-2STEP-SMOKE
 GPU=T4
 AUTH_PRECONDITION=google-user-adc-refresh
 NO_GPU_IF_AUTH_FAILS=true
-SOURCE=6dd363c2c71673578d5a183162acfb0020eb3ac4
-REASON=prove-backward-and-adapter-save-before-400-step-run
+SOURCE=2e51b2a6b7a4be6fc723a0dfbf35f5629b8ff350
+REASON=PyTorch-is_bf16_supported-can-report-emulated-BF16-on-SM75
