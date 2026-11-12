@@ -45,9 +45,11 @@ def analyze_examples(examples:list[dict],tokenizer,source_by_task:dict[str,str])
         if size<=1024:
             by_task[task_id]["fits_1024"]+=1
             by_action_fit[action_type]["fits_1024"]+=1
+            if action_type=="final":by_task[task_id]["final_fits_1024"]+=1
         if size<=2048:
             by_task[task_id]["fits_2048"]+=1
             by_action_fit[action_type]["fits_2048"]+=1
+            if action_type=="final":by_task[task_id]["final_fits_2048"]+=1
         for budget in (1024,1536,2048,4096):
             if size<=budget: by_source[source][f"fits_{budget}"]+=1
         if len(b)>1024:by_source[source]["completion_longer_than_t4_budget"]+=1
@@ -67,8 +69,12 @@ def analyze_examples(examples:list[dict],tokenizer,source_by_task:dict[str,str])
         "fully_supported_tasks_at_2048":sum(
             v["actions"]==v["fits_2048"] and v["final_seen"]==1
             for v in by_task.values()),
-        "tasks_with_complete_final_action":sum(
+        "tasks_with_final_action":sum(
             v["final_seen"]==1 for v in by_task.values()),
+        "final_actions_fit_1024":sum(
+            v["final_fits_1024"] for v in by_task.values()),
+        "final_actions_fit_2048":sum(
+            v["final_fits_2048"] for v in by_task.values()),
         "source_token_fit":{k:dict(sorted(v.items())) for k,v in sorted(by_source.items())},
         "max_total_tokens":max(sizes),
         "median_total_tokens":percentile(0.5),
