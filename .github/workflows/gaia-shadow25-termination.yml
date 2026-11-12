@@ -48,20 +48,6 @@ jobs:
           set -euo pipefail
           test -n "$HF_TOKEN" || { echo "HF_TOKEN_NOT_CONFIGURED"; exit 42; }
 
-      - name: Download and verify frozen model and llama-server
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p model matched-input/v3b matched-input/v3d /tmp/llama-bin
-          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf
-          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
-          curl -fL --retry 5 --retry-delay 3 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
-          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
-          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
-          test -n "$SERVER"
-          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
-
       - name: Download frozen v3B adapter
         uses: actions/download-artifact@v4
         with:
@@ -79,6 +65,20 @@ jobs:
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ env.V3D_RUN_ID }}
+
+      - name: Download and verify frozen model and llama-server
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model matched-input/v3b matched-input/v3d /tmp/llama-bin
+          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf
+          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
+          curl -fL --retry 5 --retry-delay 3 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
 
       - name: Verify adapter digests
         run: |
