@@ -70,6 +70,10 @@ def _check_row(row: dict, protected_hashes: set[str], holdout_hashes: set[str], 
                 available_tools.add(fun["name"])
     used_ids: set[str] = set()
     seen_calls: set[str] = set()
+    # HotpotQA acceptance is NOT only final-answer matching: require the model
+    # to have actually read an index and >=2 distinct local articles.
+    hotpot_read_sources: set[str] = set()
+    hotpot_article_observations: list[str] = []
     trainable: list[int] = []
     tool_calls = 0
     position = 0
@@ -114,19 +118,40 @@ def _check_row(row: dict, protected_hashes: set[str], holdout_hashes: set[str], 
         expected_ids = {str(call["id"]) for call in calls}
         if {str(m.get("tool_call_id")) for m in results} != expected_ids:
             raise ValueError("mismatched_tool_result")
-        for result in results:
+        for call, result in zip(calls, results):
             contents = result.get("content")
             if not isinstance(contents, str):
                 raise ValueError("invalid_tool_observation")
             if contents.startswith(("ToolError[", "ERROR[")):
                 raise ValueError("failed_tool_action")
             tool_observation_chars += len(contents)
+            function = call["function"]
+            if function["name"] == "read":
+                filename = function["arguments"].get("source")
+                if isinstance(filename, str):
+                    hotpot_read_sources.add(filename)
+                    if filename.startswith("article_") and filename.endswith(".txt"):
+                        hotpot_article_observations.append(contents)
         tool_calls += len(calls)
         trainable.append(position)
         position += len(calls) + 1
 
     if tool_calls < min_actions:
         raise ValueError("too_shallow")
+    if source.startswith("hotpotqa-distractor-"):
+        # Three generic read calls are not proof of two-hop grounding.
+        articles = {filename for filename in hotpot_read_sources
+                    if filename.startswith("article_") and filename.endswith(".txt")}
+        if "index.txt" not in hotpot_read_sources or len(articles) < 2:
+            raise ValueError("hotpot_missing_index_or_two_articles")
+        # For the initial extractive curriculum, reject correct-by-chance finals
+        # when the answer does not appear in either observed article. Yes/no and
+        # nonextractive answers need a separate evidence entailment verifier.
+        answer = expected.strip().casefold()
+        if answer in {"yes", "no"} or not any(
+            answer in observation.casefold() for observation in hotpot_article_observations
+        ):
+            raise ValueError("hotpot_answer_not_observed_or_nonextractive")
     if tool_calls != int(metrics.get("tool_calls", -1)):
         raise ValueError("tool_metric_mismatch")
     if tool_observation_chars == 0:
@@ -140,6 +165,9 @@ def _check_row(row: dict, protected_hashes: set[str], holdout_hashes: set[str], 
         "final_assistant_index": trainable[-1],
         "train_actions": len(trainable),
         "observation_chars": tool_observation_chars,
+        "hotpot_distinct_article_reads": len({
+            x for x in hotpot_read_sources if x.startswith("article_") and x.endswith(".txt")
+        }) if source.startswith("hotpotqa-distractor-") else None,
     }
 
 
