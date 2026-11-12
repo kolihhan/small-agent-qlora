@@ -37,7 +37,7 @@ def test_colab_notebook_parses_and_cannot_claim_training_before_model_save():
     assert f'SOURCE_SHA = "{EXPECTED_SOURCE}"' in entire
     assert 'checkout", "--detach", SOURCE_SHA' in entire
     assert "assert actual == SOURCE_SHA" in entire
-    assert "assert torch.cuda.is_available()" in entire
+    assert "assert torch.cuda.is_available()," in entire
     assert 'assert not ADAPTER.exists()' in entire
     assert 'profile="v3e-cleaned"' in entire or 'exposure_profile="v3e-cleaned"' in entire
     assert "deliberately_failed_first_call" in entire
