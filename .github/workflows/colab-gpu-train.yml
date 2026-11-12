@@ -127,21 +127,38 @@ jobs:
             colab --auth=adc stop -s "$session" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
-          echo "Starting official Colab CLI GPU job; model=Qwen3.5-9B full v4 QLoRA; accelerator=$COLAB_GPU"
-          # Capture any verified adapter even if DEV evaluation fails after SFT.
+          mode="$(sed -n 's/^MODE=//p' .github/COLAB_GPU_START | tail -n 1)"
+          case "$mode" in
+            smoke)
+              remote_script="scripts/colab_smoke_v4_remote.py"
+              remote_archive="/content/qlora-v4-smoke-adapter.zip"
+              local_archive="exported/qlora-v4-smoke-adapter.zip"
+              ;;
+            full)
+              remote_script="scripts/colab_full_v4_remote.py"
+              remote_archive="/content/qlora-full-v4-adapter.zip"
+              local_archive="exported/qlora-full-v4-adapter.zip"
+              ;;
+            *)
+              echo "Invalid Colab training mode; require explicit MODE=smoke or MODE=full"
+              exit 64
+              ;;
+          esac
+          echo "Starting official Colab CLI GPU job; model=Qwen3.5-9B; mode=$mode; accelerator=$COLAB_GPU"
+          # Capture only a verified adapter; smoke artifacts are named separately.
           # Keep the Colab VM alive until artifact recovery, then release via trap.
           set +e
-          colab --auth=adc run -s "$session" --gpu "$COLAB_GPU" --keep --timeout 0 "scripts/colab_full_v4_remote.py"
+          colab --auth=adc run -s "$session" --gpu "$COLAB_GPU" --keep --timeout 0 "$remote_script"
           remote_rc=$?
           set -e
           mkdir -p exported
-          colab --auth=adc download -s "$session" "/content/qlora-full-v4-adapter.zip" "exported/qlora-full-v4-adapter.zip" || echo "No verified adapter available for recovery"
+          colab --auth=adc download -s "$session" "$remote_archive" "$local_archive" || echo "No verified adapter available for recovery"
           colab --auth=adc log -s "$session" -o "exported/colab-execution.ipynb" || true
           if [ "$remote_rc" -ne 0 ]; then
             echo "Colab training/evaluation returned nonzero exit code $remote_rc; any verified adapter is preserved"
             exit "$remote_rc"
           fi
-          test -s "exported/qlora-full-v4-adapter.zip"
+          test -s "$local_archive"
           python - <<'PY'
           import hashlib,pathlib
           files=list(pathlib.Path("exported").glob("*.zip"))
