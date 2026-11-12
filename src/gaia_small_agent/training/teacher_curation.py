@@ -80,6 +80,7 @@ def _check_row(row: dict, protected_hashes: set[str], holdout_hashes: set[str], 
     hotpot_article_observations: list[str] = []
     trainable: list[int] = []
     tool_calls = 0
+    assistant_tool_turns = 0
     position = 0
     tool_observation_chars = 0
     while position < len(messages):
@@ -120,9 +121,14 @@ def _check_row(row: dict, protected_hashes: set[str], holdout_hashes: set[str], 
         if len(results) != len(calls) or any(not isinstance(m, dict) or m.get("role") != "tool" for m in results):
             raise ValueError("unpaired_tool_call")
         expected_ids = {str(call["id"]) for call in calls}
-        if {str(m.get("tool_call_id")) for m in results} != expected_ids:
+        observed_ids = [str(m.get("tool_call_id")) for m in results]
+        if set(observed_ids) != expected_ids or len(set(observed_ids)) != len(observed_ids):
             raise ValueError("mismatched_tool_result")
-        for call, result in zip(calls, results):
+        observed_by_id = {str(m["tool_call_id"]): m for m in results}
+        for call in calls:
+            result = observed_by_id[call["id"]]
+            if result.get("name") != call["function"]["name"]:
+                raise ValueError("mismatched_tool_result")
             contents = result.get("content")
             if not isinstance(contents, str):
                 raise ValueError("invalid_tool_observation")
@@ -137,6 +143,7 @@ def _check_row(row: dict, protected_hashes: set[str], holdout_hashes: set[str], 
                     if filename.startswith("article_") and filename.endswith(".txt"):
                         hotpot_article_observations.append(contents)
         tool_calls += len(calls)
+        assistant_tool_turns += 1
         trainable.append(position)
         position += len(calls) + 1
 
@@ -160,9 +167,10 @@ def _check_row(row: dict, protected_hashes: set[str], holdout_hashes: set[str], 
         raise ValueError("tool_metric_mismatch")
     if tool_observation_chars == 0:
         raise ValueError("missing_tool_evidence")
-    if len(trainable) != tool_calls + 1:
-        # Only single-call-per-turn traces are currently within contract.
-        raise ValueError("multi_call_turn_not_supported")
+    if len(trainable) != assistant_tool_turns + 1:
+        # One model-completion target per assistant turn, even when it executes
+        # multiple valid tools in parallel. This preserves native message shape.
+        raise ValueError("assistant_action_count_mismatch")
     return trainable, {
         "question_hash": h,
         "tool_calls": tool_calls,
