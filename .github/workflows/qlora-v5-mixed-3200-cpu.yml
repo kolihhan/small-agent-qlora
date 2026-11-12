@@ -1,0 +1,89 @@
+name: QLoRA v5 safe 4.8 percent real+synthetic mixed data CPU gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/verified-teacher-trajectory-v0-20261112]
+    paths: [.github/QLORA_V5_MIX_DATA_START]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  frozen-cpu-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - name: Check out pinned real-data mixer
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: 6cd45aa66c65c24196dce8bc65147f7a017b9d9c
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Verify source mixing code and all-or-nothing real trajectory invariants
+        run: |
+          set -euo pipefail
+          python -m pip install -e ".[dev,eval,files]"
+          python -m pip install 'transformers>=5.15,<6' 'jinja2>=3.1' 'sentencepiece>=0.2'
+          python -m pytest -q tests/test_prepare_qlora_v5_real_mix.py \
+            tests/test_filter_real_2048_tasks.py tests/test_teacher_curation.py
+      - name: Download 39 frozen real whole-task source with 2048 checks
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          run-id: 43269944513
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: real-multisource-complete-2048-training-preflight
+          path: runs/real
+      - name: Rebuild protected GAIA hashes from actual validation identities
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          python - <<'PY'
+          from gaia_small_agent.benchmark.gaia100 import load_validation
+          from gaia_small_agent.training.protection import build_protected_question_hashes
+          hashes=build_protected_question_hashes(
+              load_validation(token=None),"runs/gaia-protected-hashes.json")
+          assert len(hashes)>=100
+          print("GAIA_PROTECTION_SOURCE_COUNT",len(hashes))
+          PY
+      - name: Construct 3200-action mixed candidate and validate FULL 2048 prompt tokens
+        run: |
+          set -euo pipefail
+          python -m scripts.prepare_qlora_v5_real_mix \
+            --real-source runs/real/real-multisource-2048-complete-tasks.jsonl \
+            --protected runs/gaia-protected-hashes.json \
+            --output runs/qlora-v5-real-4p8percent-3200.jsonl \
+            --report runs/qlora-v5-real-4p8percent-summary.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          x=json.loads(Path("runs/qlora-v5-real-4p8percent-summary.json").read_text())
+          assert x["target_supervised_actions"]==3200
+          assert x["real_source_tasks"]==39 and x["real_source_actions"]==154
+          assert x["removed_synthetic_tasks"]==77
+          assert x["removed_synthetic_actions"]==154
+          assert x["retained_synthetic_actions"]==3046
+          assert x["unique_mixed_tasks"]==1562
+          assert x["real_action_fraction"] <=0.05
+          assert x["real_task_oversampling_factor"]==1
+          assert x["max_length"]==2048 and x["require_full_prompt"] is True
+          assert x["training_ran"] is False and x["gaia_evaluated"] is False
+          print("QLORA_V5_CPU_MIX_READY",json.dumps({
+            k:v for k,v in x.items() if k not in ("synthetic_capabilities_after","omitted_synthetic_capabilities")
+          },sort_keys=True))
+          PY
+      - name: Upload reproducible candidate data, no adapter or benchmark answers
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qlora-v5-mixed-3200-sft-candidate
+          path: |
+            runs/qlora-v5-real-4p8percent-3200.jsonl
+            runs/qlora-v5-real-4p8percent-summary.json
+          if-no-files-found: error
+          retention-days: 30
