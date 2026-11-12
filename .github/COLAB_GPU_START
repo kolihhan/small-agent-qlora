@@ -1,6 +1,7 @@
-ATTEMPT=2026-11-12-QLORA-T4-NATIVE-LOSS-4
+MODE=smoke
+ATTEMPT=2026-11-12-T4-TRANSFORMERS-TRAINER-2STEP-SMOKE
 GPU=T4
 AUTH_PRECONDITION=google-user-adc-refresh
 NO_GPU_IF_AUTH_FAILS=true
-SOURCE=b6e4cba821ccfdde67f9b8ed08c167d027ffe5e6
-REASON=fix-trl-chunked-logprob-sm80-only-backward
+SOURCE=6dd363c2c71673578d5a183162acfb0020eb3ac4
+REASON=prove-backward-and-adapter-save-before-400-step-run
