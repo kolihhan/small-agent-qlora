@@ -9,7 +9,40 @@ import pytest
 
 from gaia_small_agent.training.protection import question_hash
 from scripts.assemble_multisource_teacher import assemble
-from tests.test_teacher_curation import make_row
+def make_row(task_id="task-a::sample-1", ntools=3):
+    messages = [
+        {"role": "system", "content": "Read source files and answer with evidence."},
+        {"role": "user", "content": "Which source holds the archive CANON?"},
+    ]
+    for step in range(ntools):
+        cid = f"tool-{step}"
+        messages += [
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": cid, "type": "function", "function": {
+                    "name": "read", "arguments": {"source": f"file-{step}.txt"}}}
+            ]},
+            {"role": "tool", "tool_call_id": cid, "name": "read",
+             "content": f"file-{step + 1}.txt; archive token CANON-997"},
+        ]
+    messages.append({"role": "assistant", "content": "CANON-997"})
+    return {
+        "task_id": task_id,
+        "source": "independent-offline-tool-rollout",
+        "expected_answer": "CANON-997",
+        "verified": True,
+        "provenance": {
+            "license": "CC0-1.0", "generator": "synthetic-tests",
+            "generator_version": "1", "oracle_type": "exact", "oracle_version": "1",
+        },
+        "verification": {
+            "completed": True, "final_answer_correct": True,
+            "zero_duplicate_blocks": True, "required_tools_satisfied": True,
+            "provenance_complete": True, "zero_tool_errors": True,
+        },
+        "metrics": {"tool_calls": ntools, "tool_errors": 0, "duplicate_calls_blocked": 0},
+        "tools": [{"type": "function", "function": {"name": "read"}}],
+        "messages": messages,
+    }
 
 
 def _make_teacher(task_id, source, question):
