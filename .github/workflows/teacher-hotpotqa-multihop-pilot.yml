@@ -1,4 +1,4 @@
-name: QLoRA independent HotpotQA teacher rollouts pilot (no training)
+name: QLoRA HotpotQA heldout-disjoint teacher rollout scale pilot (no training)
 
 on:
   workflow_dispatch:
@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m scripts.prepare_hotpotqa_tool_tasks \
-            --split train --offset 0 --count 40 --limit "$PILOT_TASKS" \
+            --split train --offset "$((40 * (SHARD + 1)))" --count 40 --limit "$PILOT_TASKS" \
             --output runs/hotpot-train.jsonl --report runs/hotpot-train-meta.json
           python -m scripts.prepare_hotpotqa_tool_tasks \
             --split validation --offset 0 --count 40 --limit "$PILOT_TASKS" \
@@ -75,8 +75,8 @@ jobs:
           if any(question_hash(x["question"]) in holdout or question_hash(x["question"]) in protected for x in all_rows):
               raise ValueError("train split overlaps GAIA or Hotpot validation question")
           shard = int(os.environ["SHARD"])
-          selected = [row for i, row in enumerate(all_rows) if i % 4 == shard]
-          if len(all_rows) != 24 or len(selected) != 6:
+          selected = all_rows  # Each shard loads a distinct TRAIN page; never discard 75%.
+          if len(all_rows) != 24 or len(selected) != 24:
               raise ValueError("wrong frozen pilot task count")
           Path(f"runs/teacher-trials-{shard}.jsonl").write_text(
               "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in selected), encoding="utf-8"
@@ -124,7 +124,7 @@ jobs:
               work_root=f"runs/teacher-work-{shard}",
               protected_questions_path="runs/gaia-protected-hashes.json",
           )
-          assert stats["total"] == 6
+          assert stats["total"] == 24
           assert stats["rejected_gaia"] == 0 and stats.get("rejected_protected",0) == 0
           print("SHARD_TEACHER_PILOT_SUMMARY", json.dumps({"shard":shard, **stats}, sort_keys=True))
           PY
@@ -165,7 +165,7 @@ jobs:
           for shard in range(4):
               prefix = f"teacher-verified-{shard}.jsonl"
               summary = json.loads((parent / (prefix + ".summary.json")).read_text())
-              assert summary["total"] == 6
+              assert summary["total"] == 24
               total += summary["total"]
               rows = [json.loads(x) for x in (parent / prefix).read_text().splitlines() if x.strip()]
               assert len(rows) == summary["verified"]
@@ -180,7 +180,7 @@ jobs:
                   assert row["verification"]["zero_tool_errors"] is True
               per_shard[str(shard)] = summary
               accepted.extend(rows)
-          assert total == 24
+          assert total == 96
           deep = [row for row in accepted if row["metrics"]["tool_calls"] >= 3]
           unique_deep = len({row["task_id"].split("::sample-",1)[0] for row in deep})
           report = {
@@ -189,8 +189,12 @@ jobs:
               "verified_tool_depth_ge3": len(deep),
               "independent_deep_task_count": unique_deep,
               "temperature": 0.45, "trial_count_per_task": 2,
+              "distinct_train_offsets": [40, 80, 120, 160],
+              "task_count": 48,
+              "validation_split": "hotpotqa-distractor-validation",
               "true_gaia_protection_used": True,
               "scorer": "exact short answer plus clean observed read-tool events",
+              "purpose": "independent multi-hop trajectory acceptance preflight, not SFT",
               "ready_for_full_training_data": len(deep) >= 8 and unique_deep >= 6,
               "limitations": "Pilot data quality check only; no adapter trained and no external GAIA score",
               "per_shard": per_shard,
