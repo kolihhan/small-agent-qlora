@@ -1,0 +1,108 @@
+name: Curate completed HotpotQA observed trajectories with strict evidence gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/verified-teacher-trajectory-v0-20261112]
+    paths: [.github/TEACHER_STRICT_CURATE_START]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  curate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install agent and pinned data-preparation prerequisites
+        run: |
+          python -m pip install -e ".[dev,eval,files]"
+          python -m pip install 'pyarrow>=18,<24'
+      - name: Download actual completed 96-run teacher shard artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          run-id: 43235221069
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          pattern: hotpot-teacher-shard-*
+          path: runs/teacher-shards
+          merge-multiple: true
+      - name: Build actual GAIA protected hashes (never upload source questions)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          python - <<'PY'
+          from gaia_small_agent.benchmark.gaia100 import load_validation
+          from gaia_small_agent.training.protection import build_protected_question_hashes
+          hashes=build_protected_question_hashes(load_validation(token=None),"runs/gaia-protected-hashes.json")
+          assert len(hashes)>=100
+          print("GAIA_VALIDATION_PROTECTED",len(hashes))
+          PY
+      - name: Create independent HotpotQA validation question exclusion set
+        run: |
+          set -euo pipefail
+          python -m scripts.prepare_hotpotqa_tool_tasks \
+            --split validation --offset 0 --count 40 --limit 12 \
+            --output runs/hotpot-validation.jsonl \
+            --holdout-hashes runs/hotpot-validation-hashes.json \
+            --report runs/hotpot-validation-meta.json
+      - name: Combine 44 actual observed verified samples (no generated substitute)
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          source=Path("runs/teacher-shards")
+          rows=[]
+          for shard in range(4):
+              name=f"teacher-verified-{shard}.jsonl"
+              path=source/name
+              sample=[json.loads(x) for x in path.read_text().splitlines() if x.strip()]
+              meta=json.loads((source/(name+".summary.json")).read_text())
+              assert len(sample)==meta["verified"]
+              assert meta["total"]==24
+              rows.extend(sample)
+          assert len(rows)==44
+          assert len({r["task_id"] for r in rows})==44
+          Path("runs/all-verified-rollouts.jsonl").write_text(
+              "".join(json.dumps(r,ensure_ascii=False)+"\n" for r in rows))
+          print("OBSERVED_VERIFIED_ROWS",len(rows))
+          PY
+      - name: Run actual strict repository curator with GAIA+Hotpot exclusions
+        run: |
+          set -euo pipefail
+          python -m gaia_small_agent.training.teacher_curation \
+            --input runs/all-verified-rollouts.jsonl \
+            --protected runs/gaia-protected-hashes.json \
+            --holdout-hashes runs/hotpot-validation-hashes.json \
+            --min-actions 3 --min-long-trajectories 6 \
+            --output runs/teacher-strict-curated.jsonl \
+            --report runs/teacher-strict-curated-summary.json
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          p=Path("runs/teacher-strict-curated.jsonl")
+          rows=[json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+          report=json.loads(Path("runs/teacher-strict-curated-summary.json").read_text())
+          assert len(rows)==report["accepted_tasks"]>=6
+          assert len({r["task_id"] for r in rows})==len(rows)
+          assert all(len(r["training_action_indices"])>=4 for r in rows)
+          assert all(r["source"]=="hotpotqa-distractor-train" for r in rows)
+          print("STRICT_CURATED_FINAL",json.dumps(report,sort_keys=True))
+          PY
+      - name: Archive only curated training trajectories and safe rejection counts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hotpot-teacher-strict-curated
+          path: |
+            runs/teacher-strict-curated.jsonl
+            runs/teacher-strict-curated-summary.json
+          if-no-files-found: error
+          retention-days: 30
