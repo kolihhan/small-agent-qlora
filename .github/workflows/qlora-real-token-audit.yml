@@ -1,0 +1,77 @@
+name: Audit real QLoRA 40-task native tokenizer context without GPU
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/verified-teacher-trajectory-v0-20261112]
+    paths: [.github/QLORA_TOKEN_AUDIT_START]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install tokenizer and non-GPU source/audit dependencies
+        run: |
+          python -m pip install -e ".[dev,eval,files]"
+          python -m pip install 'transformers>=5.15,<6' 'jinja2>=3.1' 'sentencepiece>=0.2'
+          python -m pytest -q tests/test_audit_curated_tokenizer.py tests/test_teacher_curation.py
+      - name: Download only verified 40-task curated data from successful source run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          run-id: 43249410666
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: teacher-multisource-strict-curated
+          path: runs/source
+      - name: Rebuild protected GAIA validation identifiers (never upload them)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          python - <<'PY'
+          from gaia_small_agent.benchmark.gaia100 import load_validation
+          from gaia_small_agent.training.protection import build_protected_question_hashes
+          hashes=build_protected_question_hashes(
+              load_validation(token=None),"runs/gaia-protected-hashes.json")
+          assert len(hashes)>=100
+          print("GAIA_PROTECTION_VERIFIED",len(hashes))
+          PY
+      - name: Audit real native 9B QLoRA prompt-completion lengths on 40 curated tasks
+        run: |
+          set -euo pipefail
+          python -m scripts.audit_curated_tokenizer \
+            --data runs/source/multi-source-strict-curated.jsonl \
+            --protected runs/gaia-protected-hashes.json \
+            --expected-tasks 40 --expected-actions 164 \
+            --model Qwen/Qwen3.5-9B \
+            --output runs/real-teacher-token-audit.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          x=json.loads(Path("runs/real-teacher-token-audit.json").read_text())
+          assert x["unique_tasks"]==40 and x["native_train_actions"]==164
+          assert x["source_families"]=={
+            "hotpotqa-distractor-train":36,
+            "2wikimultihopqa-train":4,
+          }
+          assert x["untruncated_training_ran"] is False
+          print("REAL_DATA_GOLD_BLIND_CONTEXT_GATE",x["fits_t4_1024"],"/164",
+                "fit fully in QLoRA T4 context")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: real-multisource-qwen9b-token-audit
+          path: runs/real-teacher-token-audit.json
+          if-no-files-found: error
+          retention-days: 30
