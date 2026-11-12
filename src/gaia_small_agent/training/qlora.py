@@ -361,6 +361,18 @@ def _cpu_safe_compute_loss(model, inputs: dict, *, return_outputs: bool = False)
     return (loss, outputs) if return_outputs else loss
 
 
+def _native_cuda_bf16_supported(torch) -> bool:
+    """Require an actual SM80+ CUDA device, not PyTorch's BF16 emulation.
+
+    torch.cuda.is_bf16_supported() may report True for BF16 emulation on an
+    SM75 Tesla T4. TRL's chunked head still uses an SM80-only BF16 GEMM.
+    """
+    if not torch.cuda.is_available():
+        return False
+    major, _minor = torch.cuda.get_device_capability(torch.cuda.current_device())
+    return major >= 8 and bool(torch.cuda.is_bf16_supported())
+
+
 def _training_runtime_defaults(*, cuda_available: bool, cuda_bf16_supported: bool) -> dict[str, Any]:
     # TRL's chunked_logprob backward calls torch.addmm(out_dtype=float32), which
     # requires SM80+. T4 is SM75 even when the model loads in float16.
@@ -503,7 +515,13 @@ def train_qlora(
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     cuda_available = torch.cuda.is_available()
-    cuda_bf16_supported = bool(cuda_available and torch.cuda.is_bf16_supported())
+    cuda_bf16_supported = _native_cuda_bf16_supported(torch)
+    if cuda_available:
+        print("QLORA_CUDA_PRECISION_GATE", {
+            "compute_capability": torch.cuda.get_device_capability(torch.cuda.current_device()),
+            "bf16_native_supported": cuda_bf16_supported,
+            "selected_trainer": "trl-fused" if cuda_bf16_supported else "transformers.Trainer",
+        }, flush=True)
     runtime_defaults = _training_runtime_defaults(
         cuda_available=cuda_available,
         cuda_bf16_supported=cuda_bf16_supported,
