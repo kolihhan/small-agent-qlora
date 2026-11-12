@@ -163,3 +163,45 @@ def test_hotpot_evidence_gate_does_not_change_other_task_families():
     rows, report = curate_teacher_rows([row], protected_hashes={"protected"}, holdout_hashes=set())
     assert report["accepted_tasks"] == 1
     assert rows[0]["selection_provenance"]["candidate_count"] == 1
+
+
+def test_safe_multicall_assistant_turn_is_one_native_sft_completion():
+    row = make_row("parallel-tools::sample-1", ntools=3)
+    # Assistant turn at index 4 legitimately batches TWO independent read
+    # calls; both actual tool observations follow before final answer.
+    row["messages"][4]["tool_calls"].append(row["messages"][6]["tool_calls"][0])
+    del row["messages"][6]
+    indices, stats = _check_row(row, {"protected"}, set(), min_actions=3)
+    assert indices == [2, 4, 7]
+    assert stats["tool_calls"] == 3
+    curated, report = curate_teacher_rows(
+        [row], protected_hashes={"protected"}, holdout_hashes=set(),
+    )
+    assert len(curated) == report["accepted_tasks"] == 1
+    assert curated[0]["training_action_indices"] == [2, 4, 7]
+    assert len(_render_turn_examples(NativeShapeTokenizer(), curated)) == 3
+
+    reordered = deepcopy(row)
+    reordered["messages"][5], reordered["messages"][6] = (
+        reordered["messages"][6], reordered["messages"][5]
+    )
+    indices, _ = _check_row(reordered, {"protected"}, set(), 3)
+    assert indices == [2, 4, 7]  # Tool results matched by call ID, not offset.
+
+    mismatched = deepcopy(row)
+    mismatched["messages"][6]["name"] = "search"
+    with pytest.raises(ValueError, match="mismatched_tool_result"):
+        _check_row(mismatched, {"protected"}, set(), 3)
+
+
+def test_hotpot_parallel_article_reads_preserve_two_article_grounding():
+    row = make_row("hotpot-parallel::sample-1", ntools=3)
+    row["source"] = "hotpotqa-distractor-train"
+    row["messages"][2]["tool_calls"][0]["function"]["arguments"]["source"] = "index.txt"
+    row["messages"][4]["tool_calls"][0]["function"]["arguments"]["source"] = "article_00.txt"
+    row["messages"][6]["tool_calls"][0]["function"]["arguments"]["source"] = "article_01.txt"
+    row["messages"][4]["tool_calls"].append(row["messages"][6]["tool_calls"][0])
+    del row["messages"][6]
+    indices, stats = _check_row(row, {"protected"}, set(), 3)
+    assert indices == [2, 4, 7]
+    assert stats["hotpot_distinct_article_reads"] == 2
