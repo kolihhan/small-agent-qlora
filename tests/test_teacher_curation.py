@@ -117,3 +117,43 @@ def test_min_depth_gate_fails_and_only_one_unique_question_can_enter_training():
     )
     assert len(selected) == 1
     assert stats["rejected_reasons"]["duplicate_question_across_tasks"] == 1
+
+
+def test_hotpot_requires_observed_multi_article_evidence():
+    row = make_row("hotpot-multihop::sample-1", ntools=3)
+    row["source"] = "hotpotqa-distractor-train"
+    for pos, filename in [(2, "index.txt"), (4, "article_00.txt"), (6, "article_01.txt")]:
+        row["messages"][pos]["tool_calls"][0]["function"]["arguments"]["source"] = filename
+
+    kept, stats = _check_row(row, {"protected"}, set(), min_actions=3)
+    assert kept == [2, 4, 6, 8]
+    assert stats["hotpot_distinct_article_reads"] == 2
+
+    no_index = deepcopy(row)
+    no_index["messages"][2]["tool_calls"][0]["function"]["arguments"]["source"] = "article_02.txt"
+    with pytest.raises(ValueError, match="hotpot_missing_index_or_two_articles"):
+        _check_row(no_index, {"protected"}, set(), 3)
+
+    one_article = deepcopy(row)
+    one_article["messages"][6]["tool_calls"][0]["function"]["arguments"]["source"] = "unrelated.txt"
+    with pytest.raises(ValueError, match="hotpot_missing_index_or_two_articles"):
+        _check_row(one_article, {"protected"}, set(), 3)
+
+    unsupported_final = deepcopy(row)
+    unsupported_final["messages"][5]["content"] = "No matching answer here"
+    unsupported_final["messages"][7]["content"] = "No matching answer in this article"
+    with pytest.raises(ValueError, match="hotpot_answer_not_observed_or_nonextractive"):
+        _check_row(unsupported_final, {"protected"}, set(), 3)
+
+    nonextractive = deepcopy(row)
+    nonextractive["expected_answer"] = "yes"
+    nonextractive["messages"][-1]["content"] = "yes"
+    with pytest.raises(ValueError, match="hotpot_answer_not_observed_or_nonextractive"):
+        _check_row(nonextractive, {"protected"}, set(), 3)
+
+
+def test_hotpot_evidence_gate_does_not_change_other_task_families():
+    row = make_row("generic::sample-1", ntools=3)
+    rows, report = curate_teacher_rows([row], protected_hashes={"protected"}, holdout_hashes=set())
+    assert report["accepted_tasks"] == 1
+    assert rows[0]["selection_provenance"]["candidate_count"] == 1
