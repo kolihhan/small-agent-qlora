@@ -17,7 +17,7 @@ import sys
 import time
 import zipfile
 
-SOURCE_SHA = "b6e4cba821ccfdde67f9b8ed08c167d027ffe5e6"
+SOURCE_SHA = "6dd363c2c71673578d5a183162acfb0020eb3ac4"
 SOURCE_BRANCH = "fix/qlora-v4-t4-4bit-memory-20261112"
 MODEL = "Qwen/Qwen3.5-9B"
 OUT = Path("/content/qlora-full-v4-remote")
