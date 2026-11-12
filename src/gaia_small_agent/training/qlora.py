@@ -377,6 +377,23 @@ def _training_runtime_defaults(*, cuda_available: bool, cuda_bf16_supported: boo
     }
 
 
+def _native_t4_training_args(config_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Transfer compatible settings to pure Transformers Trainer on SM75 GPUs.
+
+    SFTConfig/SFTTrainer installs a fused LM-head hook whose backward is not
+    implemented on T4. A mere SFTTrainer.compute_loss override is insufficient.
+    Preserve every actual optimization setting; never carry TRL-only settings.
+    """
+    args = {
+        key: value for key, value in config_kwargs.items()
+        if key not in {"max_length", "completion_only_loss", "loss_type"}
+    }
+    args["remove_unused_columns"] = False
+    args["gradient_checkpointing"] = False  # already enabled on frozen k-bit model
+    args["label_names"] = ["labels"]
+    return args
+
+
 def _normalize_lora_target_modules(value: str | list[str]) -> str | list[str]:
     if isinstance(value, str):
         stripped = value.strip()
@@ -672,14 +689,7 @@ def train_qlora(
                 for name, padding_value in pad_values.items()
             }
 
-        native_args = {
-            key: value for key, value in config_kwargs.items()
-            if key not in {"max_length", "completion_only_loss", "loss_type"}
-        }
-        native_args["remove_unused_columns"] = False
-        # Already enabled on the frozen k-bit backbone, not via Trainer.
-        native_args["gradient_checkpointing"] = False
-        native_args["label_names"] = ["labels"]
+        native_args = _native_t4_training_args(config_kwargs)
         print("QLORA_T4_TRAINER_BACKEND", {
             "trainer": "transformers.Trainer",
             "loss": "model-native causal LM cross entropy",
