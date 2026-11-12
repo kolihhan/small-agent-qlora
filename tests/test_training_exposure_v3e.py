@@ -2,7 +2,16 @@
 from collections import Counter
 import json
 
-from tests.test_training_exposure_v3b import NativeShapeTokenizer
+class NativeShapeTokenizer:
+    def apply_chat_template(self, messages, **kwargs):
+        def dump(value):
+            return json.dumps(value, sort_keys=True, separators=(",", ":"))
+        if kwargs.get("add_generation_prompt"):
+            return dump(messages) + "<assistant>"
+        if messages and messages[-1].get("role") == "assistant":
+            return dump(messages[:-1]) + "<assistant>" + dump(messages[-1])
+        return dump(messages)
+
 
 
 def test_v3e_excludes_failed_first_action_labels_while_preserving_64_step_mix(tmp_path):
