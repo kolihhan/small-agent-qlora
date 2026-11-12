@@ -1,0 +1,15 @@
+EVALUATION=GAIA_Shadow25
+MODEL=Qwen/Qwen3.5-9B
+COMPARE=Base,full-v4-LoRA
+REQUIRE_TRAINING_RUN=43253664558
+REQUIRE_SOURCE_SUCCESS=true
+REQUIRE_FULL_400_OPTIMIZER_STEPS=true
+FORBID_SMOKE_ADAPTER=true
+EVAL_ONLY_NO_TRAINING=true
+DATA_PARTITION=shadow-disjoint-from-previous-GAIA-Evaluation100-and-Diagnostic25
+GPU_SLOT_GATE=0_active_assignments
+BACKEND=transformers
+MAX_STEPS=12
+MAX_NEW_TOKENS=256
+MODEL_PAIRING=same-runtime-same-25-questions
+OUTPUT=privacy-safe-paired-summary
