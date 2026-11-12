@@ -52,7 +52,11 @@ def main() -> None:
     assert actual == SOURCE_SHA, "Repository revision mismatch"
     run(sys.executable,"-m","pip","install","-q","-e",
         str(repo)+"[train,dev,files]","jinja2>=3.1")
+    # IPython/Colab kernels do not reload editable-install .pth files mid-session.
+    # This repository uses setuptools src/ layout: explicitly expose it now.
+    sys.path.insert(0,str(repo / "src"))
     sys.path.insert(0,str(repo))
+    assert (repo / "src/gaia_small_agent/__init__.py").is_file()
 
     from gaia_small_agent.training.oracle_policy_v3 import generate_oracle_policy_v3_dataset
     from gaia_small_agent.training.qlora import (
