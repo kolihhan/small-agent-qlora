@@ -422,6 +422,28 @@ def _prepare_4bit_model_preserving_large_half_weights(
     return model
 
 
+
+def _qlora_model_load_kwargs(
+    model_name: str, *, quantization_config: Any,
+    memory_safe_half_weights: bool, compute_dtype: Any,
+) -> dict[str, Any]:
+    """Load unquantized frozen tensors in an actual T4-supported dtype.
+
+    Some Qwen3.5 checkpoints declare bfloat16. With large frozen tensors kept
+    in half precision to avoid OOM, that default can produce unsupported BF16
+    backward GEMMs on compute capability 7.5 (T4). Pin float16 at load time
+    when the memory-safe T4 path is active; leave legacy loads unchanged.
+    """
+    kwargs: dict[str, Any] = {
+        "quantization_config": quantization_config,
+        "device_map": "auto",
+        "trust_remote_code": True,
+    }
+    if memory_safe_half_weights:
+        kwargs["dtype"] = compute_dtype
+    return kwargs
+
+
 def train_qlora(
     data_path: str | Path,
     output_dir: str | Path,
@@ -470,9 +492,12 @@ def train_qlora(
     )
     language_model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        quantization_config=bnb,
-        device_map="auto",
-        trust_remote_code=True,
+        **_qlora_model_load_kwargs(
+            model_name,
+            quantization_config=bnb,
+            memory_safe_half_weights=preserve_large_half_parameters and cuda_available,
+            compute_dtype=compute_dtype,
+        ),
     )
     if preserve_large_half_parameters and cuda_available:
         language_model = _prepare_4bit_model_preserving_large_half_weights(
