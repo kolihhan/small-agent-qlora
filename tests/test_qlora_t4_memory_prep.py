@@ -113,3 +113,34 @@ def test_t4_uses_native_loss_instead_of_sm80_only_trl_fused_gemm():
     cpu = _training_runtime_defaults(cuda_available=False, cuda_bf16_supported=False)
     assert cpu["trainer_loss_path"] == "native-cpu"
     assert cpu["use_gradient_checkpointing"] is False
+
+
+def test_t4_native_trainer_args_preserve_optimization_and_strip_trl_hooks():
+    from gaia_small_agent.training.qlora import _native_t4_training_args
+
+    source = {
+        "output_dir": "test-output",
+        "learning_rate": 1e-4,
+        "max_steps": 2,
+        "save_steps": 1,
+        "save_strategy": "steps",
+        "per_device_train_batch_size": 1,
+        "gradient_accumulation_steps": 1,
+        "max_length": 1024,
+        "completion_only_loss": False,
+        "loss_type": "nll",
+        "fp16": True,
+        "bf16": False,
+    }
+    original = dict(source)
+    actual = _native_t4_training_args(source)
+    assert source == original
+    assert actual["max_steps"] == 2
+    assert actual["gradient_accumulation_steps"] == 1
+    assert actual["fp16"] is True and actual["bf16"] is False
+    assert actual["label_names"] == ["labels"]
+    assert actual["remove_unused_columns"] is False
+    assert actual["gradient_checkpointing"] is False
+    assert "loss_type" not in actual
+    assert "completion_only_loss" not in actual
+    assert "max_length" not in actual
