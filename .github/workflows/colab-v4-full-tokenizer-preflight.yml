@@ -1,0 +1,51 @@
+name: Full 3200-action QLoRA v4 real tokenizer CPU preflight
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/verified-teacher-trajectory-v0-20261112]
+    paths:
+      - 'notebooks/colab_qlora_v4_full_sft.ipynb'
+      - 'scripts/prepare_full_qlora_v4.py'
+      - '.github/workflows/colab-v4-full-tokenizer-preflight.yml'
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install tokenizer and source (no GPU/model weights)
+        run: |
+          python -m pip install -e ".[dev]" "transformers>=5.15,<6" "jinja2>=3.1"
+      - name: Verify all 3200 clean actions under full 2048-token context
+        run: |
+          python - <<'PY'
+          import json,tempfile
+          from pathlib import Path
+          from transformers import AutoTokenizer
+          from gaia_small_agent.training.oracle_policy_v3 import generate_oracle_policy_v3_dataset
+          from gaia_small_agent.training.qlora import _render_turn_examples, _tokenize_completion_examples
+          from scripts.prepare_full_qlora_v4 import prepare_full_clean_train
+          with tempfile.TemporaryDirectory() as root:
+              paths=generate_oracle_policy_v3_dataset(Path(root),seed="small-agent-policy-v3")
+              rows=[json.loads(line) for line in paths["train"].read_text().splitlines()]
+              clean,report=prepare_full_clean_train(rows)
+              assert len(rows)==len(clean)==1600
+              assert report["removed_intentionally_bad_actions"]==400
+              assert report["total_trainable_actions"]==3200
+              tokenizer=AutoTokenizer.from_pretrained("Qwen/Qwen3.5-9B",trust_remote_code=True)
+              actions=_render_turn_examples(tokenizer,clean)
+              assert len(actions)==3200
+              enc=_tokenize_completion_examples(tokenizer,actions,max_length=2048,require_full_prompt=True)
+              assert len(enc)==3200
+              assert all(any(label!=-100 for label in ex["labels"]) for ex in enc)
+              max_size=max(len(ex["input_ids"]) for ex in enc)
+              print("REAL_QWEN9B_FULL_QLORA_PREFLIGHT",
+                    json.dumps({"tasks":1600,"clean_actions":3200,"bad_actions_removed":400,
+                                "max_actual_tokens":max_size,"max_allowed":2048,"full_context":True},sort_keys=True))
+          PY
