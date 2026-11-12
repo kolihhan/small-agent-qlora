@@ -9,7 +9,7 @@ on:
         options: [L4, T4, A100]
         default: T4
   push:
-    branches: [research/verified-teacher-trajectory-v0-20261112]
+    branches: [research/verified-teacher-trajectory-v0-20261112, fix/qlora-v4-t4-4bit-memory-20261112]
     paths: [.github/COLAB_GPU_START]
 permissions:
   contents: read
