@@ -1,0 +1,79 @@
+name: Teacher trajectory curation CPU preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/verified-teacher-trajectory-v0-20261112]
+    paths:
+      - 'src/gaia_small_agent/training/qlora.py'
+      - 'src/gaia_small_agent/training/teacher_curation.py'
+      - 'scripts/audit_v3b_training_labels.py'
+      - 'scripts/prepare_teacher_trials.py'
+      - 'tests/test_teacher_curation.py'
+      - 'tests/test_training_action_audit.py'
+      - 'tests/test_hotpotqa_tool_tasks.py'
+      - 'scripts/prepare_hotpotqa_tool_tasks.py'
+      - '.github/workflows/teacher-trajectory-curation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install project
+        run: python -m pip install -e ".[dev,files,search]"
+      - name: Audit actual frozen v3B selected labels
+        run: python -m scripts.audit_v3b_training_labels --output runs/v3b-frozen-action-audit.json
+      - name: Run focused trajectory and training tests
+        run: |
+          python -m pytest -q \
+            tests/test_teacher_curation.py \
+            tests/test_training_action_audit.py \
+            tests/test_hotpotqa_tool_tasks.py \
+            tests/test_trajectory_collection.py \
+            tests/test_training_exposure_v3b.py \
+            tests/test_training_exposure_v3d.py \
+            tests/test_qlora_completion_preserving_tokens.py
+      - name: Install Parquet fallback for unreliable public dataset viewer
+        run: python -m pip install --quiet 'pyarrow>=18,<24'
+      - name: Fetch separate train/validation public multi-hop input pages (NO model training)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.prepare_hotpotqa_tool_tasks \
+            --split train --offset 0 --count 40 --limit 4 \
+            --output /tmp/hotpot-train.jsonl --report /tmp/hotpot-train-report.json
+          python -m scripts.prepare_hotpotqa_tool_tasks \
+            --split validation --offset 0 --count 40 --limit 4 \
+            --output /tmp/hotpot-validation.jsonl --report /tmp/hotpot-validation-report.json \
+            --holdout-hashes /tmp/hotpot-holdout-hashes.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from gaia_small_agent.training.protection import question_hash
+          train = [json.loads(line) for line in Path('/tmp/hotpot-train.jsonl').read_text().splitlines()]
+          validation = [json.loads(line) for line in Path('/tmp/hotpot-validation.jsonl').read_text().splitlines()]
+          train_hashes = {question_hash(x['question']) for x in train}
+          eval_hashes = set(json.loads(Path('/tmp/hotpot-holdout-hashes.json').read_text())['hashes'])
+          assert len(train) == 4 and len(validation) == 4
+          assert not train_hashes.intersection(eval_hashes), 'train/validation leakage'
+          assert len(eval_hashes) == 4
+          print('HOTPOТQA_CPU_PREFLIGHT', json.dumps({'train':len(train),'validation':len(validation),'distinct_hashes':len(train_hashes|eval_hashes)}))
+          PY
+      - name: Upload audit (no protected questions or model trajectories)
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3b-frozen-action-audit
+          path: runs/v3b-frozen-action-audit.json
+          if-no-files-found: error
+          retention-days: 30

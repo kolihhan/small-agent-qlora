@@ -1,0 +1,89 @@
+name: Build real 2048-token complete multihop SFT task dataset (CPU only)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/verified-teacher-trajectory-v0-20261112]
+    paths: [.github/QLORA_REAL_2048_BUILD_START]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install CPU-only data verification and tokenizer
+        run: |
+          set -euo pipefail
+          python -m pip install -e ".[dev,eval,files]"
+          python -m pip install 'transformers>=5.15,<6' 'jinja2>=3.1' 'sentencepiece>=0.2'
+          python -m pytest -q tests/test_prepare_real_2048_complete_tasks.py tests/test_audit_curated_tokenizer.py
+      - name: Retrieve actual strict multi-source TRAIN-only 40 task data
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          run-id: 43249410666
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: teacher-multisource-strict-curated
+          path: runs/observed-source
+      - name: Recreate GAIA validation protection for complete-task filter
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          python - <<'PY'
+          from gaia_small_agent.benchmark.gaia100 import load_validation
+          from gaia_small_agent.training.protection import build_protected_question_hashes
+          hashes=build_protected_question_hashes(load_validation(token=None),"runs/gaia-protected-hashes.json")
+          assert len(hashes)>=100
+          print("GAIA_HASHES_PRESENT",len(hashes))
+          PY
+      - name: Build full-context-only task dataset; fail if entire trace doesn't fit
+        run: |
+          set -euo pipefail
+          python -m scripts.prepare_real_2048_complete_tasks \
+            --input runs/observed-source/multi-source-strict-curated.jsonl \
+            --protected runs/gaia-protected-hashes.json \
+            --model Qwen/Qwen3.5-9B \
+            --max-length 2048 \
+            --expected-tasks 40 --expected-actions 164 \
+            --minimum-complete-tasks 39 \
+            --output runs/real-multihop-2048-complete.jsonl \
+            --report runs/real-multihop-2048-report.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from gaia_small_agent.training.qlora import load_verified_rows
+          data=Path("runs/real-multihop-2048-complete.jsonl")
+          report=json.loads(Path("runs/real-multihop-2048-report.json").read_text())
+          rows=load_verified_rows(data,"runs/gaia-protected-hashes.json")
+          assert len(rows)==39==report["retained_final_answers"]
+          assert report["source_task_counts"]=={
+              "hotpotqa-distractor-train":35,"2wikimultihopqa-train":4
+          }
+          assert report["complete_parent_trajectories_only"] is True
+          assert report["training_ran"] is False
+          print("REAL_2048_DATASET_ACCEPTED",{
+              "tasks":len(rows),"actions":report["retained_native_actions"],
+              "tool_calls":report["retained_tool_calls"],
+              "final_answers":report["retained_final_answers"],
+          })
+          PY
+      - name: Archive training-eligible complete tasks and provenance; no GAIA source
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qlora-real-complete-tasks-2048
+          path: |
+            runs/real-multihop-2048-complete.jsonl
+            runs/real-multihop-2048-report.json
+          if-no-files-found: error
+          retention-days: 30

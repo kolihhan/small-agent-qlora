@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 from typing import Any
 
 import requests
@@ -9,12 +10,15 @@ from ..agent.types import AssistantTurn, ModelRuntimeError, ToolCall
 
 
 class OllamaModel:
-    def __init__(self, model: str = "qwen3.5:4b", base_url: str = "http://localhost:11434", timeout_s: float = 180.0, max_new_tokens: int = 512, enable_thinking: bool = False):
+    def __init__(self, model: str = "qwen3.5:4b", base_url: str = "http://localhost:11434", timeout_s: float = 180.0, max_new_tokens: int = 512, enable_thinking: bool = False, temperature: float = 0.0):
+        if not math.isfinite(temperature) or not 0.0 <= temperature <= 2.0:
+            raise ValueError('temperature must be a finite value in [0, 2]')
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
         self.max_new_tokens = max_new_tokens
         self.enable_thinking = enable_thinking
+        self.temperature = float(temperature)
         self._ids = itertools.count(1)
 
     def complete(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
@@ -24,7 +28,7 @@ class OllamaModel:
             "tools": tools,
             "stream": False,
             "think": self.enable_thinking,
-            "options": {"temperature": 0, "num_predict": self.max_new_tokens},
+            "options": {"temperature": self.temperature, "num_predict": self.max_new_tokens},
         }
         try:
             response = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=self.timeout_s)

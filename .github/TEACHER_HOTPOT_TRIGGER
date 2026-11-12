@@ -1,0 +1,12 @@
+START=2026-11-12-SECOND-INDEPENDENT-PILOT
+DATA=public-hotpotqa-distractor-train
+TRAIN_OFFSETS=40,80,120,160
+SAMPLES_PER_TASK=2
+TASKS_PER_SHARD=12
+SHARDS=4
+EXPECTED_ROLLOUTS=96
+MODEL=qwen3.5:9b-q4_K_M
+TEMPERATURE=0.45
+TEST_HOLDOUT=hotpotqa-validation
+NO_TRAINING=true
+SUCCESS_GATE=at-least-8-deep-rollouts-and-6-distinct-deep-tasks

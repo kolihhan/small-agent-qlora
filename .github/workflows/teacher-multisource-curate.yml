@@ -1,0 +1,131 @@
+name: Strict joint Hotpot plus 2Wiki teacher curation from actual runs
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/verified-teacher-trajectory-v0-20261112]
+    paths: [.github/QLORA_MULTISOURCE_CURATE_TRIGGER]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  curate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install CPU data and test requirements
+        run: |
+          python -m pip install -e ".[dev,eval,files]"
+          python -m pip install 'pyarrow>=18,<24'
+          python -m pytest -q tests/test_assemble_multisource_teacher.py tests/test_2wiki_tool_tasks.py tests/test_teacher_curation.py
+      - name: Wait for actual Hotpot expansion and 2Wiki pilot to complete
+        run: |
+          set -euo pipefail
+          for run in 43246799523 43247870796; do
+            echo "Checking source run $run"
+            completed=0
+            for attempt in {1..108}; do
+              status="$(curl -fsSL --retry 3 -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/kolihhan/small-agent-qlora/actions/runs/$run" \
+                | python -c 'import sys,json; x=json.load(sys.stdin); print(x["status"], x["conclusion"])')"
+              echo "SOURCE_RUN $run attempt=$attempt status=$status"
+              if [[ "$status" == completed\ success ]]; then completed=1; break; fi
+              if [[ "$status" == completed\ * ]]; then echo "A required source run failed: $status"; exit 53; fi
+              sleep 60
+            done
+            test "$completed" = 1 || { echo "source not completed before polling budget"; exit 54; }
+          done
+      - name: Download original Hotpot teacher observed artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          run-id: 43235221069
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          pattern: hotpot-teacher-shard-*
+          path: runs/initial
+          merge-multiple: true
+      - name: Download expansion Hotpot observed artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          run-id: 43246799523
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          pattern: hotpot-expand-shard-*
+          path: runs/expanded
+          merge-multiple: true
+      - name: Download cross-source 2Wiki observed artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          run-id: 43247870796
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: two-wiki-teacher-pilot
+          path: runs/cross-source
+      - name: Rebuild GAIA and two independent validation exclusions
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || exit 42
+          python - <<'PY'
+          from gaia_small_agent.benchmark.gaia100 import load_validation
+          from gaia_small_agent.training.protection import build_protected_question_hashes
+          hashes = build_protected_question_hashes(load_validation(token=None),"runs/gaia-protected-hashes.json")
+          assert len(hashes)>=100
+          print("ACTUAL_GAIA_PROTECTION",len(hashes))
+          PY
+          python -m scripts.prepare_hotpotqa_tool_tasks \
+            --split validation --offset 0 --count 40 --limit 12 \
+            --output runs/hotpot-holdout.jsonl --report runs/hotpot-holdout-meta.json \
+            --holdout-hashes runs/hotpot-validation-hashes.json
+          python -m scripts.prepare_2wiki_tool_tasks \
+            --split validation --offset 0 --scan-count 250 --limit 12 \
+            --output runs/2wiki-holdout.jsonl --report runs/2wiki-holdout-meta.json \
+            --holdout-hashes runs/2wiki-validation-hashes.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          source=json.loads(Path('runs/cross-source/2wiki-train-source.json').read_text())
+          validation=json.loads(Path('runs/2wiki-holdout-meta.json').read_text())
+          assert source['dataset_commit_sha']==validation['dataset_commit_sha'], '2Wiki dataset revision drifted'
+          print('2WIKI_PINNED_REVISION',source['dataset_commit_sha'])
+          PY
+      - name: Strict combined curation and source-family coverage gate
+        run: |
+          set -euo pipefail
+          python -m scripts.assemble_multisource_teacher \
+            --inputs \
+              runs/initial/teacher-verified-0.jsonl \
+              runs/initial/teacher-verified-1.jsonl \
+              runs/initial/teacher-verified-2.jsonl \
+              runs/initial/teacher-verified-3.jsonl \
+              runs/expanded/teacher-verified-0.jsonl \
+              runs/expanded/teacher-verified-1.jsonl \
+              runs/expanded/teacher-verified-2.jsonl \
+              runs/expanded/teacher-verified-3.jsonl \
+              runs/cross-source/2wiki-observed.jsonl \
+            --protected runs/gaia-protected-hashes.json \
+            --holdout-hashes runs/hotpot-validation-hashes.json runs/2wiki-validation-hashes.json \
+            --min-unique-tasks 24 --min-tasks-per-source 1 \
+            --output runs/multi-source-strict-curated.jsonl \
+            --report runs/multi-source-strict-report.json
+      - name: Upload only curated TRAIN evidence and a source-manifest report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: teacher-multisource-strict-curated
+          path: |
+            runs/multi-source-strict-curated.jsonl
+            runs/multi-source-strict-report.json
+          if-no-files-found: warn
+          retention-days: 30

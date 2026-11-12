@@ -1,0 +1,51 @@
+name: QLoRA Colab frozen-source CPU import and policy generation preflight
+on:
+  push:
+    branches: [research/verified-teacher-trajectory-v0-20261112]
+    paths:
+      - 'scripts/colab_full_v4_remote.py'
+      - 'tests/test_headless_colab_gpu_workflow.py'
+      - '.github/workflows/colab-frozen-import-preflight.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  import-and-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - name: Checkout precisely the source used by GPU training
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: 290c6400747110bfc1e0fed8ab0e06ea21ce3c58
+          path: frozen
+      - name: Install frozen repository minimal runtime dependencies (no torch / no GPU)
+        run: python -m pip install -q -e ./frozen
+      - name: Perform REAL frozen repo import and generate all 1600 clean trajectories
+        run: |
+          python - <<'PY'
+          import ast,json,pathlib,sys,tempfile
+          script=pathlib.Path("scripts/colab_full_v4_remote.py").read_text()
+          ast.parse(script)
+          root=pathlib.Path("frozen").resolve()
+          assert (root/"src/gaia_small_agent/__init__.py").exists()
+          sys.path.insert(0,str(root/"src"))
+          sys.path.insert(0,str(root))
+          from gaia_small_agent.training.oracle_policy_v3 import generate_oracle_policy_v3_dataset
+          from gaia_small_agent.training.qlora import _render_turn_examples,_tokenize_completion_examples,train_qlora
+          from scripts.prepare_full_qlora_v4 import prepare_full_clean_train
+          with tempfile.TemporaryDirectory() as d:
+              paths=generate_oracle_policy_v3_dataset(pathlib.Path(d)/"data",seed="small-agent-policy-v3")
+              original=[json.loads(x) for x in paths["train"].read_text().splitlines() if x.strip()]
+              cleaned,report=prepare_full_clean_train(original)
+              assert len(cleaned)==1600
+              assert report["total_trainable_actions"]==3200
+              assert report["removed_intentionally_bad_actions"]==400
+          print("QLORA_FROZEN_SRC_CPU_IMPORT_AND_DATA_PREFLIGHT_PASSED",
+                json.dumps({"train_tasks":1600,"clean_actions":3200,"removed_bad_actions":400,
+                            "frozen_source":"290c6400747110bfc1e0fed8ab0e06ea21ce3c58"}))
+          PY

@@ -1,0 +1,58 @@
+name: QLoRA 9B TRL and Transformers real config CPU preflight
+
+on:
+  push:
+    branches: [research/verified-teacher-trajectory-v0-20261112]
+    paths:
+      - 'src/gaia_small_agent/training/qlora.py'
+      - 'scripts/colab_full_v4_remote.py'
+      - '.github/workflows/colab-trl-config-preflight.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trainer-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - name: Install real TRL with transformer trainer dependencies (no GPU)
+        run: |
+          python -m pip install --quiet 'trl>=1.10,<2' 'transformers>=5.15,<6'
+      - name: Check actual QLoRA SFTConfig constructor keyword support
+        run: |
+          python - <<'PY'
+          import inspect,json
+          import trl,transformers
+          from trl import SFTConfig
+          schema=set(inspect.signature(SFTConfig).parameters)
+          args={
+              'output_dir','num_train_epochs','learning_rate',
+              'per_device_train_batch_size','gradient_accumulation_steps',
+              'max_length','completion_only_loss','loss_type',
+              'logging_steps','save_total_limit','report_to',
+              'bf16','fp16','seed','data_seed','max_steps',
+              'save_strategy','save_steps'
+          }
+          unexpected=sorted(args-schema)
+          print('QLORA_REAL_SFTCONFIG_PREFLIGHT',
+                json.dumps({'trl':trl.__version__,'transformers':transformers.__version__,
+                            'checked':len(args),'unsupported':unexpected},sort_keys=True))
+          assert not unexpected,'Fix source before allocating Colab GPU'
+          kwargs=dict(output_dir='/tmp/qlora-sftcfg-preflight',num_train_epochs=1.0,
+              learning_rate=1e-4,per_device_train_batch_size=1,
+              gradient_accumulation_steps=8,max_length=1024,completion_only_loss=False,
+              loss_type='nll',logging_steps=1,save_total_limit=2,report_to='none',
+              bf16=False,fp16=False,seed=42,data_seed=42,max_steps=400,
+              save_strategy='steps',save_steps=50)
+          s=SFTConfig(**kwargs)
+          assert s.max_steps==400
+          assert s.max_length==1024
+          print('QLORA_REAL_SFTCONFIG_CONSTRUCTED',json.dumps(
+              {'max_steps':s.max_steps,'max_length':s.max_length}))
+          PY

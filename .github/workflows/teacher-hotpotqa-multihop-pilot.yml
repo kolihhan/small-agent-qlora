@@ -1,0 +1,212 @@
+name: QLoRA HotpotQA heldout-disjoint teacher rollout scale pilot (no training)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/verified-teacher-trajectory-v0-20261112]
+    paths: [.github/TEACHER_HOTPOT_TRIGGER]
+
+permissions:
+  contents: read
+
+env:
+  OLLAMA_MODEL: qwen3.5:9b-q4_K_M
+  TEACHER_TEMPERATURE: "0.45"
+  TRIALS_PER_TASK: "2"
+  PILOT_TASKS: "12"
+
+jobs:
+  rollouts:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install local agent, GAIA hash loader and public dataset fallback
+        run: |
+          python -m pip install -e ".[dev,eval,files]"
+          python -m pip install 'pyarrow>=18,<24'
+      - name: Build genuine GAIA validation question hashes for exclusion (do not upload hashes)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN required for actual protected GAIA hashes"; exit 42; }
+          mkdir -p runs
+          python - <<'PY'
+          from gaia_small_agent.benchmark.gaia100 import load_validation
+          from gaia_small_agent.training.protection import build_protected_question_hashes
+          rows = load_validation(token=None)
+          hashes = build_protected_question_hashes(rows, "runs/gaia-protected-hashes.json")
+          if len(hashes) < 100:
+              raise RuntimeError("actual GAIA validation protection set incomplete")
+          print("genuine_gaia_protection_questions", len(hashes))
+          PY
+      - name: Generate real HotpotQA multihop tasks and two sampled trials per task
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python -m scripts.prepare_hotpotqa_tool_tasks \
+            --split train --offset "$((40 * (SHARD + 1)))" --count 40 --limit "$PILOT_TASKS" \
+            --output runs/hotpot-train.jsonl --report runs/hotpot-train-meta.json
+          python -m scripts.prepare_hotpotqa_tool_tasks \
+            --split validation --offset 0 --count 40 --limit "$PILOT_TASKS" \
+            --output runs/hotpot-validation.jsonl \
+            --holdout-hashes runs/hotpot-validation-hashes.json \
+            --report runs/hotpot-validation-meta.json
+          python -m scripts.prepare_teacher_trials \
+            --tasks runs/hotpot-train.jsonl --samples "$TRIALS_PER_TASK" \
+            --output runs/teacher-trials-all.jsonl
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from gaia_small_agent.training.protection import load_protected_question_hashes, question_hash
+          all_rows = [json.loads(x) for x in Path("runs/teacher-trials-all.jsonl").read_text().splitlines()]
+          holdout = load_protected_question_hashes("runs/hotpot-validation-hashes.json")
+          protected = load_protected_question_hashes("runs/gaia-protected-hashes.json")
+          if any(question_hash(x["question"]) in holdout or question_hash(x["question"]) in protected for x in all_rows):
+              raise ValueError("train split overlaps GAIA or Hotpot validation question")
+          shard = int(os.environ["SHARD"])
+          selected = all_rows  # Each shard loads a distinct TRAIN page; never discard 75%.
+          if len(all_rows) != 24 or len(selected) != 24:
+              raise ValueError("wrong frozen pilot task count")
+          Path(f"runs/teacher-trials-{shard}.jsonl").write_text(
+              "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in selected), encoding="utf-8"
+          )
+          print(json.dumps({"shard": shard, "rollouts": len(selected), "true_gaia_hashes":len(protected), "heldout_hotpot_hashes":len(holdout)}))
+          PY
+      - name: Install Ollama and pull current 9B teacher
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in {1..40}; do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then break; fi
+            sleep 1
+          done
+          ollama pull "$OLLAMA_MODEL"
+      - name: Collect actual sampled read-tool trajectories, verify exact answers and errors
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from gaia_small_agent.agent.loop import AgentRuntime
+          from gaia_small_agent.model.ollama import OllamaModel
+          from gaia_small_agent.tools.read import ReadTool
+          from gaia_small_agent.training.trajectories import collect_verified_trajectories
+
+          shard = int(os.environ["SHARD"])
+          def runtime_factory():
+              return AgentRuntime(
+                  model=OllamaModel(
+                      model=os.environ["OLLAMA_MODEL"],
+                      temperature=float(os.environ["TEACHER_TEMPERATURE"]),
+                      max_new_tokens=512,
+                      timeout_s=600,
+                      enable_thinking=False,
+                  ),
+                  tools=[ReadTool()], max_steps=12,
+              )
+          stats = collect_verified_trajectories(
+              tasks_path=f"runs/teacher-trials-{shard}.jsonl",
+              output_path=f"runs/teacher-verified-{shard}.jsonl",
+              runtime_factory=runtime_factory,
+              work_root=f"runs/teacher-work-{shard}",
+              protected_questions_path="runs/gaia-protected-hashes.json",
+          )
+          assert stats["total"] == 24
+          assert stats["rejected_gaia"] == 0 and stats.get("rejected_protected",0) == 0
+          print("SHARD_TEACHER_PILOT_SUMMARY", json.dumps({"shard":shard, **stats}, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: hotpot-teacher-shard-${{ matrix.shard }}
+          path: |
+            runs/teacher-verified-${{ matrix.shard }}.jsonl
+            runs/teacher-verified-${{ matrix.shard }}.jsonl.summary.json
+            runs/teacher-verified-${{ matrix.shard }}.jsonl.progress.jsonl
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    needs: rollouts
+    if: ${{ always() && needs.rollouts.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: hotpot-teacher-shard-*
+          path: runs/shards
+          merge-multiple: true
+      - name: Report accepted real trajectories and depth without exposing protected hashes
+        run: |
+          python - <<'PY'
+          from collections import Counter
+          from pathlib import Path
+          import json
+
+          parent = Path("runs/shards")
+          accepted = []
+          total = 0
+          seen = set()
+          per_shard = {}
+          for shard in range(4):
+              prefix = f"teacher-verified-{shard}.jsonl"
+              summary = json.loads((parent / (prefix + ".summary.json")).read_text())
+              assert summary["total"] == 24
+              total += summary["total"]
+              rows = [json.loads(x) for x in (parent / prefix).read_text().splitlines() if x.strip()]
+              assert len(rows) == summary["verified"]
+              for row in rows:
+                  task_id = row["task_id"]
+                  assert task_id not in seen
+                  seen.add(task_id)
+                  assert row["source"] == "hotpotqa-distractor-train"
+                  assert row["verified"] is True
+                  assert row["verification"]["final_answer_correct"] is True
+                  assert row["verification"]["zero_duplicate_blocks"] is True
+                  assert row["verification"]["zero_tool_errors"] is True
+              per_shard[str(shard)] = summary
+              accepted.extend(rows)
+          assert total == 96
+          deep = [row for row in accepted if row["metrics"]["tool_calls"] >= 3]
+          unique_deep = len({row["task_id"].split("::sample-",1)[0] for row in deep})
+          report = {
+              "schema": "hotpotqa-teacher-rollout-pilot/v1",
+              "input_rollouts": total, "verified_success": len(accepted),
+              "verified_tool_depth_ge3": len(deep),
+              "independent_deep_task_count": unique_deep,
+              "temperature": 0.45, "trial_count_per_task": 2,
+              "distinct_train_offsets": [40, 80, 120, 160],
+              "task_count": 48,
+              "validation_split": "hotpotqa-distractor-validation",
+              "true_gaia_protection_used": True,
+              "scorer": "exact short answer plus clean observed read-tool events",
+              "purpose": "independent multi-hop trajectory acceptance preflight, not SFT",
+              "ready_for_full_training_data": len(deep) >= 8 and unique_deep >= 6,
+              "limitations": "Pilot data quality check only; no adapter trained and no external GAIA score",
+              "per_shard": per_shard,
+          }
+          Path("hotpot-teacher-pilot-summary.json").write_text(
+              json.dumps(report, indent=2, sort_keys=True) + "\n"
+          )
+          print("PILOT_FINAL", json.dumps(report, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hotpot-teacher-pilot-summary
+          path: hotpot-teacher-pilot-summary.json
+          if-no-files-found: error
+          retention-days: 30
