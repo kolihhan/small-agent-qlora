@@ -125,6 +125,12 @@ def test_hotpot_requires_observed_multi_article_evidence():
     for pos, filename in [(2, "index.txt"), (4, "article_00.txt"), (6, "article_01.txt")]:
         row["messages"][pos]["tool_calls"][0]["function"]["arguments"]["source"] = filename
 
+
+    validation = deepcopy(row)
+    validation["source"] = "hotpotqa-distractor-validation"
+    with pytest.raises(ValueError, match="forbidden_hotpot_holdout_split"):
+        _check_row(validation, {"protected"}, set(), 3)
+
     kept, stats = _check_row(row, {"protected"}, set(), min_actions=3)
     assert kept == [2, 4, 6, 8]
     assert stats["hotpot_distinct_article_reads"] == 2
