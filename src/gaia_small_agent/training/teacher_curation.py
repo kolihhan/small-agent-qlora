@@ -34,11 +34,10 @@ def _check_row(row: dict, protected_hashes: set[str], holdout_hashes: set[str], 
     if not source or "gaia" in source.casefold():
         raise ValueError("forbidden_source")
     multi_hop_train_sources = {"hotpotqa-distractor-train", "2wikimultihopqa-train"}
-    if ((source.startswith("hotpotqa-distractor-") or
-         source.startswith("2wikimultihopqa-")) and
-        source not in multi_hop_train_sources):
-        # Explicit split pin: caller-supplied holdout hashes may be incomplete.
-        raise ValueError("forbidden_multihop_holdout_split")
+    if source.startswith("hotpotqa-distractor-") and source != "hotpotqa-distractor-train":
+        raise ValueError("forbidden_hotpot_holdout_split")
+    if source.startswith("2wikimultihopqa-") and source != "2wikimultihopqa-train":
+        raise ValueError("forbidden_2wiki_holdout_split")
     grounded_multihop = source in multi_hop_train_sources
     verification = row.get("verification")
     if not isinstance(verification, dict) or any(verification.get(k) is not True for k in _REQUIRED_VERIFICATION):
