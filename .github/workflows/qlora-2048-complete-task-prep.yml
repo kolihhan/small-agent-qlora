@@ -1,0 +1,83 @@
+name: Real multi-source QLoRA complete-task 2048 context preflight (CPU)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/verified-teacher-trajectory-v0-20261112]
+    paths: [.github/QLORA_REAL_2048_PREP_START]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install and validate complete-task invariant
+        run: |
+          set -euo pipefail
+          python -m pip install -e ".[dev,eval,files]"
+          python -m pip install 'transformers>=5.15,<6' 'jinja2>=3.1' 'sentencepiece>=0.2'
+          python -m pytest -q tests/test_filter_real_2048_tasks.py tests/test_audit_curated_tokenizer.py tests/test_teacher_curation.py
+      - name: Download original immutable 40-task curated real data
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          run-id: 43249410666
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: teacher-multisource-strict-curated
+          path: runs/source
+      - name: Rebuild GAIA protection from actual validation questions
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          python - <<'PY'
+          from gaia_small_agent.benchmark.gaia100 import load_validation
+          from gaia_small_agent.training.protection import build_protected_question_hashes
+          protect=build_protected_question_hashes(
+              load_validation(token=None),"runs/gaia-protected-hashes.json")
+          assert len(protect)>=100
+          print("GAIA_PROTECTION",len(protect))
+          PY
+      - name: Select all-or-nothing native 2048-token assistant task sequences
+        run: |
+          set -euo pipefail
+          python -m scripts.filter_real_2048_tasks \
+            --source runs/source/multi-source-strict-curated.jsonl \
+            --protected runs/gaia-protected-hashes.json \
+            --budget 2048 --model Qwen/Qwen3.5-9B \
+            --output runs/real-multisource-2048-complete-tasks.jsonl \
+            --report runs/real-multisource-2048-summary.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path("runs/real-multisource-2048-summary.json").read_text())
+          assert r["input_unique_tasks"]==40
+          assert r["input_native_actions"]==164
+          assert r["retained_complete_tasks"]==39
+          assert r["rejected_complete_tasks"]==1
+          assert r["truncated_prompt_or_completion_count"]==0
+          assert r["model_training_ran"] is False
+          assert r["gaia_evaluated"] is False
+          print("REAL_2048_TASKS_READY",json.dumps({
+            k:v for k,v in r.items() if k!="rejection_diagnostics_no_questions"
+          },sort_keys=True))
+          PY
+      - name: Archive reproducible true real-data training subset (no adapter)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: real-multisource-complete-2048-training-preflight
+          path: |
+            runs/real-multisource-2048-complete-tasks.jsonl
+            runs/real-multisource-2048-summary.json
+          if-no-files-found: error
+          retention-days: 30
