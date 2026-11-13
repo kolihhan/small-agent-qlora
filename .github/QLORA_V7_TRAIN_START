@@ -1,0 +1,3 @@
+2026-11-13: run exactly one verified Qwen3.5-9B source-balanced 65-step NF4 LoRA; no GAIA data; independent 11-task holdout. Do not retry if Colab says quota/503.
+2026-11-13: single corrected re-execution after proving prior T4 allocation succeeded but Colab CLI default --timeout 30 killed pip installation; pinned --timeout 18000. Do not replay on quota/503.
+2026-11-13: retry after correcting preflight ANSI/grep false negative (no GPU used in prior CI). Same 522 actions, T4, 65 steps, no GAIA training, CLI --timeout 18000.
