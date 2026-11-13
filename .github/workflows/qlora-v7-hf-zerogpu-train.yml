@@ -119,7 +119,7 @@ jobs:
           api=HfApi(token=os.environ["HF_TOKEN"])
           rid=os.environ["HF_SPACE_ID"]
           # create_repo requires a new space, never delete/overwrite v2
-          api.create_repo(repo_id=rid,repo_type="space",private=True,space_sdk="gradio",exist_ok=False)
+          api.create_repo(repo_id=rid,repo_type="space",private=True,space_sdk="gradio",space_hardware="zero-a10g",exist_ok=False)
           api.upload_folder(folder_path=str(dest),repo_id=rid,repo_type="space",
                             commit_message="Deploy one source-disjoint 9B QLoRA continuation, no GPU requested yet")
           api.add_space_secret(repo_id=rid,key="HF_TOKEN",value=os.environ["HF_TOKEN"])
