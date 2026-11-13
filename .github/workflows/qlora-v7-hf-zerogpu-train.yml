@@ -1,0 +1,216 @@
+name: QLoRA v7 ACTUAL 9B SFT on HF free ZeroGPU from verified v3B adapter
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/qlora-v7-hf-batched-20261113]
+    paths: [.github/QLORA_V7_HF_TRAIN_START]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: hf-zerogpu-qlora-v7-first-unseen-batch-20261113
+  cancel-in-progress: false
+jobs:
+  train-free:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_SPACE_ID: "kolihhan/small-agent-qlora-v7-batch-trainer"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      OMP_NUM_THREADS: "4"
+      TOKENIZERS_PARALLELISM: "false"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Verify free HF quota and source selection unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "NO_HF_TOKEN"; exit 42; }
+          python -m pip install --quiet 'huggingface_hub>=2.1.1,<3' 'gradio_client>=2,<3'
+          python -m pytest -q tests/test_qlora_v7_hf_chunk.py
+          python - <<'PY'
+          import json,os
+          from huggingface_hub import HfApi
+          api=HfApi(token=os.environ["HF_TOKEN"])
+          info=api.whoami()
+          quota=api.get_zero_gpu_quota()
+          assert not info.get("isPro",False), "This workflow is designed for a free quota"
+          print("HF_FREE_QUOTA_BEFORE_TRAIN",json.dumps({"base":quota.base,"remaining":quota.remaining,"resets_at":str(quota.resets_at)}))
+          assert quota.remaining>=240, "Do not start GPU request without sufficient free quota"
+          PY
+      - name: Retrieve frozen source-disjoint v7 training data
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          run-id: 43396613861
+          repository: kolihhan/small-agent-qlora
+          name: qlora-v7-unique-balanced-train-validation
+          github-token: ${{ github.token }}
+          path: runs/v7-input
+      - name: Recover proven v3B Qwen3.5-9B PEFT adapter, not a newly initialized model
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          run-id: 38152689194
+          repository: kolihhan/small-agent-qlora
+          name: qwen35-9b-qlora-v3b-adapter
+          github-token: ${{ github.token }}
+          path: runs/v3b-input
+      - name: SHA verify both sources and construct NEW private free ZeroGPU trainer
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runs/hf-v7-evidence
+          python - <<'PY'
+          import hashlib,json,os,pathlib,shutil,zipfile
+          from huggingface_hub import HfApi
+          root=pathlib.Path("runs/v7-input")
+          audit=json.loads((root/"qlora-v7-audit.json").read_text())
+          assert audit["train_actions"]==522 and audit["train_tasks"]==218
+          assert audit["source_holdout_real_tasks"]==11 and audit["train_real_action_fraction"]==0.333333
+          for name,key in (("qlora-v7-train.jsonl","train_sha256"),("qlora-v7-heldout.jsonl","holdout_sha256")):
+              assert hashlib.sha256((root/name).read_bytes()).hexdigest()==audit[key]
+          source_zip=pathlib.Path("runs/v3b-input/qwen35-9b-qlora-v3b-adapter.zip")
+          assert source_zip.is_file() and source_zip.stat().st_size>50000000
+          dest=pathlib.Path("runs/hf-v7-space")
+          if dest.exists(): raise FileExistsError("new Space payload must not reuse old source")
+          dest.mkdir(parents=True)
+          (dest/"training-data").mkdir()
+          (dest/"v3b-adapter").mkdir()
+          shutil.copy2(root/"qlora-v7-train.jsonl",dest/"training-data/qlora-v7-train.jsonl")
+          shutil.copy2(root/"qlora-v7-audit.json",dest/"training-data/qlora-v7-audit.json")
+          with zipfile.ZipFile(source_zip) as z:
+              names=set(z.namelist())
+              assert {"adapter_config.json","adapter_model.safetensors"}.issubset(names)
+              model=z.read("adapter_model.safetensors")
+              assert len(model)>50000000
+              cfg=json.loads(z.read("adapter_config.json"))
+              assert "9B" in str(cfg.get("base_model_name_or_path","")) or "Qwen3.5" in str(cfg.get("base_model_name_or_path",""))
+              for name in sorted(names):
+                  if name.endswith("/"): continue
+                  if ".." in pathlib.PurePosixPath(name).parts: raise ValueError("unsafe adapter zip path")
+                  pathlib.Path(dest/"v3b-adapter",name).parent.mkdir(parents=True,exist_ok=True)
+                  (dest/"v3b-adapter"/name).write_bytes(z.read(name))
+          # Training UI stays PRIVATE. No copy into existing v3B Space.
+          shutil.copy2("scripts/hf_v7_zero_gpu_app.py",dest/"app.py")
+          shutil.copy2("scripts/qlora_v7_hf_chunk.py",dest/"qlora_v7_hf_chunk.py")
+          shutil.copytree("src/gaia_small_agent",dest/"gaia_small_agent")
+          (dest/"requirements.txt").write_text("\n".join([
+             "transformers>=5.15,<6",
+             "peft>=0.20,<1","trl>=1.10,<2","accelerate>=1.10,<2",
+             "bitsandbytes>=0.50.1,<1","datasets>=4",
+             "huggingface_hub>=2.1.1,<3","gradio>=6,<7","jinja2>=3.1",
+             "sentencepiece>=0.2","gradio_client>=2,<3"
+          ])+"\n")
+          (dest/"README.md").write_text(
+             "---\ntitle: Private v7 observed tool QLoRA 9B batch trainer\n"
+             "emoji: 🧪\nsdk: gradio\napp_file: app.py\n"
+             "sdk_version: 6.0.1\nprivate: true\nhardware: zero-a10g\n---\n"
+             "Private QLoRA training derived from pinned verified open training data; "
+             "never use GAIA answer keys. Output checkpoints are private.\n")
+          provenance={
+             "source_commit":os.environ["GITHUB_SHA"],"v7_train_sha256":audit["train_sha256"],
+             "base_v3b_adapter_sha256":hashlib.sha256(model).hexdigest(),
+             "base_v3b_adapter_bytes":len(model),
+             "source_heldout_parents":11,"free_zero_gpu_reservation_s":240,
+             "expected_batch_index":0,"training_requested":False,
+          }
+          pathlib.Path("runs/hf-v7-evidence/source-manifest.json").write_text(json.dumps(provenance,indent=2)+"\n")
+          api=HfApi(token=os.environ["HF_TOKEN"])
+          rid=os.environ["HF_SPACE_ID"]
+          # create_repo requires a new space, never delete/overwrite v2
+          api.create_repo(repo_id=rid,repo_type="space",private=True,space_sdk="gradio",exist_ok=False)
+          api.upload_folder(folder_path=str(dest),repo_id=rid,repo_type="space",
+                            commit_message="Deploy one source-disjoint 9B QLoRA continuation, no GPU requested yet")
+          api.add_space_secret(repo_id=rid,key="HF_TOKEN",value=os.environ["HF_TOKEN"])
+          api.request_space_hardware(repo_id=rid,hardware="zero-a10g")
+          print("HF_V7_PRIVATE_FREE_SPACE_DEPLOYED",rid,flush=True)
+          PY
+      - name: Wait for private CPU preflight and verify native complete action supervision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,time
+          from gradio_client import Client
+          from huggingface_hub import HfApi
+          rid=os.environ["HF_SPACE_ID"]
+          api=HfApi(token=os.environ["HF_TOKEN"])
+          state=api.wait_for_space(repo_id=rid,timeout=2400)
+          print("HF_NEW_PRIVATE_SPACE_RUNTIME",state,flush=True)
+          client=None
+          for attempt in range(90):
+              try:
+                  client=Client(rid,token=os.environ["HF_TOKEN"],verbose=False)
+                  info=client.predict(api_name="/preflight")
+                  if info.get("ok"):break
+                  raise RuntimeError(str(info))
+              except Exception as e:
+                  print("HF_CPU_PREFLIGHT_RETRY",attempt,type(e).__name__,flush=True)
+                  time.sleep(8)
+          else:
+              raise RuntimeError("Private ZeroGPU trainer never exposed valid CPU preflight")
+          assert info["batch_index"]==0 and info["planned_total_batches"]==22
+          assert info["new_supervised_native_actions"] in (22,23,24)
+          assert info["whole_parent_tasks"]==10
+          assert info["max_token_context"]<=1536
+          assert info["gaia_train_count"]==0 and info["heldout_train_count"]==0
+          print("HF_ZERO_GPU_QLORA_SOURCE_PREFLIGHT",json.dumps(info,sort_keys=True))
+          PY
+      - name: Train Qwen3.5-9B from proven v3B PEFT adapter on one REAL full-parent batch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,pathlib,shutil
+          from gradio_client import Client
+          target=pathlib.Path("runs/hf-v7-evidence")
+          c=Client(os.environ["HF_SPACE_ID"],token=os.environ["HF_TOKEN"],verbose=False)
+          archive,result=c.predict(api_name="/train")
+          (target/"training-result.json").write_text(json.dumps(result,indent=2,sort_keys=True)+"\n")
+          if not result.get("ok"):
+              print("HF_V7_TRAINING_FAILURE",json.dumps(result)[:6000])
+              raise SystemExit("No verified adapter; training on HF GPU failed")
+          report=result["report"]
+          assert report["optimizer_steps"] in (22,23,24)
+          assert report["trained_unique_parent_tasks"]==10
+          assert report["train_parent_repetitions"]==0 and report["heldout_parents_used"]==0
+          assert report["adapter_bytes"]>50000000 and len(report["adapter_sha256"])==64
+          assert report["gaia_evaluated"] is False
+          assert archive and pathlib.Path(archive).is_file()
+          shutil.copyfile(archive,target/"qlora-v7-hf-real-tool-batch0.zip")
+          print("HF_V7_ACTUAL_QLORA_TRAINED",json.dumps({
+            "optimizer_steps":report["optimizer_steps"],"loss_first":report["loss_first"],
+            "loss_last":report["loss_last"],"sha256":report["adapter_sha256"],
+            "archive_bytes":(target/"qlora-v7-hf-real-tool-batch0.zip").stat().st_size
+          }))
+          PY
+      - name: Verify downloaded weights and optimizer continuity with SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,hashlib,zipfile
+          from pathlib import Path
+          p=Path("runs/hf-v7-evidence/qlora-v7-hf-real-tool-batch0.zip")
+          assert p.is_file() and p.stat().st_size>100000000
+          with zipfile.ZipFile(p) as z:
+              names=set(z.namelist())
+              assert {"training-report.json","optimizer.pt","adapter/adapter_model.safetensors"}.issubset(names)
+              data=json.loads(z.read("training-report.json"))
+              assert data["adapter_sha256"]==hashlib.sha256(z.read("adapter/adapter_model.safetensors")).hexdigest()
+              assert data["optimizer_steps"] in (22,23,24)
+              assert data["heldout_parents_used"]==0
+          print("HF_V7_REAL_9B_ADAPTER_AND_OPTIMIZER_VERIFIED",p.stat().st_size)
+          PY
+      - name: Preserve verified model and experiment evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qlora-v7-hf-free-real-first-batch-verified-if-trained
+          path: runs/hf-v7-evidence/
+          if-no-files-found: warn
+          retention-days: 30
