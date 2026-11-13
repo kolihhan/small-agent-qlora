@@ -1,0 +1,39 @@
+name: Diagnose private HF ZeroGPU v7 Space build errors (no GPU)
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/qlora-v7-hf-batched-20261113]
+    paths: [.github/QLORA_HF_BUILD_DIAG_START]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_SPACE_ID: kolihhan/small-agent-qlora-v7-batch-trainer
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with: {python-version: "3.11"}
+      - name: Extract actual Hugging Face build failure, not the misleading BuildKit cache miss summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -q 'huggingface_hub>=2.1.1,<3'
+          python - <<'PY'
+          from huggingface_hub import HfApi
+          import os
+          api=HfApi(token=os.environ["HF_TOKEN"])
+          rid=os.environ["HF_SPACE_ID"]
+          state=api.get_space_runtime(rid)
+          print("HF_V7_RUNTIME_STAGE",state.stage)
+          print("HF_V7_REQUESTED_GPU",state.requested_hardware)
+          lines=list(api.fetch_space_logs(repo_id=rid,build=True))
+          print("HF_BUILD_LOG_LINE_COUNT",len(lines))
+          for ln in lines[-160:]:
+              print(str(ln)[:1000],end="" if str(ln).endswith("\n") else "\n")
+          if not lines:
+              print("HF_BUILD_LOG_EMPTY")
+          PY
