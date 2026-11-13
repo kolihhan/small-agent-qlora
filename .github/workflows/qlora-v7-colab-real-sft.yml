@@ -1,0 +1,183 @@
+name: Colab Qwen3.5-9B v7 source-balanced SFT from real tool trajectories
+on:
+  workflow_dispatch:
+    inputs:
+      gpu:
+        description: Google Colab accelerator (subject to account entitlement)
+        required: true
+        type: choice
+        options: [L4, T4, A100]
+        default: T4
+  push:
+    branches: [experiment/qlora-v7-source-balanced-sft-20261113]
+    paths: [.github/QLORA_V7_TRAIN_START]
+permissions:
+  contents: read
+concurrency:
+  group: colab-gpu-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  colab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      COLAB_GPU: ${{ inputs.gpu || 'T4' }}
+      COLAB_TOKEN: ${{ secrets.COLAB_TOKEN }}
+      COLAB_CLI_TOKEN: ${{ secrets.COLAB_CLI_TOKEN }}
+      GOOGLE_COLAB_TOKEN: ${{ secrets.GOOGLE_COLAB_TOKEN }}
+      COLAB_ACCESS_TOKEN: ${{ secrets.COLAB_ACCESS_TOKEN }}
+      COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
+      COLAB_OAUTH_JSON: ${{ secrets.COLAB_OAUTH_JSON }}
+      COLAB_AUTH_JSON: ${{ secrets.COLAB_AUTH_JSON }}
+      COLAB_CREDENTIALS_JSON: ${{ secrets.COLAB_CREDENTIALS_JSON }}
+      GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+      GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+      GOOGLE_COLAB_CREDENTIALS: ${{ secrets.GOOGLE_COLAB_CREDENTIALS }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Authenticate Colab with existing GitHub Secret (never reveal credentials)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'google-auth>=2.20' 'requests>=2.31'
+          python - <<'PY'
+          import json,os,pathlib
+          import google.auth
+          from google.auth.transport.requests import Request
+          names=("COLAB_ADC_JSON","COLAB_OAUTH_JSON","COLAB_AUTH_JSON","COLAB_CREDENTIALS_JSON",
+                 "GOOGLE_APPLICATION_CREDENTIALS_JSON","GOOGLE_CREDENTIALS_JSON","GOOGLE_COLAB_CREDENTIALS",
+                 "COLAB_TOKEN","COLAB_CLI_TOKEN","GOOGLE_COLAB_TOKEN","COLAB_ACCESS_TOKEN")
+          credentials=None
+          for name in names:
+              raw=os.environ.get(name,"").strip()
+              if not raw: continue
+              try: doc=json.loads(raw)
+              except (ValueError,TypeError): continue
+              if not isinstance(doc,dict): continue
+              if doc.get("type")=="authorized_user" and all(doc.get(k) for k in ("client_id","client_secret","refresh_token")):
+                  credentials=doc
+                  break
+              if doc.get("type")=="service_account" and all(doc.get(k) for k in ("private_key","client_email")):
+                  credentials=doc
+                  break
+              if all(doc.get(k) for k in ("client_id","client_secret","refresh_token")):
+                  credentials={**doc,"type":"authorized_user"}
+                  break
+          if credentials is None:
+              raise RuntimeError("NO_ADC_COMPATIBLE_COLAB_SECRET: expected authorized_user or service_account JSON")
+          path=pathlib.Path(os.environ["RUNNER_TEMP"])/"colab-adc.json"
+          path.write_text(json.dumps(credentials),encoding="utf-8")
+          path.chmod(0o600)
+          scopes=["openid","https://www.googleapis.com/auth/userinfo.email",
+                  "https://www.googleapis.com/auth/cloud-platform",
+                  "https://www.googleapis.com/auth/colaboratory"]
+          try:
+              cred,_=google.auth.load_credentials_from_file(str(path),scopes=scopes)
+              cred.refresh(Request())
+              if not cred.valid: raise RuntimeError("refreshed credential invalid")
+          except Exception as exc:
+              lower=str(exc).lower()
+              category=next((word for word in ("invalid_grant","invalid_scope","unauthorized_client",
+                  "invalid_client","access_denied","insufficient_scope") if word in lower),"other")
+              print("COLAB_AUTH_REJECTED",json.dumps({"reason":category,
+                    "type":credentials.get("type"),"gpu_allocated":False}))
+              raise SystemExit(41)
+          with open(os.environ["GITHUB_ENV"],"a") as f:
+              f.write("GOOGLE_APPLICATION_CREDENTIALS="+str(path)+"\n")
+          print("COLAB_AUTH_SUCCEEDED_NO_GPU_YET")
+          PY
+      - name: Install official Google Colab CLI and verify API
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'google-colab-cli==0.8.0'
+          timeout 110 colab --auth=adc usage
+
+      - name: Fetch physically verified 522-action train + heldout evidence from CPU preflight
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          run-id: 43396613861
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: qlora-v7-unique-balanced-train-validation
+          path: inputs
+      - name: Fail-closed dataset checks and remote trainer SHA pinning
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/colab_v7_real_curriculum_remote.py
+          python - <<'PY'
+          import json,hashlib,os
+          from pathlib import Path
+          report=json.loads(Path("inputs/qlora-v7-audit.json").read_text())
+          assert report["schema"]=="qlora-v7-whole-task-source-balanced-20261113-v1"
+          assert report["train_actions"]==522
+          assert report["train_tasks"]==218
+          assert report["holdout_tasks"]==11
+          assert report["train_real_action_fraction"]>=.3
+          for name,key in (("qlora-v7-train.jsonl","train_sha256"),("qlora-v7-heldout.jsonl","holdout_sha256")):
+              assert hashlib.sha256(Path("inputs",name).read_bytes()).hexdigest()==report[key]
+          source=Path("scripts/colab_v7_real_curriculum_remote.py").read_text()
+          assert source.count("__SOURCE_SHA__")>=1
+          source=source.replace('SOURCE_SHA = "__SOURCE_SHA__"',f'SOURCE_SHA = "{os.environ["GITHUB_SHA"]}"')
+          assert 'SOURCE_SHA = "__SOURCE_SHA__"' not in source
+          Path("inputs/train-on-colab.py").write_text(source)
+          print("V7_GPU_INPUT_READY",{"actions":522,"tasks":218,"source_sha":os.environ["GITHUB_SHA"]})
+          PY
+      - name: Verify only one Colab assignment per account; do not silently race another GPU job
+        run: |
+          set -euo pipefail
+          usage="$(timeout 90 colab --auth=adc usage)"
+          active="$(printf '%s\n' "$usage" | awk '/^Active assignments:/ {print $3}')"
+          if ! [[ "$active" =~ ^[0-9]+$ ]] || [ "$active" != "0" ]; then
+            echo "COLAB_SLOT_NOT_AVAILABLE active=$active; no GPU requested"
+            exit 75
+          fi
+      - name: Allocate one GPU, upload verified source, train once, recover adapter and release
+        shell: bash
+        run: |
+          set -euo pipefail
+          session="qlora-v7-${GITHUB_RUN_ID}"
+          mkdir -p exported
+          cleanup() { colab --auth=adc stop -s "$session" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          # Fail on quota/503; no infinite replay or hidden compute spending.
+          colab --auth=adc new -s "$session" --gpu "$COLAB_GPU"
+          colab --auth=adc upload -s "$session" inputs/qlora-v7-train.jsonl /content/qlora-v7-train.jsonl
+          colab --auth=adc upload -s "$session" inputs/qlora-v7-heldout.jsonl /content/qlora-v7-heldout.jsonl
+          colab --auth=adc upload -s "$session" inputs/qlora-v7-audit.json /content/qlora-v7-audit.json
+          set +e
+          colab --auth=adc exec -s "$session" -f inputs/train-on-colab.py 2>&1 | tee "$RUNNER_TEMP/v7-colab-train.log"
+          train_rc=${PIPESTATUS[0]}
+          set -e
+          colab --auth=adc download -s "$session" /content/qlora-v7-adapter.zip exported/qlora-v7-adapter.zip || true
+          colab --auth=adc log -s "$session" -o exported/colab-v7-log.ipynb || true
+          if [ "$train_rc" -ne 0 ]; then
+            echo "QLORA_V7_SFT_FAILED rc=$train_rc (no GAIA performance claim)"
+            exit "$train_rc"
+          fi
+          python - <<'PY'
+          import hashlib,json,zipfile
+          from pathlib import Path
+          p=Path("exported/qlora-v7-adapter.zip")
+          assert p.is_file() and p.stat().st_size>1000000
+          with zipfile.ZipFile(p) as z:
+              report=json.loads(z.read("verified-v7-report.json"))
+              model=z.read("adapter_model.safetensors")
+              assert report["adapter_sha256"]==hashlib.sha256(model).hexdigest()
+              assert report["optimizer_steps_target"]==65
+              assert report["train_actions"]==522
+              assert report["heldout_parents_unseen"]==11
+          print("QLORA_V7_ADAPTER_PHYSICALLY_VERIFIED",p.stat().st_size)
+          PY
+      - name: Preserve model artifact and execution evidence even if Colab fails
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qlora-v7-real-sft-verified-adapter-if-trained
+          path: exported/
+          if-no-files-found: warn
+          retention-days: 30
