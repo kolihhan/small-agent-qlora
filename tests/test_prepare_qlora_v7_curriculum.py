@@ -20,7 +20,7 @@ def _data():
         "strategy_switch": 2, "duplicate_avoidance": 2,
     }
     for cap,n in capacities.items():
-        synthetic += [_row(i,"synthetic-small-agent-policy-v3/train",n,cap)
+        synthetic += [_row(f"{cap}-{i}","synthetic-small-agent-policy-v3/train",n,cap)
                       for i in range(40)]
     # every source family is represented by independently observed actions
     real=([_row(i,"2wikimultihopqa-train",4) for i in range(20)]
