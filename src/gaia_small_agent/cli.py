@@ -64,7 +64,8 @@ def make_runtime(args) -> AgentRuntime:
             max_new_tokens=args.max_new_tokens,
             enable_thinking=args.thinking,
         )
-    return AgentRuntime(model, default_tools(), max_steps=args.max_steps)
+    return AgentRuntime(model, default_tools(), max_steps=args.max_steps,
+                        tool_policy_guard=getattr(args, 'tool_policy_guard', False))
 
 
 def print_trace(result) -> None:
@@ -93,6 +94,7 @@ def _single_run_config(args, runtime: AgentRuntime) -> dict:
         "thinking": args.thinking,
         "tool_observation_max_chars": MAX_TOOL_OBSERVATION_CHARS,
         "tool_names": list(runtime.tools),
+        **({"tool_policy_guard": True} if getattr(runtime, "tool_policy_guard", False) else {}),
     }
 
 
@@ -162,6 +164,7 @@ def gaia_command(args) -> int:
         "partition": args.partition,
         "cache_implementation": args.cache_implementation if args.backend == "transformers" else None,
         "tool_names": tool_preflight["tool_names"],
+        **({"tool_policy_guard": True} if getattr(args, "tool_policy_guard", False) else {}),
     }
     manifest = args.manifest or str(Path(args.work_root) / "manifest.json")
     summary = run_gaia100(
@@ -269,6 +272,7 @@ def add_runtime_args(p):
     p.add_argument("--thinking", action="store_true", help="Enable Qwen thinking mode (Ollama/Transformers only)")
     p.add_argument("--max-new-tokens", type=_positive_int, default=512)
     p.add_argument("--max-steps", type=_positive_int, default=12)
+    p.add_argument("--tool-policy-guard", action="store_true", help="Opt-in normalized search dedup and evidence-aware stopping nudges")
     p.add_argument("--cache-implementation", choices=["offloaded", "default"], default="default", help="Transformers KV-cache placement")
 
 
