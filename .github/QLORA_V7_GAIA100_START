@@ -1,0 +1,1 @@
+2026-11-13: Launch full matched GAIA2023 frozen Evaluation100 Base vs verified v7 GGUF on same CPU runners, 20 shards, immutable runtime and SHA256. Do not claim improved accuracy until aggregate success.
