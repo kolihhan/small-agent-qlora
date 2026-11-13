@@ -1,0 +1,124 @@
+name: QLoRA v7 ACTUAL CPU batch 0 (24 new native actions, source-disjoint)
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/qlora-v7-github-cpu-batched-20261113]
+    paths: [.github/QLORA_V7_CPU_BATCH0_START]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: qlora-v7-cpu-real-sft-batch0-20261113
+  cancel-in-progress: false
+jobs:
+  batch0:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      TOKENIZERS_PARALLELISM: "false"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      MALLOC_ARENA_MAX: "2"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install proven CPU QLoRA training stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+          python -m pip install -e '.[train,dev,files]'
+          python -m pytest -q tests/test_qlora_v7_hf_chunk.py tests/test_prepare_qlora_v7_curriculum.py
+          python -m py_compile scripts/run_v7_cpu_real_batch.py
+      - name: Retrieve immutable verified v7 522-action dataset
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: qlora-v7-unique-balanced-train-validation
+          run-id: 43396613861
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          path: runs/source
+      - name: Retrieve physically verified v3B 9B full-LoRA baseline
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: qwen35-9b-qlora-v3b-adapter
+          run-id: 38152689194
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          path: runs/v3b
+      - name: Verify GAIA-independent training source and frozen base adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,zipfile
+          from pathlib import Path
+          audit=json.loads(Path("runs/source/qlora-v7-audit.json").read_text())
+          assert audit["train_actions"]==522
+          assert audit["train_tasks"]==218
+          assert audit["source_train_real_tasks"]==44
+          assert audit["source_holdout_real_tasks"]==11
+          assert audit["train_real_action_fraction"]==0.333333
+          assert audit["gaia_training_rows"]==0
+          for name,key in [("qlora-v7-train.jsonl","train_sha256"),("qlora-v7-heldout.jsonl","holdout_sha256")]:
+              p=Path("runs/source")/name
+              assert hashlib.sha256(p.read_bytes()).hexdigest()==audit[key]
+          p=Path("runs/v3b/qwen35-9b-qlora-v3b-adapter.zip")
+          assert p.is_file() and p.stat().st_size>50000000
+          with zipfile.ZipFile(p) as z:
+              assert "adapter_model.safetensors" in z.namelist()
+              assert "adapter_config.json" in z.namelist()
+              assert len(z.read("adapter_model.safetensors"))>50000000
+              target=Path("runs/v3b-adapter")
+              target.mkdir()
+              for name in ("adapter_config.json","adapter_model.safetensors"):
+                  (target/name).write_bytes(z.read(name))
+          print("V7_CPU_REAL_SFT_INPUT_VERIFIED",json.dumps({"actions":522,"parents":218,"real_parents":44,"val_parents":11}))
+          PY
+      - name: Real CPU LoRA fine-tune on ten NEW whole parents (24 supervised actions)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.run_v7_cpu_real_batch \
+            --batch-index 0 \
+            --input runs/source/qlora-v7-train.jsonl \
+            --audit runs/source/qlora-v7-audit.json \
+            --source-adapter runs/v3b-adapter \
+            --output runs/v7-cpu-batch0 \
+            --learning-rate 5e-5
+      - name: Require physical weights, optimizer, state continuity, and no train/eval overlap
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          d=Path("runs/v7-cpu-batch0/checkpoint")
+          st=json.loads((d/"state.json").read_text())
+          adapter=d/"adapter/adapter_model.safetensors"
+          optimizer=d/"optimizer.pt"
+          assert st["model_trained"] is True
+          assert st["completed_optimizer_steps"]==24
+          assert st["batch_action_count"]==24
+          assert st["batch_parent_count"]==10
+          assert len(st["completed_parent_ids"])==10
+          assert len(set(st["completed_parent_ids"]))==10
+          assert st["gaia_train_count"]==0 and st["heldout_train_count"]==0
+          assert st["generalization_verified"] is False
+          assert st["adapter_sha256"]==hashlib.sha256(adapter.read_bytes()).hexdigest()
+          assert st["optimizer_sha256"]==hashlib.sha256(optimizer.read_bytes()).hexdigest()
+          print("QLORA_V7_CPU_BATCH0_WEIGHTS_AND_MOMENTUM_VERIFIED",json.dumps(st,sort_keys=True))
+          PY
+      - name: Save first real tool-pattern SFT checkpoint, including failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qlora-v7-cpu-real-batch0-checkpoint-if-trained
+          path: runs/v7-cpu-batch0/
+          retention-days: 30
+          if-no-files-found: warn
