@@ -1,0 +1,101 @@
+name: QLoRA v6 observed 56-task source-disjoint training-input gate
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/2wiki-teacher-expansion-20261113]
+    paths: [.github/QLORA_V6_OBSERVED_START]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify-real-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install real-data validation and 9B tokenizer
+        run: |
+          python -m pip install -e ".[dev,eval,files]"
+          python -m pip install 'transformers>=5.15,<6' 'jinja2>=3.1' 'sentencepiece>=0.2'
+          python -m pytest -q tests/test_merge_real_56_observed.py tests/test_prepare_real_2048_complete_tasks.py
+      - name: Recover 40 genuinely observed source-diverse strict TRAIN tasks
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          run-id: 43249410666
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: teacher-multisource-strict-curated
+          path: runs/old
+      - name: Retrieve 4 separate new 2Wiki source pages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          run-id: 43372538585
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          pattern: two-wiki-teacher-expand-shard-*
+          path: runs/new
+          merge-multiple: false
+      - name: Build real GAIA protected set independently
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          python - <<'PY'
+          from gaia_small_agent.benchmark.gaia100 import load_validation
+          from gaia_small_agent.training.protection import build_protected_question_hashes
+          h=build_protected_question_hashes(load_validation(token=None),"runs/gaia-protected-hashes.json")
+          assert len(h)>=100
+          print("GAIA_EXCLUSION_SET",len(h))
+          PY
+      - name: Merge and recheck 56 unique observed TRAIN trajectories
+        run: |
+          set -euo pipefail
+          python -m scripts.merge_real_56_observed \
+            --sources \
+              runs/old/multi-source-strict-curated.jsonl \
+              runs/new/two-wiki-teacher-expand-shard-0/2wiki-strict-curated.jsonl \
+              runs/new/two-wiki-teacher-expand-shard-1/2wiki-strict-curated.jsonl \
+              runs/new/two-wiki-teacher-expand-shard-2/2wiki-strict-curated.jsonl \
+              runs/new/two-wiki-teacher-expand-shard-3/2wiki-strict-curated.jsonl \
+            --protected runs/gaia-protected-hashes.json \
+            --output runs/real-v6-observed56.jsonl \
+            --report runs/real-v6-observed56-report.json
+      - name: Full 2048-token context and final-answer preservation; no partial parent supervision
+        run: |
+          set -euo pipefail
+          python -m scripts.prepare_real_2048_complete_tasks \
+            --input runs/real-v6-observed56.jsonl \
+            --protected runs/gaia-protected-hashes.json \
+            --model Qwen/Qwen3.5-9B \
+            --max-length 2048 \
+            --expected-tasks 56 --expected-actions 228 \
+            --minimum-complete-tasks 45 \
+            --output runs/real-v6-untruncated-training.jsonl \
+            --report runs/real-v6-untruncated-report.json
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          p=json.loads(Path("runs/real-v6-untruncated-report.json").read_text())
+          assert p["retained_unique_tasks"]>=45
+          assert p["source_task_counts"]["2wikimultihopqa-train"]>=10
+          assert p["retained_final_answers"]==p["retained_unique_tasks"]
+          assert p["complete_parent_trajectories_only"] is True
+          assert p["training_ran"] is False
+          print("QLORA_V6_REAL_TOKEN_GATE",json.dumps(p,sort_keys=True))
+          PY
+      - name: Export training-ready verified full-context source and manifest
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qlora-v6-observed-multisource-2048
+          path: |
+            runs/real-v6-observed56-report.json
+            runs/real-v6-untruncated-training.jsonl
+            runs/real-v6-untruncated-report.json
+          if-no-files-found: warn
+          retention-days: 30
