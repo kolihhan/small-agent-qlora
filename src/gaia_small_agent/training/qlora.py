@@ -361,12 +361,49 @@ def _cpu_safe_compute_loss(model, inputs: dict, *, return_outputs: bool = False)
     return (loss, outputs) if return_outputs else loss
 
 
+def _native_cuda_bf16_supported(torch) -> bool:
+    """Require an actual SM80+ CUDA device, not PyTorch's BF16 emulation.
+
+    torch.cuda.is_bf16_supported() may report True for BF16 emulation on an
+    SM75 Tesla T4. TRL's chunked head still uses an SM80-only BF16 GEMM.
+    """
+    if not torch.cuda.is_available():
+        return False
+    major, _minor = torch.cuda.get_device_capability(torch.cuda.current_device())
+    return major >= 8 and bool(torch.cuda.is_bf16_supported())
+
+
 def _training_runtime_defaults(*, cuda_available: bool, cuda_bf16_supported: bool) -> dict[str, Any]:
+    # TRL's chunked_logprob backward calls torch.addmm(out_dtype=float32), which
+    # requires SM80+. T4 is SM75 even when the model loads in float16.
+    if not cuda_available:
+        loss_path = "native-cpu"
+    elif not cuda_bf16_supported:
+        loss_path = "native-t4"
+    else:
+        loss_path = "trl-fused"
     return {
         "compute_dtype_name": "bfloat16" if (not cuda_available or cuda_bf16_supported) else "float16",
         "use_gradient_checkpointing": bool(cuda_available),
-        "trainer_loss_path": "trl-fused" if cuda_available else "native-cpu",
+        "trainer_loss_path": loss_path,
     }
+
+
+def _native_t4_training_args(config_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Transfer compatible settings to pure Transformers Trainer on SM75 GPUs.
+
+    SFTConfig/SFTTrainer installs a fused LM-head hook whose backward is not
+    implemented on T4. A mere SFTTrainer.compute_loss override is insufficient.
+    Preserve every actual optimization setting; never carry TRL-only settings.
+    """
+    args = {
+        key: value for key, value in config_kwargs.items()
+        if key not in {"max_length", "completion_only_loss", "loss_type"}
+    }
+    args["remove_unused_columns"] = False
+    args["gradient_checkpointing"] = False  # already enabled on frozen k-bit model
+    args["label_names"] = ["labels"]
+    return args
 
 
 def _normalize_lora_target_modules(value: str | list[str]) -> str | list[str]:
@@ -380,6 +417,68 @@ def _normalize_lora_target_modules(value: str | list[str]) -> str | list[str]:
     if not modules:
         raise ValueError("lora_target_modules must not be empty")
     return modules
+
+
+def _prepare_4bit_model_preserving_large_half_weights(
+    model,
+    *,
+    torch,
+    use_gradient_checkpointing: bool,
+    max_upcast_elements: int = 1_000_000,
+):
+    """Freeze a 4-bit backbone without PEFT's expensive full-precision embedding cast.
+
+    PEFT's default k-bit preparation upcasts every non-Params4bit half tensor to
+    float32. Qwen3.5-9B has very large unquantized embedding/head tensors; on a
+    15 GiB T4 one such cast can request ~3.8 GiB and OOM before training starts.
+    Keep those frozen large tensors in their original half dtype. Upcast only
+    small floating-point tensors (e.g. normalization weights) for stability.
+    This explicit opt-in has no effect on historical training configurations.
+    """
+    if max_upcast_elements <= 0:
+        raise ValueError("max_upcast_elements must be positive")
+    for param in model.parameters():
+        param.requires_grad = False
+        if (
+            param.__class__.__name__ != "Params4bit"
+            and param.dtype in (torch.float16, torch.bfloat16)
+            and param.numel() <= max_upcast_elements
+        ):
+            param.data = param.data.to(torch.float32)
+
+    if use_gradient_checkpointing:
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        else:
+            def require_grad_on_embedding_output(_module, _inputs, output):
+                output.requires_grad_(True)
+            model.get_input_embeddings().register_forward_hook(
+                require_grad_on_embedding_output
+            )
+        model.gradient_checkpointing_enable()
+    return model
+
+
+
+def _qlora_model_load_kwargs(
+    model_name: str, *, quantization_config: Any,
+    memory_safe_half_weights: bool, compute_dtype: Any,
+) -> dict[str, Any]:
+    """Load unquantized frozen tensors in an actual T4-supported dtype.
+
+    Some Qwen3.5 checkpoints declare bfloat16. With large frozen tensors kept
+    in half precision to avoid OOM, that default can produce unsupported BF16
+    backward GEMMs on compute capability 7.5 (T4). Pin float16 at load time
+    when the memory-safe T4 path is active; leave legacy loads unchanged.
+    """
+    kwargs: dict[str, Any] = {
+        "quantization_config": quantization_config,
+        "device_map": "auto",
+        "trust_remote_code": True,
+    }
+    if memory_safe_half_weights:
+        kwargs["dtype"] = compute_dtype
+    return kwargs
 
 
 def train_qlora(
@@ -402,6 +501,7 @@ def train_qlora(
     exposure_seed: str = "qlora-v3a-exposure",
     exposure_profile: str = "v3a-balanced",
     require_full_prompt: bool = False,
+    preserve_large_half_parameters: bool = False,
 ) -> None:
     rows = load_verified_rows(data_path, protected_questions_path=protected_questions_path)
     try:
@@ -415,7 +515,13 @@ def train_qlora(
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     cuda_available = torch.cuda.is_available()
-    cuda_bf16_supported = bool(cuda_available and torch.cuda.is_bf16_supported())
+    cuda_bf16_supported = _native_cuda_bf16_supported(torch)
+    if cuda_available:
+        print("QLORA_CUDA_PRECISION_GATE", {
+            "compute_capability": torch.cuda.get_device_capability(torch.cuda.current_device()),
+            "bf16_native_supported": cuda_bf16_supported,
+            "selected_trainer": "trl-fused" if cuda_bf16_supported else "transformers.Trainer",
+        }, flush=True)
     runtime_defaults = _training_runtime_defaults(
         cuda_available=cuda_available,
         cuda_bf16_supported=cuda_bf16_supported,
@@ -429,14 +535,24 @@ def train_qlora(
     )
     language_model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        quantization_config=bnb,
-        device_map="auto",
-        trust_remote_code=True,
+        **_qlora_model_load_kwargs(
+            model_name,
+            quantization_config=bnb,
+            memory_safe_half_weights=preserve_large_half_parameters and cuda_available,
+            compute_dtype=compute_dtype,
+        ),
     )
-    language_model = prepare_model_for_kbit_training(
-        language_model,
-        use_gradient_checkpointing=runtime_defaults["use_gradient_checkpointing"],
-    )
+    if preserve_large_half_parameters and cuda_available:
+        language_model = _prepare_4bit_model_preserving_large_half_weights(
+            language_model,
+            torch=torch,
+            use_gradient_checkpointing=runtime_defaults["use_gradient_checkpointing"],
+        )
+    else:
+        language_model = prepare_model_for_kbit_training(
+            language_model,
+            use_gradient_checkpointing=runtime_defaults["use_gradient_checkpointing"],
+        )
     target_modules = _normalize_lora_target_modules(lora_target_modules)
     peft_cfg = LoraConfig(
         r=lora_r,
@@ -528,6 +644,7 @@ def train_qlora(
         "scope": "text-only causal language model",
         "trainer_loss_path": runtime_defaults["trainer_loss_path"],
         "gradient_checkpointing": runtime_defaults["use_gradient_checkpointing"],
+        "preserve_large_half_parameters": preserve_large_half_parameters,
     }
     (output_dir / "run_config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
 
@@ -559,19 +676,57 @@ def train_qlora(
     config = SFTConfig(**config_kwargs)
 
     trainer_cls = SFTTrainer
-    if not cuda_available:
-        class CpuSafeSFTTrainer(SFTTrainer):
+    if runtime_defaults["trainer_loss_path"] != "trl-fused":
+        class NativeCausalLossSFTTrainer(SFTTrainer):
             def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
                 return _cpu_safe_compute_loss(model, inputs, return_outputs=return_outputs)
 
-        trainer_cls = CpuSafeSFTTrainer
+        trainer_cls = NativeCausalLossSFTTrainer
 
-    trainer = trainer_cls(
-        model=language_model,
-        args=config,
-        train_dataset=dataset,
-        processing_class=tokenizer,
-    )
+    if runtime_defaults["trainer_loss_path"] == "native-t4":
+        # SFTTrainer attaches TRL's chunked-LM-head hooks during __init__,
+        # even when compute_loss is overridden. The hooks still call
+        # torch.addmm(out_dtype=float32) during backward, requiring CUDA SM80.
+        # Tesla T4 is SM75: bypass SFTTrainer entirely on this backend.
+        from transformers import Trainer, TrainingArguments
+
+        def collate_tokenized_actions(features):
+            from torch.nn.utils.rnn import pad_sequence
+
+            pad_id = tokenizer.pad_token_id
+            if pad_id is None:
+                pad_id = tokenizer.eos_token_id
+            if pad_id is None:
+                raise ValueError("Tokenizer lacks both pad_token_id and eos_token_id")
+            pad_values = {"input_ids": pad_id, "attention_mask": 0, "labels": -100}
+            return {
+                name: pad_sequence(
+                    [torch.tensor(row[name], dtype=torch.long) for row in features],
+                    batch_first=True, padding_value=padding_value,
+                )
+                for name, padding_value in pad_values.items()
+            }
+
+        native_args = _native_t4_training_args(config_kwargs)
+        print("QLORA_T4_TRAINER_BACKEND", {
+            "trainer": "transformers.Trainer",
+            "loss": "model-native causal LM cross entropy",
+            "trl_fused_head": False, "dtype": str(compute_dtype),
+        }, flush=True)
+        trainer = Trainer(
+            model=language_model,
+            args=TrainingArguments(**native_args),
+            train_dataset=dataset,
+            processing_class=tokenizer,
+            data_collator=collate_tokenized_actions,
+        )
+    else:
+        trainer = trainer_cls(
+            model=language_model,
+            args=config,
+            train_dataset=dataset,
+            processing_class=tokenizer,
+        )
     trainer.train(resume_from_checkpoint=str(resume_path) if resume_path else None)
     trainer.save_model(str(output_dir))
     tokenizer.save_pretrained(str(output_dir))
