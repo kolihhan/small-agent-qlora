@@ -99,7 +99,7 @@ jobs:
              "transformers>=5.15,<6",
              "peft>=0.20,<1","trl>=1.10,<2","accelerate>=1.10,<2",
              "bitsandbytes>=0.50.1,<1","datasets>=4",
-             "huggingface_hub>=2.1.1,<3","gradio>=6,<7","jinja2>=3.1",
+             "huggingface_hub>=1.0,<2","gradio>=6,<7","jinja2>=3.1",
              "sentencepiece>=0.2","gradio_client>=2,<3"
           ])+"\n")
           (dest/"README.md").write_text(
@@ -119,7 +119,9 @@ jobs:
           api=HfApi(token=os.environ["HF_TOKEN"])
           rid=os.environ["HF_SPACE_ID"]
           # create_repo requires a new space, never delete/overwrite v2
-          api.create_repo(repo_id=rid,repo_type="space",private=True,space_sdk="gradio",space_hardware="zero-a10g",exist_ok=False)
+          # This named private v7 Space was created by our previous audited run.
+          # Reuse it; never touch the old v2 trainer or any public Space.
+          api.create_repo(repo_id=rid,repo_type="space",private=True,space_sdk="gradio",space_hardware="zero-a10g",exist_ok=True)
           api.upload_folder(folder_path=str(dest),repo_id=rid,repo_type="space",
                             commit_message="Deploy one source-disjoint 9B QLoRA continuation, no GPU requested yet")
           api.add_space_secret(repo_id=rid,key="HF_TOKEN",value=os.environ["HF_TOKEN"])
