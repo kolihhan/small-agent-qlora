@@ -3,3 +3,5 @@
 Retry source preflight after installing pytest; previous run had no GPU consumption.
 
 Fix free zero-a10g at Space create (prior 402 was default CPU-basic, no GPU spent).
+
+2026-11-13: rerun only after reading Space build logs and resolving Gradio6/hub>=2 dependency incompatibility. Reuse existing private v7 Space. No paid GPU.
