@@ -1,3 +1,5 @@
 2026-11-13 one verified first QLoRA v7 batch on FREE HF ZeroGPU 240s. Start from frozen v3B PEFT weights; source 522 actions with 11 held-out parents, choose 2 real + 8 synthetic whole TRAIN parents, preserve adapter and optimizer. No paid hardware, no Kaggle, no SQL training.
 
 Retry source preflight after installing pytest; previous run had no GPU consumption.
+
+Fix free zero-a10g at Space create (prior 402 was default CPU-basic, no GPU spent).
