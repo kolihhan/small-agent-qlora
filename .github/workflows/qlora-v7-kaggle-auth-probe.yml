@@ -1,0 +1,40 @@
+name: QLoRA v7 Kaggle free GPU capability preflight (read-only)
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/qlora-v7-kaggle-gpu-20261113]
+    paths: [.github/QLORA_V7_KAGGLE_PREFLIGHT_START]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+      KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+      - name: Check Kaggle API credential presence without displaying credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$KAGGLE_API_TOKEN" ]; then
+            echo "QLORA_KAGGLE_AUTH_METHOD=api_token"
+          elif [ -n "$KAGGLE_USERNAME" ] && [ -n "$KAGGLE_KEY" ]; then
+            echo "QLORA_KAGGLE_AUTH_METHOD=legacy_key"
+          else
+            echo "QLORA_KAGGLE_CREDENTIALS_MISSING: no API token or username/key in this repo"
+            exit 42
+          fi
+      - name: Verify Kaggle can list owned notebooks without GPU allocation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'kaggle>=2.2,<3'
+          kaggle kernels list --mine --page 1 >/dev/null
+          echo "QLORA_KAGGLE_READ_ONLY_AUTH=OK"
