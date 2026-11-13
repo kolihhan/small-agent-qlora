@@ -1,0 +1,98 @@
+name: QLoRA v7 convert verified PEFT adapter to GGUF
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/qlora-v7-helout-nextaction-eval-20261113]
+    paths: [.github/QLORA_V7_GGUF_CONVERT_START]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  convert-v7:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - name: Download immutable verified v7 training checkpoint
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43418636161
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: qlora-v7-real-sft-verified-adapter-if-trained
+          path: frozen
+      - name: Validate v7 adapter source, SHA and PEFT configuration
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,zipfile
+          from pathlib import Path
+          z=Path("frozen/qlora-v7-adapter.zip")
+          assert z.is_file() and z.stat().st_size>10000000
+          dst=Path("runs/v7-adapter")
+          dst.mkdir(parents=True,exist_ok=False)
+          with zipfile.ZipFile(z) as f:
+              required={"adapter_model.safetensors","adapter_config.json","verified-v7-report.json"}
+              assert required<=set(f.namelist())
+              report=json.loads(f.read("verified-v7-report.json"))
+              assert report["schema"]=="qlora-v7-actual-nf4-sft-checkpoint-v1"
+              assert report["source_sha"]=="686e8aca022713d0dbcc4b2b2690251465916c8c"
+              assert report["adapter_sha256"]=="c5033f28a6947b687ada54731e876ad0f87d93164f9a02f516e6323d179eaa85"
+              assert report["model"]=="Qwen/Qwen3.5-9B"
+              assert report["optimizer_steps_target"]==65 and report["train_actions"]==522
+              for name in required:
+                  (dst/name).write_bytes(f.read(name))
+              assert hashlib.sha256((dst/"adapter_model.safetensors").read_bytes()).hexdigest()==report["adapter_sha256"]
+              cfg=json.loads((dst/"adapter_config.json").read_text())
+              assert cfg["base_model_name_or_path"]=="Qwen/Qwen3.5-9B",cfg
+              print("V7_ADAPTER_SHA_VERIFIED",report["adapter_sha256"])
+          PY
+      - name: Pin proven llama.cpp converter and Qwen3.5 configuration
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
+          git -C /tmp/llama.cpp checkout aa94f2086147cd4bfbcff818ce998dffce5fcb39
+          python -m pip install --quiet -r /tmp/llama.cpp/requirements/requirements-convert_lora_to_gguf.txt
+          python -m pip install --quiet --upgrade 'transformers>=5.15,<6'
+          python - <<'PY'
+          from transformers import AutoConfig
+          assert AutoConfig.from_pretrained("Qwen/Qwen3.5-9B").model_type=="qwen3_5"
+          PY
+      - name: Convert v7 PEFT adapter to GGUF
+        run: |
+          set -euo pipefail
+          python /tmp/llama.cpp/convert_lora_to_gguf.py \
+            --base-model-id Qwen/Qwen3.5-9B \
+            --outfile runs/qlora-v7-adapter-f16.gguf \
+            --outtype f16 \
+            runs/v7-adapter
+          test -s runs/qlora-v7-adapter-f16.gguf
+          sha256sum runs/qlora-v7-adapter-f16.gguf > runs/qlora-v7-adapter-f16.sha256
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          f=Path("runs/qlora-v7-adapter-f16.gguf")
+          assert f.stat().st_size>1000000
+          d={"schema":"qlora-v7-gguf-conversion-v1",
+             "training_run":43418636161,
+             "source_adapter_sha256":"c5033f28a6947b687ada54731e876ad0f87d93164f9a02f516e6323d179eaa85",
+             "converter_sha":"aa94f2086147cd4bfbcff818ce998dffce5fcb39",
+             "gguf_sha256":Path("runs/qlora-v7-adapter-f16.sha256").read_text().split()[0],
+             "gguf_bytes":f.stat().st_size,
+             "gaia_evaluated":False}
+          Path("runs/qlora-v7-conversion-meta.json").write_text(json.dumps(d,sort_keys=True,indent=2)+"\n")
+          print("V7_GGUF_CONVERSION_VERIFIED",json.dumps(d,sort_keys=True))
+          PY
+      - name: Save frozen CPU-inference adapter
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qlora-v7-converted-f16-gguf
+          path: |
+            runs/qlora-v7-adapter-f16.gguf
+            runs/qlora-v7-adapter-f16.sha256
+            runs/qlora-v7-conversion-meta.json
+          retention-days: 30
+          if-no-files-found: error

@@ -1,0 +1,210 @@
+name: Matched frozen GAIA100 Base vs trained QLoRA v7 on CPU
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/qlora-v7-helout-nextaction-eval-20261113]
+    paths: [.github/QLORA_V7_GAIA100_START]
+permissions:
+  contents: read
+  actions: read
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  FROZEN_EVAL_COMMIT: "08fbcaa5ed82c5238188c45d5748993bae9bf1e1"
+  GGUF_SOURCE_RUN_ID: "43434228699"
+  V7_GGUF_SHA256: "475f5fb59a553390a0dde9425d36b42ff85a0345bdd31b8465c22fd4d2bc02e2"
+  V7_TRAINED_ADAPTER_SHA256: "c5033f28a6947b687ada54731e876ad0f87d93164f9a02f516e6323d179eaa85"
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA256: "8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54"
+  LLAMA_RELEASE_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_RELEASE_SHA256: "36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b"
+  MODEL_ALIAS: qwen3.5-9b
+jobs:
+  matched:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - name: Checkout frozen external GAIA evaluation protocol (not training code)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ env.FROZEN_EVAL_COMMIT }}
+      - name: Install required frozen evaluator and tool dependencies
+        run: python -m pip install --quiet -e '.[search,files,eval]'
+      - name: Verify protected GAIA data access without exposing credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN_NOT_CONFIGURED"; exit 42; }
+      - name: Fetch checksum-pinned Q4 base model and historical llama.cpp runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model matched-input/v7 /tmp/llama-bin
+          curl --http1.1 -fL --retry 8 --retry-all-errors --retry-delay 2 "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf
+          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
+          curl --http1.1 -fL --retry 8 --retry-all-errors --retry-delay 2 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+      - name: Download exact v7 converted adapter from successful CPU conversion
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          run-id: 43434228699
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: qlora-v7-converted-f16-gguf
+          path: matched-input/v7
+      - name: Reject drifted LoRA conversion provenance or corrupted weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s matched-input/v7/qlora-v7-adapter-f16.gguf
+          echo "$V7_GGUF_SHA256  matched-input/v7/qlora-v7-adapter-f16.gguf" | sha256sum -c -
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          meta=json.loads(Path("matched-input/v7/qlora-v7-conversion-meta.json").read_text())
+          assert meta["schema"]=="qlora-v7-gguf-conversion-v1"
+          assert meta["training_run"]==43418636161
+          assert meta["source_adapter_sha256"]==os.environ["V7_TRAINED_ADAPTER_SHA256"]
+          assert meta["gguf_sha256"]==os.environ["V7_GGUF_SHA256"]
+          print("FROZEN_V7_GAIA_INPUT_VERIFIED",meta["gguf_sha256"])
+          PY
+      - name: Run Base then v7 on exactly matching frozen GAIA shard
+        shell: bash
+        run: |
+          set -euo pipefail
+          shard="${{ matrix.shard }}"
+          run_arm() {
+            arm="$1"
+            out="runs/$arm/shard-$shard"
+            mkdir -p "$out"
+            extra=()
+            if [ "$arm" = "qlora-v7" ]; then
+              extra=(--lora matched-input/v7/qlora-v7-adapter-f16.gguf)
+            fi
+            "$LLAMA_SERVER" \
+              -m model/Qwen3.5-9B-Q4_K_M.gguf \
+              "${extra[@]}" \
+              --alias "$MODEL_ALIAS" \
+              --host 127.0.0.1 --port 8080 \
+              --ctx-size 16384 --threads 4 --parallel 1 \
+              --jinja --reasoning-budget 0 --temperature 0 \
+              > "$out/llama-server.log" 2>&1 &
+            pid=$!
+            echo "$pid" > "$out/llama-server.pid"
+            cleanup() {
+              kill "$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+            }
+            trap cleanup RETURN
+            for i in {1..180}; do
+              if curl -fsS http://127.0.0.1:8080/health >/dev/null; then break; fi
+              sleep 2
+            done
+            curl -fsS http://127.0.0.1:8080/health >/dev/null
+            python scripts/run_gaia_eval_shard.py \
+              --backend openai_compat \
+              --model "$MODEL_ALIAS" \
+              --openai-base-url http://127.0.0.1:8080 \
+              --hf-token "$HF_TOKEN" \
+              --shard-index "$shard" \
+              --shard-count 20 \
+              --work-root "$out" \
+              --output "$out/shard.json"
+            cleanup
+            trap - RETURN
+            sleep 2
+          }
+          run_arm base
+          run_arm qlora-v7
+      - name: Persist paired GAIA shard (failures retained for forensics)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: matched-gaia-v7-shard-${{ matrix.shard }}
+          path: runs/
+          if-no-files-found: warn
+          retention-days: 30
+  summarize:
+    needs: matched
+    if: ${{ always() && needs.matched.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ env.FROZEN_EVAL_COMMIT }}
+      - run: python -m pip install --quiet -e .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: matched-gaia-v7-shard-*
+          path: evidence
+      - name: Validate exact 100-case identity pairing; compute real metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          from gaia_small_agent.benchmark.gaia100 import summarize_results
+          results={}
+          ids={}
+          for arm in ("base","qlora-v7"):
+              rows=[]
+              selected=set()
+              files=sorted(Path("evidence").glob(f"matched-gaia-v7-shard-*/{arm}/shard-*/results.jsonl"))
+              if len(files)!=20:
+                  raise SystemExit(f"{arm}: need 20 evidence shards, observed {len(files)}")
+              for path in files:
+                  for line in path.read_text().splitlines():
+                      if not line.strip(): continue
+                      r=json.loads(line)
+                      task_id=str(r["task_id"])
+                      if task_id in selected:
+                          raise SystemExit(f"{arm}: duplicate {task_id}")
+                      selected.add(task_id)
+                      rows.append(r)
+              if len(rows)!=100 or len(selected)!=100:
+                  raise SystemExit(f"{arm}: not exact frozen GAIA100")
+              results[arm]=summarize_results(rows)
+              ids[arm]=selected
+          if ids["base"]!=ids["qlora-v7"]:
+              raise SystemExit("GAIA matched Base-v7 identities differ")
+          b=results["base"]
+          v=results["qlora-v7"]
+          payload={
+              "schema":"matched-gaia-base-v7/20261113-v1",
+              "benchmark":"GAIA 2023 validation frozen Evaluation100",
+              "pairing":"same GitHub runner per shard; Base then v7",
+              "evaluation_runtime_commit":os.environ["FROZEN_EVAL_COMMIT"],
+              "context_size":16384,"agent_max_steps":12,
+              "temperature":0,"reasoning_budget":0,
+              "base_gguf_sha256":os.environ["MODEL_SHA256"],
+              "v7_gguf_sha256":os.environ["V7_GGUF_SHA256"],
+              "v7_training_run":43418636161,
+              "v7_source_disjoint_heldout_22":"21/22 vs Base 17/22; distinct evaluation",
+              "base":b,"qlora_v7":v,
+              "delta_v7_vs_base":{
+                  "correct_absolute":v["correct"]-b["correct"],
+                  "accuracy_pp":(v["accuracy"]-b["accuracy"])*100,
+                  "completion_rate_pp":(v["completion_rate"]-b["completion_rate"])*100,
+                  "tool_errors":v["tool_errors"]-b["tool_errors"],
+                  "duplicate_calls_blocked":v["duplicate_calls_blocked"]-b["duplicate_calls_blocked"],
+              },
+              "promotion_decision":"NOT_AUTOMATIC; compare accuracy, finalization, and real failure traces",
+          }
+          Path("matched-gaia-v7-summary.json").write_text(json.dumps(payload,sort_keys=True,indent=2)+"\n")
+          print("V7_GAIA100_MATCHED_FINAL",json.dumps(payload,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: matched-gaia-v7-summary
+          path: matched-gaia-v7-summary.json
+          if-no-files-found: error
+          retention-days: 30

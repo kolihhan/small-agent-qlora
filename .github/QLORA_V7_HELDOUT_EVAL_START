@@ -1,0 +1,2 @@
+2026-11-13: 11 untouched HotpotQA/2Wiki real parents; match exactly first tool + final action per parent; 22 decisions Base vs trained v7; no GAIA or SFT.
+Retry upload-only transport fault using <=8MiB chunks, reassemble SHA-verified, freeze all 22 scored decisions.
