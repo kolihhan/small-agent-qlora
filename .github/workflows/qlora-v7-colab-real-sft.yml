@@ -95,6 +95,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --quiet 'google-colab-cli==0.8.0'
+          colab exec --help | grep -- --timeout
           timeout 110 colab --auth=adc usage
 
       - name: Fetch physically verified 522-action train + heldout evidence from CPU preflight
@@ -150,7 +151,7 @@ jobs:
           colab --auth=adc upload -s "$session" inputs/qlora-v7-heldout.jsonl /content/qlora-v7-heldout.jsonl
           colab --auth=adc upload -s "$session" inputs/qlora-v7-audit.json /content/qlora-v7-audit.json
           set +e
-          colab --auth=adc exec -s "$session" -f inputs/train-on-colab.py 2>&1 | tee "$RUNNER_TEMP/v7-colab-train.log"
+          colab --auth=adc exec -s "$session" --timeout 18000 -f inputs/train-on-colab.py 2>&1 | tee "$RUNNER_TEMP/v7-colab-train.log"
           train_rc=${PIPESTATUS[0]}
           set -e
           colab --auth=adc download -s "$session" /content/qlora-v7-adapter.zip exported/qlora-v7-adapter.zip || true
