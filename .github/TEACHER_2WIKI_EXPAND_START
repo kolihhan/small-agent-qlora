@@ -1,0 +1,2 @@
+2026-11-13: four CPU-only Qwen3.5-9B observed 2Wiki teacher rollout shards.
+Never train on GAIA/validation. Real tool outputs plus strict answer oracle required.
