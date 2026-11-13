@@ -94,7 +94,7 @@ def _single_run_config(args, runtime: AgentRuntime) -> dict:
         "thinking": args.thinking,
         "tool_observation_max_chars": MAX_TOOL_OBSERVATION_CHARS,
         "tool_names": list(runtime.tools),
-        "tool_policy_guard": runtime.tool_policy_guard,
+        **({"tool_policy_guard": True} if getattr(runtime, "tool_policy_guard", False) else {}),
     }
 
 
@@ -164,7 +164,7 @@ def gaia_command(args) -> int:
         "partition": args.partition,
         "cache_implementation": args.cache_implementation if args.backend == "transformers" else None,
         "tool_names": tool_preflight["tool_names"],
-        "tool_policy_guard": getattr(args, "tool_policy_guard", False),
+        **({"tool_policy_guard": True} if getattr(args, "tool_policy_guard", False) else {}),
     }
     manifest = args.manifest or str(Path(args.work_root) / "manifest.json")
     summary = run_gaia100(
