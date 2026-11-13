@@ -134,10 +134,24 @@ jobs:
           echo "Starting official Colab CLI GPU job; model=Qwen3.5-9B; mode=$mode; accelerator=$COLAB_GPU"
           # Capture only a verified adapter; smoke artifacts are named separately.
           # Keep the Colab VM alive until artifact recovery, then release via trap.
-          set +e
-          colab --auth=adc run -s "$session" --gpu "$COLAB_GPU" --keep --timeout 0 "$remote_script"
-          remote_rc=$?
-          set -e
+          # Retry only transient pre-allocation 503. Never replay partial SFT.
+          remote_rc=1
+          for try in 1 2 3; do
+            start_seconds=$SECONDS
+            set +e
+            colab --auth=adc run -s "$session" --gpu "$COLAB_GPU" --keep --timeout 0 "$remote_script" 2>&1 | tee "$RUNNER_TEMP/colab-200-attempt-$try.log"
+            remote_rc=${PIPESTATUS[0]}
+            set -e
+            if [ "$remote_rc" -eq 0 ]; then break; fi
+            elapsed=$((SECONDS-start_seconds))
+            if [ "$try" -ge 3 ] || [ "$elapsed" -ge 240 ] || ! grep -Eiq 'Service Unavailable|HTTP 503|status code 503' "$RUNNER_TEMP/colab-200-attempt-$try.log"; then
+              echo "Nontransient or post-allocation failure; refusing automatic replay."
+              break
+            fi
+            echo "Transient Colab 503 before allocation. Bounded retry $try/3"
+            colab --auth=adc stop -s "$session" >/dev/null 2>&1 || true
+            sleep $((120 * try))
+          done
           mkdir -p exported
           colab --auth=adc download -s "$session" "$remote_archive" "$local_archive" || echo "No verified adapter available for recovery"
           colab --auth=adc log -s "$session" -o "exported/colab-execution.ipynb" || true
