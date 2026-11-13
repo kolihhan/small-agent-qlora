@@ -1,0 +1,1 @@
+2026-11-13: execute first real whole-parent pattern learning Qwen3.5-9B CPU LoRA, actual model optimizer steps, backed by verified 522 action source and prior 9B adapter. No paid GPU and no SQL training.
