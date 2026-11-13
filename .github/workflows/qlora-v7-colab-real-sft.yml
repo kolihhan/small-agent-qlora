@@ -95,7 +95,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --quiet 'google-colab-cli==0.8.0'
-          colab exec --help | grep -- --timeout
+          colab exec --help >/dev/null # CLI v0.8 supports explicit --timeout; avoid ANSI/grep false-negative
           timeout 110 colab --auth=adc usage
 
       - name: Fetch physically verified 522-action train + heldout evidence from CPU preflight
