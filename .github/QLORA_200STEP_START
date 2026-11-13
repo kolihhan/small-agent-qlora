@@ -14,3 +14,9 @@ OUTPUT=verified_model_adapter_zip
 RUN_ONLY_IF_COLAB_SLOT_FREE=true
 NO_GAIA_IN_TRAIN=true
 POST_TRAIN_EVAL=independent_GAIA_shadow
+
+RETRY_REASON=2026-11-13_03:22Z_Service_Unavailable_503_before_T4_assignment
+PREVIOUS_FAILED_RUN=43358347037
+GUARD=at_most_three_backoff_attempts_only_on_preallocation_503
+EXPERIMENTAL_WORKFLOW_SHA=19b6c48f79cff3cbc8b4c5af1dad4f08a4c2eae9
+STOP_IF_NOT_AVAILABLE=true
