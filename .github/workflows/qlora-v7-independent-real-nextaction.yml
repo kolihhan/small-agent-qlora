@@ -137,6 +137,26 @@ jobs:
           script=script.replace('EVAL_SHA = "__EVAL_SHA__"',f'EVAL_SHA = "{os.environ["GITHUB_SHA"]}"')
           assert 'EVAL_SHA = "__EVAL_SHA__"' not in script
           Path("inputs/eval-on-colab.py").write_text(script)
+          # Colab proxy rejects huge single-request uploads. Upload SHA-pinned
+          # 8 MiB parts, reconstruct inside GPU VM and verify full archive.
+          import subprocess
+          zip_path=Path("checkpoint/qlora-v7-adapter.zip")
+          digest=hashlib.sha256(zip_path.read_bytes()).hexdigest()
+          subprocess.run(["split","-b","8m",str(zip_path),"inputs/v7-adapter-chunk-"],check=True)
+          chunks=sorted(Path("inputs").glob("v7-adapter-chunk-*"))
+          assert len(chunks)>=2
+          Path("inputs/reassemble-on-colab.py").write_text(
+              "import hashlib\n"
+              "from pathlib import Path\n"
+              "parts=sorted(Path('/content').glob('v7-adapter-chunk-*'))\n"
+              f"assert len(parts)=={len(chunks)}, 'missing adapter chunks'\n"
+              "dest=Path('/content/qlora-v7-adapter.zip')\n"
+              "with dest.open('xb') as f:\n"
+              "    for p in parts:\n"
+              "        f.write(p.read_bytes())\n"
+              f"assert hashlib.sha256(dest.read_bytes()).hexdigest()=={digest!r}\n"
+              "print('V7_ADAPTER_REASSEMBLED_AND_SHA_VERIFIED', dest.stat().st_size,flush=True)\n"
+          )
           print("V7_EVAL_PREPARED",json.dumps({"heldout_real_parents":11,"adapter_sha256":report["adapter_sha256"],
                "source_sha":os.environ["GITHUB_SHA"]},sort_keys=True))
           PY
@@ -161,7 +181,11 @@ jobs:
           colab --auth=adc upload -s "$session" inputs/qlora-v7-train.jsonl /content/qlora-v7-train.jsonl
           colab --auth=adc upload -s "$session" inputs/qlora-v7-heldout.jsonl /content/qlora-v7-heldout.jsonl
           colab --auth=adc upload -s "$session" inputs/qlora-v7-audit.json /content/qlora-v7-audit.json
-          colab --auth=adc upload -s "$session" checkpoint/qlora-v7-adapter.zip /content/qlora-v7-adapter.zip
+          # Upload in small requests to avoid Colab proxy HTTP 400 on 193 MB ZIP.
+          for part in inputs/v7-adapter-chunk-*; do
+            colab --auth=adc upload -s "$session" "$part" "/content/${part##*/}"
+          done
+          colab --auth=adc exec -s "$session" --timeout 300 -f inputs/reassemble-on-colab.py
           set +e
           colab --auth=adc exec -s "$session" --timeout 18000 -f inputs/eval-on-colab.py 2>&1 | tee "$RUNNER_TEMP/v7-heldout-gpu.log"
           eval_rc=${PIPESTATUS[0]}
