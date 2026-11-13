@@ -17,8 +17,8 @@ import sys
 import time
 import zipfile
 
-SOURCE_SHA = "290c6400747110bfc1e0fed8ab0e06ea21ce3c58"
-SOURCE_BRANCH = "research/verified-teacher-trajectory-v0-20261112"
+SOURCE_SHA = "2e51b2a6b7a4be6fc723a0dfbf35f5629b8ff350"
+SOURCE_BRANCH = "fix/qlora-v4-t4-4bit-memory-20261112"
 MODEL = "Qwen/Qwen3.5-9B"
 OUT = Path("/content/qlora-full-v4-remote")
 ARCHIVE = Path("/content/qlora-full-v4-adapter.zip")
@@ -102,6 +102,7 @@ def main() -> None:
         max_steps=400,save_steps=50,gradient_accumulation_steps=8,
         lora_target_modules="all-linear",exposure_count=None,
         require_full_prompt=True,
+        preserve_large_half_parameters=(capacity < 20),
     )
     weights = OUT/"adapter_model.safetensors"
     assert weights.exists() and weights.stat().st_size > 1_000_000

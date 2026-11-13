@@ -1,0 +1,213 @@
+name: Colab matched Base vs 200-step v4 QLoRA GAIA Shadow25
+on:
+  workflow_dispatch:
+    inputs:
+      gpu:
+        description: Google Colab accelerator (subject to account entitlement)
+        required: true
+        type: choice
+        options: [L4, T4, A100]
+        default: T4
+  push:
+    branches: [research/verified-teacher-trajectory-v0-20261112, fix/qlora-v4-t4-4bit-memory-20261112]
+    paths: [.github/QLORA_V4_200_SHADOW_START]
+permissions:
+  contents: read
+concurrency:
+  group: colab-gpu-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  colab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      COLAB_GPU: ${{ inputs.gpu || 'T4' }}
+      COLAB_TOKEN: ${{ secrets.COLAB_TOKEN }}
+      COLAB_CLI_TOKEN: ${{ secrets.COLAB_CLI_TOKEN }}
+      GOOGLE_COLAB_TOKEN: ${{ secrets.GOOGLE_COLAB_TOKEN }}
+      COLAB_ACCESS_TOKEN: ${{ secrets.COLAB_ACCESS_TOKEN }}
+      COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
+      COLAB_OAUTH_JSON: ${{ secrets.COLAB_OAUTH_JSON }}
+      COLAB_AUTH_JSON: ${{ secrets.COLAB_AUTH_JSON }}
+      COLAB_CREDENTIALS_JSON: ${{ secrets.COLAB_CREDENTIALS_JSON }}
+      GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+      GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+      GOOGLE_COLAB_CREDENTIALS: ${{ secrets.GOOGLE_COLAB_CREDENTIALS }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Verify shadow evaluation tests before allocating GPU
+        run: |
+          python -m pip install -e ".[dev]"
+          python -m pytest -q tests/test_colab_v4_200step_shadow_eval.py tests/test_gaia100.py
+      - name: Require real successful *bounded* 200-step QLoRA training
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          status="$(curl -fsSL --retry 3 -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/kolihhan/small-agent-qlora/actions/runs/43359396412 \
+            | python -c 'import json,sys; j=json.load(sys.stdin); print(j["status"],j["conclusion"])')"
+          echo "REQUIRED_FULL_TRAINING $status"
+          test "$status" = "completed success"
+      - name: Download verified bounded 200-step adapter (not smoke)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          run-id: 43359396412
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: colab-model-qlora-v4-200step
+          path: runs/200-source
+      - name: Verify adapter model SHA and 200-step identity on CPU
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import tempfile
+          from scripts.colab_v4_200step_shadow_eval_remote import assert_safe_adapter
+          archives=list(Path("runs/200-source").rglob("qlora-v4-200-adapter.zip"))
+          assert len(archives)==1, "expected full adapter, not smoke"
+          with tempfile.TemporaryDirectory() as temp:
+              print("SHADOW_FULL_ADAPTER_VERIFIED",
+                    assert_safe_adapter(archives[0], Path(temp)/"adapter"))
+          Path("runs/200-adapter-path.txt").write_text(str(archives[0]))
+          PY
+      - name: Authenticate Colab with existing GitHub Secret (never reveal credentials)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'google-auth>=2.20' 'requests>=2.31'
+          python - <<'PY'
+          import json,os,pathlib
+          import google.auth
+          from google.auth.transport.requests import Request
+          names=("COLAB_ADC_JSON","COLAB_OAUTH_JSON","COLAB_AUTH_JSON","COLAB_CREDENTIALS_JSON",
+                 "GOOGLE_APPLICATION_CREDENTIALS_JSON","GOOGLE_CREDENTIALS_JSON","GOOGLE_COLAB_CREDENTIALS",
+                 "COLAB_TOKEN","COLAB_CLI_TOKEN","GOOGLE_COLAB_TOKEN","COLAB_ACCESS_TOKEN")
+          credentials=None
+          for name in names:
+              raw=os.environ.get(name,"").strip()
+              if not raw: continue
+              try: doc=json.loads(raw)
+              except (ValueError,TypeError): continue
+              if not isinstance(doc,dict): continue
+              if doc.get("type")=="authorized_user" and all(doc.get(k) for k in ("client_id","client_secret","refresh_token")):
+                  credentials=doc
+                  break
+              if doc.get("type")=="service_account" and all(doc.get(k) for k in ("private_key","client_email")):
+                  credentials=doc
+                  break
+              if all(doc.get(k) for k in ("client_id","client_secret","refresh_token")):
+                  credentials={**doc,"type":"authorized_user"}
+                  break
+          if credentials is None:
+              raise RuntimeError("NO_ADC_COMPATIBLE_COLAB_SECRET: expected authorized_user or service_account JSON")
+          path=pathlib.Path(os.environ["RUNNER_TEMP"])/"colab-adc.json"
+          path.write_text(json.dumps(credentials),encoding="utf-8")
+          path.chmod(0o600)
+          scopes=["openid","https://www.googleapis.com/auth/userinfo.email",
+                  "https://www.googleapis.com/auth/cloud-platform",
+                  "https://www.googleapis.com/auth/colaboratory"]
+          try:
+              cred,_=google.auth.load_credentials_from_file(str(path),scopes=scopes)
+              cred.refresh(Request())
+              if not cred.valid: raise RuntimeError("refreshed credential invalid")
+          except Exception as exc:
+              lower=str(exc).lower()
+              category=next((word for word in ("invalid_grant","invalid_scope","unauthorized_client",
+                  "invalid_client","access_denied","insufficient_scope") if word in lower),"other")
+              print("COLAB_AUTH_REJECTED",json.dumps({"reason":category,
+                    "type":credentials.get("type"),"gpu_allocated":False}))
+              raise SystemExit(41)
+          with open(os.environ["GITHUB_ENV"],"a") as f:
+              f.write("GOOGLE_APPLICATION_CREDENTIALS="+str(path)+"\n")
+          print("COLAB_AUTH_SUCCEEDED_NO_GPU_YET")
+          PY
+      - name: Install official Google Colab CLI and verify API
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'google-colab-cli==0.8.0'
+          timeout 110 colab --auth=adc usage
+      - name: Wait for Colab account to release the SQL GPU session
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A concurrently active SQL SFT job is already using this same
+          # Google account. Reserve QLoRA for the NEXT free slot, not now.
+          for attempt in {1..18}; do
+            usage="$(timeout 70 colab --auth=adc usage)"
+            active="$(printf '%s\n' "$usage" | awk '/^Active assignments:/ {print $3}')"
+            if ! [[ "$active" =~ ^[0-9]+$ ]]; then
+              echo "Unknown Colab active assignment count; refusing speculative allocation"
+              exit 70
+            fi
+            echo "COLAB_SLOT_GATE attempt=$attempt/18 active_assignments=$active"
+            if [ "$active" = "0" ]; then
+              echo "COLAB_SLOT_AVAILABLE"
+              exit 0
+            fi
+            if [ "$attempt" != "18" ]; then sleep 300; fi
+          done
+          echo "COLAB_SLOT_UNAVAILABLE: never start a competing 9B GPU job"
+          exit 75
+      - name: Allocate T4, transfer verified adapter, run paired frozen Shadow25
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "Missing protected GAIA dataset auth"; exit 42; }
+          session="v4shadow-$GITHUB_RUN_ID"
+          cleanup() {
+            colab --auth=adc rm -s "$session" "/content/gaia-hf-token" >/dev/null 2>&1 || true
+            colab --auth=adc stop -s "$session" >/dev/null 2>&1 || true
+            rm -f "$RUNNER_TEMP/gaia-hf-token.txt"
+          }
+          trap cleanup EXIT
+          printf '%s' "$HF_TOKEN" > "$RUNNER_TEMP/gaia-hf-token.txt"
+          chmod 600 "$RUNNER_TEMP/gaia-hf-token.txt"
+          colab --auth=adc new -s "$session" --gpu T4
+          colab --auth=adc upload -s "$session" "$(cat runs/200-adapter-path.txt)" "/content/qlora-v4-200-adapter.zip"
+          colab --auth=adc upload -s "$session" "$RUNNER_TEMP/gaia-hf-token.txt" "/content/gaia-hf-token"
+          unset HF_TOKEN
+          set +e
+          timeout 16500 colab --auth=adc exec -s "$session" -f scripts/colab_v4_200step_shadow_eval_remote.py
+          evaluate_rc=$?
+          set -e
+          mkdir -p exported
+          colab --auth=adc download -s "$session" \
+            "/content/gaia-shadow-v4-200-evidence/paired-private-safe.json" \
+            "exported/gaia-shadow-base-v4-200-paired25.json" || true
+          if [ "$evaluate_rc" -ne 0 ]; then
+            echo "SHADOW_EVAL_FAILED exit=$evaluate_rc"
+            exit "$evaluate_rc"
+          fi
+          test -s exported/gaia-shadow-base-v4-200-paired25.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path("exported/gaia-shadow-base-v4-200-paired25.json").read_text())
+          assert p["schema"]=="gaia-shadow-base-v4-200-paired/v1"
+          assert p["base"]["total"]==p["v4"]["total"]==25
+          assert len(p["paired_only_no_answers"])==25
+          assert p["adapter"]["optimizer_steps"]==200
+          assert p["wrong_to_correct"]-p["correct_to_wrong"]==p["net_gain"]
+          assert all(not {"question","model_answer","gold_answer"}.intersection(x) for x in p["paired_only_no_answers"])
+          print("GAIA_SHADOW25_PAIRED_RESULT",{
+            "base":p["base"]["correct"], "v4":p["v4"]["correct"],
+            "wins":p["wrong_to_correct"],"losses":p["correct_to_wrong"],
+            "net":p["net_gain"],"base_completion":p["base"]["completion_rate"],
+            "v4_completion":p["v4"]["completion_rate"]})
+          PY
+      - name: Archive privacy-safe GAIA Shadow25 outcome
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qlora-v4-200step-matched-shadow25
+          path: exported/gaia-shadow-base-v4-200-paired25.json
+          if-no-files-found: warn
+          retention-days: 30
