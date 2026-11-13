@@ -1,0 +1,58 @@
+name: QLoRA v7 HF ZeroGPU free quota + source integrity preflight
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/qlora-v7-hf-batched-20261113]
+    paths: [.github/QLORA_V7_HF_FREE_PREFLIGHT_START]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  quota:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with: {python-version: "3.11"}
+      - name: Verify Hugging Face free ZeroGPU availability without GPU usage
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN_MISSING"; exit 42; }
+          python -m pip install --quiet 'huggingface_hub>=2.1.1,<3'
+          python - <<'PY'
+          import json,os
+          from huggingface_hub import HfApi
+          api=HfApi(token=os.environ["HF_TOKEN"])
+          who=api.whoami()
+          q=api.get_zero_gpu_quota()
+          spaces=list(api.list_spaces(author=who["name"],full=True))
+          mine=[{"name":s.id,"private":s.private,"hardware":getattr(s,"hardware",None)} for s in spaces if "qlora" in s.id.lower() or "agent" in s.id.lower()]
+          print("HF_QLORA_FREE_GPU_QUOTA",json.dumps({"account_pro":bool(who.get("isPro",False)),"quota_base_seconds":q.base,"remaining_seconds":q.remaining,"resets_at":q.resets_at.isoformat() if q.resets_at else None,"candidate_spaces":mine},default=str))
+          if q.remaining<60:
+              raise SystemExit("HF_FREE_GPU_QUOTA_TOO_LOW_FOR_SAFE_SFT")
+          PY
+      - name: Verify source SHA and all 522 original tokens are still available from prior audited artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 43396613861
+          github-token: ${{ github.token }}
+          name: qlora-v7-unique-balanced-train-validation
+          path: inputs
+      - name: Check source SHA, mixed 522 action metadata and protected heldout
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,hashlib
+          from pathlib import Path
+          a=json.loads(Path("inputs/qlora-v7-audit.json").read_text())
+          assert a["train_actions"]==522 and a["train_tasks"]==218
+          assert a["holdout_tasks"]==11 and a["train_real_action_fraction"]>.30
+          for path,expected in (("qlora-v7-train.jsonl",a["train_sha256"]),("qlora-v7-heldout.jsonl",a["holdout_sha256"])):
+              assert hashlib.sha256(Path("inputs",path).read_bytes()).hexdigest()==expected
+          print("HF_QLORA_V7_REAL_DATA_VERIFIED",{"train_actions":522,"holdout_tasks":11})
+          PY
