@@ -89,10 +89,7 @@ jobs:
               assert len(model)>50000000
               cfg=json.loads(z.read("adapter_config.json"))
               assert "9B" in str(cfg.get("base_model_name_or_path","")) or "Qwen3.5" in str(cfg.get("base_model_name_or_path",""))
-              for name in sorted(names):
-                  if name.endswith("/"): continue
-                  if ".." in pathlib.PurePosixPath(name).parts: raise ValueError("unsafe adapter zip path")
-                  pathlib.Path(dest/"v3b-adapter",name).parent.mkdir(parents=True,exist_ok=True)
+              for name in ("adapter_model.safetensors","adapter_config.json"):
                   (dest/"v3b-adapter"/name).write_bytes(z.read(name))
           # Training UI stays PRIVATE. No copy into existing v3B Space.
           shutil.copy2("scripts/hf_v7_zero_gpu_app.py",dest/"app.py")
