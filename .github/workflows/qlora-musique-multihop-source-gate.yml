@@ -1,0 +1,107 @@
+name: MuSiQue 3-4 hop TRAIN source gate (CPU only, no inference)
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/musique-multihop-source-gate-20261114]
+    paths: [.github/workflows/qlora-musique-multihop-source-gate.yml, scripts/prepare_musique_multihop_train.py, tests/test_prepare_musique_multihop_train.py]
+permissions:
+  contents: read
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Verify source converter before reading upstream data
+        run: |
+          python -m pip install -e '.[dev]'
+          python -m pytest -q tests/test_prepare_musique_multihop_train.py
+      - name: Fetch pinned, independently checksum-verified MuSiQue Answerable TRAIN and DEV
+        run: |
+          set -euo pipefail
+          mkdir -p source
+          rev=667064b514d22deecae00a3dccbd92bccf88869e
+          root="https://huggingface.co/datasets/bdsaglam/musique/resolve/$rev"
+          curl -fL --retry 5 --retry-all-errors --connect-timeout 30 --max-time 1500             "$root/musique_ans_v1.0_train.jsonl" -o source/train.jsonl
+          curl -fL --retry 5 --retry-all-errors --connect-timeout 30 --max-time 600             "$root/musique_ans_v1.0_dev.jsonl" -o source/dev.jsonl
+          printf '%s  %s\n'             83a75b1e11e4e9bb8f8308e72ac40ca617ae4431b3a0d955b61cab259248490a source/train.jsonl             15fa63794d18a94ce12411aca6e2327e65b6e83b0b1490efab3f1962e48abf3b source/dev.jsonl             | sha256sum --check
+      - name: Diagnose pinned source schema before filtering (no question text)
+        run: |
+          python - <<'PY'
+          import json, itertools
+          from pathlib import Path
+          from scripts.prepare_musique_multihop_train import _hop
+          with Path('source/train.jsonl').open(encoding='utf-8') as f:
+              examples = [json.loads(x) for x in itertools.islice(f, 20)]
+          for row in examples[:3]:
+              parts=row.get('paragraphs') or []
+              decomp=row.get('question_decomposition') or []
+              print('MUSIQUE_SCHEMA', json.dumps({
+                  'id_prefix':str(row.get('id','')).split('__')[0],
+                  'keys':sorted(row),
+                  'answerable':row.get('answerable'),
+                  'decomp_count':len(decomp),
+                  'decomp_keys':sorted(decomp[0]) if decomp and isinstance(decomp[0],dict) else [],
+                  'paragraph_count':len(parts),
+                  'paragraph_keys':sorted(parts[0]) if parts and isinstance(parts[0],dict) else [],
+                  'paragraph0_length':len(str(parts[0].get('paragraph_text',''))) if parts else 0,
+                  'supporting':sum(p.get('is_supporting') is True for p in parts),
+                  'passed_static':_hop(row,excluded_ids=set(),excluded_questions=set(),excluded_decomp=set()),
+              }), flush=True)
+          PY
+          python - <<'PY'
+          import json, re
+          from collections import Counter
+          from pathlib import Path
+          from scripts.prepare_musique_multihop_train import _hop
+          prefixes=Counter()
+          examples={}
+          static=Counter()
+          with Path('source/train.jsonl').open(encoding='utf-8') as f:
+              for line in f:
+                  row=json.loads(line)
+                  prefix=str(row.get('id','')).split('__')[0]
+                  prefixes[prefix]+=1
+                  if prefix.startswith(('3hop','4hop')):
+                      static[str(_hop(row,excluded_ids=set(),excluded_questions=set(),excluded_decomp=set()))]+=1
+                      if prefix not in examples:
+                          p=row.get('paragraphs') or []
+                          d=row.get('question_decomposition') or []
+                          examples[prefix]={
+                              'id_prefix':prefix,'hop_decomp':len(d),'num_paragraphs':len(p),
+                              'supporting':sum(x.get('is_supporting') is True for x in p),
+                              'length_min':min((len(x.get('paragraph_text') or '') for x in p),default=0),
+                              'length_max':max((len(x.get('paragraph_text') or '') for x in p),default=0),
+                              'decomp_ids_count':len([x for x in d if x.get('id') is not None])
+                          }
+          print('MUSIQUE_PREFIX_COUNTS',dict(prefixes),flush=True)
+          print('MUSIQUE_STATIC_PASS',dict(static),flush=True)
+          print('MUSIQUE_HOP_SCHEMAS',json.dumps(examples,sort_keys=True),flush=True)
+          PY
+      - name: Freeze 4 three-hop and 4 four-hop TRAIN candidate tasks, no DEV exposure
+        run: |
+          set -euo pipefail
+          python -m scripts.prepare_musique_multihop_train             --train source/train.jsonl --dev source/dev.jsonl --limit 8             --output source/musique-train-multihop8.jsonl             --report source/musique-train-multihop8-report.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          tasks = [json.loads(line) for line in Path('source/musique-train-multihop8.jsonl').read_text().splitlines() if line.strip()]
+          report = json.loads(Path('source/musique-train-multihop8-report.json').read_text())
+          assert len(tasks) == 8 and report['three_hop'] == report['four_hop'] == 4
+          assert len({row['id'] for row in tasks}) == 8
+          assert all(row['required_tools'] == ['read'] and len(row['files']) == 21 for row in tasks)
+          assert report['gaia_rows'] == 0 and report['observed_agent_successes'] == 0 and not report['training_ran']
+          print('MUSIQUE_SOURCE_ONLY_PASS', json.dumps(report, sort_keys=True), flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: musique-multihop8-train-source-only
+          path: |
+            source/musique-train-multihop8.jsonl
+            source/musique-train-multihop8-report.json
+          if-no-files-found: error
+          retention-days: 30
