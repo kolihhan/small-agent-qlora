@@ -79,3 +79,19 @@ def test_previous_8_case_ids_excluded_and_not_fabricated():
     train,hold,report=split_oracles([row],blocked_ids=excluded,per_hop_train=1,per_hop_holdout=1,require_full=False)
     assert not train and not hold
     assert report["excluded_previous_evaluation"]==1
+
+
+
+def test_fourhop_three_family_fills_holdout_without_relaxing_evidence_rules():
+    rows=[_row(3,"3hop1",str(i)) for i in range(2)]
+    rows += [_row(4,"4hop1",str(i)) for i in range(2)]
+    rows += [_row(3,"3hop2",str(i)) for i in range(2)]
+    rows += [_row(4,"4hop3",str(i)) for i in range(2)]
+    for row in rows:
+        for p in row["paragraphs"]:
+            p["paragraph_text"] += " " + row["id"]
+    train,hold,report=split_oracles(rows,blocked_ids=set(),per_hop_train=1,per_hop_holdout=1)
+    assert len(train)==2 and len(hold)==2
+    assert {x["composition_family"] for x in hold}=={"3hop2","4hop3"}
+    assert report["support_passages_shared_train_holdout"]==0
+    assert report["heldout_composition_families"]==["3hop2","4hop3"]
