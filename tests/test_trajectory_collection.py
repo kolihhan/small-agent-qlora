@@ -95,3 +95,42 @@ def test_trajectory_is_not_verified_without_complete_provenance():
     )
     assert row["verified"] is False
     assert row["verification"]["provenance_complete"] is False
+
+
+def test_recovery_trace_does_not_double_prepend_existing_tool_error():
+    provenance = {
+        "license": "CC0-1.0", "generator": "unit",
+        "generator_version": "1", "oracle_type": "exact", "oracle_version": "1",
+    }
+    for observed, expected in (
+        ("ToolError[READ_ERROR]: transient failure", "ToolError[READ_ERROR]: transient failure"),
+        ('ToolMeta: {"retryable": true}\\nToolError[READ_ERROR]: transient',
+         'ToolMeta: {"retryable": true}\\nToolError[READ_ERROR]: transient'),
+        ("transient failure", "ToolError[READ_ERROR]: transient failure"),
+    ):
+        trace = [
+            TraceEvent("tool_call", 1, {"id": "one", "name": "read",
+                                       "arguments": {"source": "index.txt"}}),
+            TraceEvent("tool_result", 1, {"id": "one", "name": "read",
+                                         "ok": False, "error_code": "READ_ERROR",
+                                         "content": observed}),
+            TraceEvent("tool_call", 2, {"id": "two", "name": "read",
+                                       "arguments": {"source": "article.txt"}}),
+            TraceEvent("tool_result", 2, {"id": "two", "name": "read",
+                                         "ok": True, "error_code": None,
+                                         "content": "document says 42"}),
+            TraceEvent("final", 3, {"answer": "42"}),
+        ]
+        result = AgentResult(
+            "42", True, "final", trace,
+            RunMetrics(steps=3, tool_calls=2, tool_successes=1, tool_errors=1),
+        )
+        row = trajectory_from_result(
+            task_id="recovery", source="synthetic-non-gaia", question="What is the number?",
+            expected_answer="42", result=result,
+            tools=[{"type": "function", "function": {"name": "read"}}],
+            provenance=provenance,
+        )
+        tool_messages = [m["content"] for m in row["messages"] if m["role"] == "tool"]
+        assert tool_messages == [expected, "document says 42"]
+        assert not row["verified"]  # Never accidentally approve uncurated failures.
