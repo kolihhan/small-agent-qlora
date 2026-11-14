@@ -1,0 +1,210 @@
+name: FinQA real multistep teacher expansion 48 new TRAIN parents (no GPU)
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/finqa-real-multitool-expand48-20261114]
+    paths: [.github/workflows/qlora-finqa-observed-expand48.yml]
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Test the pinned FinQA source converter
+        run: |
+          python -m pip install -e '.[dev]'
+          python -m pytest -q tests/test_prepare_finqa_teacher_train.py tests/test_curate_finqa_teacher.py
+      - name: Download official immutable FinQA TRAIN and DEV, verify Git blob bytes
+        run: |
+          set -euo pipefail
+          mkdir -p source
+          rev=0f16e2867befa6840783e58be38c9efb9229d742
+          curl -fsSL --retry 5 "https://raw.githubusercontent.com/czyssrs/FinQA/$rev/dataset/train.json" -o source/train.json
+          curl -fsSL --retry 5 "https://raw.githubusercontent.com/czyssrs/FinQA/$rev/dataset/dev.json" -o source/dev.json
+          python - <<'PY'
+          from hashlib import sha1
+          from pathlib import Path
+          expected = {"train": "a6c2c5a60f9abe3fba5a793cc4d9e1dee2e09209",
+                      "dev": "970f239f591c782b17df420c0d343b780737f3da"}
+          for label,digest in expected.items():
+              data=Path(f"source/{label}.json").read_bytes()
+              actual=sha1(f"blob {len(data)}\0".encode()+data).hexdigest()
+              assert actual==digest,(label,actual)
+              print("FINQA_SOURCE_PINNED",label,len(data),actual,flush=True)
+          PY
+      - name: Preregister 48 extra distinct TRAIN reports after the original 16
+        run: |
+          python -m scripts.prepare_finqa_teacher_train \
+            --train source/train.json --dev source/dev.json --limit 64 \
+            --output source/all64.jsonl --report source/source64-audit.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[json.loads(x) for x in Path("source/all64.jsonl").read_text().splitlines() if x.strip()]
+          earlier,more=rows[:16],rows[16:]
+          assert len(earlier)==16 and len(more)==48
+          docs={x["document_id_hash"] for x in earlier}
+          assert len(docs)==16 and len({x["document_id_hash"] for x in more})==48
+          assert not docs.intersection({x["document_id_hash"] for x in more})
+          assert all(x["source"]=="finqa-train" and x["required_tools"]==["read","python"] for x in more)
+          Path("source/new48.jsonl").write_text("".join(json.dumps(x,ensure_ascii=False)+"\n" for x in more))
+          print("FINQA_FRESH48_FROZEN",len(more),"reports",48,"prior16_excluded",flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: finqa-fresh48-candidate-source-only
+          path: |
+            source/new48.jsonl
+            source/source64-audit.json
+          if-no-files-found: error
+          retention-days: 30
+
+  observed:
+    needs: source
+    runs-on: ubuntu-latest
+    timeout-minutes: 235
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e '.[dev,eval,search,files]'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: finqa-fresh48-candidate-source-only
+          path: source
+      - name: Partition 48 previously unseen source reports into 8 x 12 observed trials
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          tasks=[json.loads(x) for x in Path("source/new48.jsonl").read_text().splitlines() if x.strip()]
+          assert len(tasks)==48
+          shard=int(os.environ["SHARD"])
+          parents=tasks[6*shard:6*(shard+1)]
+          assert len(parents)==6 and len({x["document_id_hash"] for x in parents})==6
+          trials=[]
+          for row in parents:
+              for rep in (1,2):
+                  item=dict(row)
+                  item["id"]=row["id"]+f"::sample-{rep}"
+                  trials.append(item)
+          Path("tasks.jsonl").write_text("".join(json.dumps(x,ensure_ascii=False)+"\n" for x in trials))
+          print("FINQA_EXTRA_SHARD",shard,"parents",6,"rollouts",len(trials),flush=True)
+          PY
+      - name: Protect original GAIA validation question hashes
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          mkdir -p runs
+          python - <<'PY'
+          from gaia_small_agent.benchmark.gaia100 import load_validation
+          from gaia_small_agent.training.protection import build_protected_question_hashes
+          hashes=build_protected_question_hashes(load_validation(token=None),"runs/gaia-protected-hashes.json")
+          assert len(hashes)>=100
+          print("FINQA_EXTRA_REAL_GAIA_PROTECTION",len(hashes),flush=True)
+          PY
+      - name: Start original pinned Qwen3.5-9B Ollama CPU teacher
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 4 https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+          OLLAMA_MAX_LOADED_MODELS=1 ollama serve > "$RUNNER_TEMP/ollama-finqa.log" 2>&1 &
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          ollama pull qwen3.5:9b-q4_K_M
+          python - <<'PY'
+          import requests
+          models=requests.get("http://127.0.0.1:11434/api/tags",timeout=15).json()["models"]
+          digests=[x["digest"] for x in models if x["name"].startswith("qwen3.5:9b-q4_K_M")]
+          assert digests==["56671c2ab9385f9cfcb404638e32cd62d88e3501d44822208363c010179a3c90"]
+          print("FINQA_EXTRA_QWEN_PINNED",digests[0][:12],flush=True)
+          PY
+      - name: Collect actual read + python tool trajectories, oracle-verify final answers
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          from gaia_small_agent.agent.loop import AgentRuntime
+          from gaia_small_agent.model.ollama import OllamaModel
+          from gaia_small_agent.tools import default_tools
+          from gaia_small_agent.training.trajectories import collect_verified_trajectories
+          shard=int(os.environ["SHARD"])
+          def factory():
+              return AgentRuntime(
+                  OllamaModel(model="qwen3.5:9b-q4_K_M",
+                              max_new_tokens=512,timeout_s=600,enable_thinking=False),
+                  default_tools(),max_steps=12)
+          stats=collect_verified_trajectories(
+              tasks_path="tasks.jsonl",
+              output_path=f"runs/fresh-observed-{shard}.jsonl",
+              runtime_factory=factory,
+              work_root=f"runs/finqa-fresh-work-{shard}",
+              protected_questions_path="runs/gaia-protected-hashes.json")
+          assert stats["total"]==12 and stats["rejected_gaia"]==0 and stats.get("rejected_protected",0)==0
+          print("FINQA_FRESH_OBSERVED_SHARD",shard,json.dumps(stats,sort_keys=True),flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: finqa-fresh-observed-shard-${{ matrix.shard }}
+          path: |
+            runs/fresh-observed-*.jsonl
+            runs/fresh-observed-*.jsonl.summary.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  curate:
+    needs: observed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e '.[dev]'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: finqa-fresh-observed-shard-*
+          path: observations
+          merge-multiple: true
+      - name: Keep one strictly verified observed read + python trajectory per new report
+        run: |
+          python -m scripts.curate_finqa_teacher \
+            --inputs observations/fresh-observed-*.jsonl \
+            --output finqa-fresh48-curated.jsonl \
+            --report finqa-fresh48-curated-report.json
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          report=json.loads(Path("finqa-fresh48-curated-report.json").read_text())
+          assert report["input_verified_rollouts"]<=96
+          assert 0<=report["accepted_unique_parents"]<=48
+          print("FINQA_FRESH48_CURATED",json.dumps(report,sort_keys=True),flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: finqa-fresh48-curated-real-multitool
+          path: |
+            finqa-fresh48-curated.jsonl
+            finqa-fresh48-curated-report.json
+          if-no-files-found: error
+          retention-days: 30
