@@ -15,3 +15,9 @@ Attempt 4 (T4-only fallback): ADC refresh and Colab sessions verified in run
 43622650283; L4 GPU allocation was explicitly rejected in run 43622800558.
 Use account-permitted free T4 once with the same 304-parent Qwen9B v8 source
 and strict no-truncation; stop and report if T4 quota/memory insufficient.
+
+Attempt 5 (single corrected T4 retry): T4 session and CUDA verified physically
+in run 43623074100 (Tesla T4 14.56 GiB), but model training call failed
+before first optimizer step due an unsupported v7-only optional kwarg.
+Script now checks the exact train_qlora signature before optimizer setup.
+Do not repeat after this attempt without new evidence.
