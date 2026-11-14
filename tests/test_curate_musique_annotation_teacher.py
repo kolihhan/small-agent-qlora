@@ -13,14 +13,14 @@ from scripts.curate_musique_annotation_teacher import (
 def _row(hop=3, kind="3hop1", parent="abc"):
     paragraphs=[{
         "idx":i,"title":f"Title {i}", "is_supporting":i<hop,
-        "paragraph_text": f"Evidence article {i} describes answer{i}." if i<hop else f"Distractor {i}",
+        "paragraph_text": f"Evidence article {i} describes answer{i}." if i<hop else f"Distractor passage {i} contains unrelated background text.",
     } for i in range(20)]
     q=[{
         "id":f"{parent}:{i}", "question":f"subquestion {i}?",
         "paragraph_support_idx":i,"answer":f"answer{i}"
     } for i in range(hop)]
     return {
-        "id":f"{kind}__{parent}", "question":f"Find answer to question {parent}?",
+        "id":f"{kind}__{parent}", "question":f"Find answer to question {kind} {parent}?",
         "answer":f"answer{hop-1}", "answerable":True,
         "question_decomposition":q,"paragraphs":paragraphs
     }
