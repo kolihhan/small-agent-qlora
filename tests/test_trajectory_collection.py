@@ -104,8 +104,8 @@ def test_recovery_trace_does_not_double_prepend_existing_tool_error():
     }
     for observed, expected in (
         ("ToolError[READ_ERROR]: transient failure", "ToolError[READ_ERROR]: transient failure"),
-        ('ToolMeta: {"retryable": true}\\nToolError[READ_ERROR]: transient',
-         'ToolMeta: {"retryable": true}\\nToolError[READ_ERROR]: transient'),
+        ('ToolMeta: {"retryable": true}\nToolError[READ_ERROR]: transient',
+         'ToolMeta: {"retryable": true}\nToolError[READ_ERROR]: transient'),
         ("transient failure", "ToolError[READ_ERROR]: transient failure"),
     ):
         trace = [
