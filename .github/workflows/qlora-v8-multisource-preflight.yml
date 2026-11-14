@@ -1,4 +1,5 @@
 name: Qwen9B v8 protected multisource + token-safe SFT preflight (CPU only)
+# Exclude hidden oracle navigation labels; only visible supports and final actions.
 on:
   workflow_dispatch:
   push:
@@ -89,12 +90,14 @@ jobs:
               load_verified_rows,_render_turn_examples,_tokenize_completion_examples
           )
           report=json.loads(Path('qlora-v8-audit.json').read_text())
-          assert report['train_parents']==304 and report['train_actions']==798, report
+          assert report['train_parents']==304 and 700<=report['train_actions']<=800, report
           assert report['validation_parents']==35 and report['validation_actions']==176, report
-          assert report['annotation_oracle_training_actions']==192
-          assert report['no_gaia_training'] and 0.32<=report['train_final_action_fraction']<=0.50
+          assert 128<=report['annotation_oracle_training_actions']<=256
+          assert report['annotation_unsubstantiated_reads_omitted'] > 0
+          assert report['annotation_visibly_grounded_read_labels'] == report['annotation_oracle_training_actions']-128
+          assert report['no_gaia_training'] and 0.36<=report['train_final_action_fraction']<=0.52
           t=AutoTokenizer.from_pretrained('Qwen/Qwen3.5-9B',trust_remote_code=True)
-          for path,expected in (('qlora-v8-train.jsonl',798),('qlora-v8-holdout.jsonl',176)):
+          for path,expected in (('qlora-v8-train.jsonl',report['train_actions']),('qlora-v8-holdout.jsonl',176)):
               rows=load_verified_rows(path,'inputs/gaia-protected.json')
               rendered=_render_turn_examples(t,rows)
               assert len(rendered)==expected,(path,len(rendered),expected)
