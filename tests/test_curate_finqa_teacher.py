@@ -60,6 +60,14 @@ def test_reject_dirty_recovery_for_automatic_sft():
     assert not results and report["accepted_unique_parents"] == 0
 
 
+
+def test_reject_python_tool_call_with_empty_result():
+    bad = row()
+    bad["messages"][5]["content"] = ""
+    with pytest.raises(ValueError, match="empty_python_result"):
+        audit_verified(bad)
+
+
 def test_no_duplicate_samples_silently_accepted():
     with pytest.raises(ValueError,match="duplicate_observed_sample"):
         curate([row(),row()])
