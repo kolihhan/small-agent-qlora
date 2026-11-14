@@ -1,0 +1,52 @@
+name: Curate existing FinQA fresh48 observations (no model inference)
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/finqa-real-multitool-expand48-20261114]
+    paths: [.github/workflows/qlora-finqa-curate-existing48.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  curate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e '.[dev]'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43590855221
+          github-token: ${{ github.token }}
+          pattern: finqa-fresh-observed-shard-*
+          path: observations
+          merge-multiple: true
+      - name: Reuse exactly eight real observed shards; never read progress logs
+        run: |
+          set -euo pipefail
+          for i in {0..7}; do test -f "observations/fresh-observed-$i.jsonl"; done
+          python -m scripts.curate_finqa_teacher \
+            --inputs observations/fresh-observed-[0-7].jsonl \
+            --output finqa-fresh48-curated-strict.jsonl \
+            --report finqa-fresh48-curated-strict-report.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('finqa-fresh48-curated-strict-report.json').read_text())
+          assert report['source'] == 'finqa-train' and report['gaia_rows'] == 0
+          assert report['training_ran'] is False
+          assert 0 <= report['accepted_unique_parents'] <= 48
+          assert report['input_verified_rollouts'] <= 96
+          print('FINQA_FRESH48_REUSED_STRICT', json.dumps(report, sort_keys=True), flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: finqa-fresh48-curated-strict-no-reinference
+          path: |
+            finqa-fresh48-curated-strict.jsonl
+            finqa-fresh48-curated-strict-report.json
+          if-no-files-found: error
+          retention-days: 30
