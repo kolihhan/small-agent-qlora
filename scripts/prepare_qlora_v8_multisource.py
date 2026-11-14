@@ -72,7 +72,7 @@ def compact_multihop_supervision(row: dict) -> dict:
         raise ValueError("index observation missing")
     available={}
     for line in str(index_response.get("content") or "").splitlines():
-        found=re.match(r"^\\s*(passages/p\\d+\\.txt)\\s*\\|\\s*(.*?)\\s*$",line)
+        found=re.match(r"^\s*(passages/p\d+\.txt)\s*\|\s*(.*?)\s*$",line)
         if found:
             available[found.group(1)]=found.group(2).strip()
     if len(available)!=20:
@@ -95,7 +95,7 @@ def compact_multihop_supervision(row: dict) -> dict:
             str(msgs[j+1].get("content") or "").casefold()
             for j in idx[1:-1] if j<i
         ]
-        seen=question+"\\n"+"\\n".join(prior_observations)
+        seen=question+"\n"+"\n".join(prior_observations)
         if title in seen:
             choices.append(i)
             link_reads+=1
