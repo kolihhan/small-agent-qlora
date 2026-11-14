@@ -1,5 +1,6 @@
-name: Qwen3.5-9B v8 actual all-linear QLoRA Colab L4 one shot
+name: Qwen3.5-9B v8 actual all-linear QLoRA Colab T4 fallback one shot
 # Python 3.12+ required for google-colab-cli==0.8.0; ADC shape safely verified.
+# L4 was rejected by Colab account entitlement (run 43622800558). Try T4 exactly once.
 # GPU one-shot uses explicit marker only, not workflow source edits.
 on:
   workflow_dispatch:
@@ -121,7 +122,7 @@ jobs:
               f.write("GOOGLE_APPLICATION_CREDENTIALS="+str(target)+"\n")
           print("COLAB_V8_AUTH_VALIDATED_NO_GPU")
           PY
-      - name: Check only one Colab active assignment and L4 account access
+      - name: Check only one Colab active assignment before attempting T4
         run: |
           set -euo pipefail
           usage="$(timeout 90 colab --auth=adc usage)"
@@ -131,14 +132,14 @@ jobs:
             exit 75
           fi
           echo "COLAB_V8_ONE_GPU_SLOT_AVAILABLE"
-      - name: Allocate one L4 and train full Qwen3.5-9B NF4 QLoRA from base
+      - name: Allocate one T4 and train full Qwen3.5-9B NF4 QLoRA from base
         run: |
           set -euo pipefail
           session="qlora-v8-${GITHUB_RUN_ID}"
           mkdir -p exported
           cleanup() { colab --auth=adc stop -s "$session" >/dev/null 2>&1 || true; }
           trap cleanup EXIT
-          colab --auth=adc new -s "$session" --gpu L4
+          colab --auth=adc new -s "$session" --gpu T4
           colab --auth=adc upload -s "$session" inputs/qlora-v8-train.jsonl /content/qlora-v8-train.jsonl
           colab --auth=adc upload -s "$session" inputs/qlora-v8-audit.json /content/qlora-v8-audit.json
           set +e
