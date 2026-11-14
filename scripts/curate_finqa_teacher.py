@@ -79,6 +79,8 @@ def audit_verified(row: dict) -> list[int]:
                 raise ValueError("unverified_tool_result")
             if name=="read" and fun.get("arguments",{}).get("source") != "report.txt":
                 raise ValueError("non_source_document_read")
+            if name=="python" and not str(m.get("content") or "").strip():
+                raise ValueError("empty_python_result")
             used_tools.add(name)
         pos+=1+len(calls)
     if not {"read","python"}.issubset(used_tools):
