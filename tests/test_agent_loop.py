@@ -247,3 +247,33 @@ def test_empty_final_answer_is_not_completed(tmp_path):
     assert result.stop_reason == "empty_final"
     assert result.answer == ""
     assert result.trace[-1].kind == "empty_final"
+
+
+def test_opt_in_duplicate_replays_success_without_reexecuting_tool(tmp_path):
+    class CountingEcho(EchoTool):
+        def __init__(self):
+            self.calls = 0
+        def run(self, arguments, workspace):
+            self.calls += 1
+            return super().run(arguments, workspace)
+
+    class CapturingModel(ScriptedModel):
+        def complete(self, messages, tools):
+            if len(messages) == 6:  # system, user, two assistant/tool pairs
+                assert messages[-1]["content"] == "observed-code"
+            return super().complete(messages, tools)
+
+    tool = CountingEcho()
+    model = CapturingModel([
+        AssistantTurn(content="", tool_calls=[ToolCall("c1", "echo", {"text": "observed-code"})]),
+        AssistantTurn(content="", tool_calls=[ToolCall("c2", "echo", {"text": "observed-code"})]),
+        AssistantTurn(content="observed-code", tool_calls=[]),
+    ])
+    result = AgentRuntime(model, [tool], max_steps=5,
+                          replay_successful_duplicates=True).run("retrieve", tmp_path)
+    assert result.completed and result.answer == "observed-code"
+    assert tool.calls == 1
+    assert result.metrics.duplicate_calls_blocked == 1
+    observations = [e.data for e in result.trace if e.kind == "tool_result"]
+    assert observations[0]["content"] == observations[1]["content"] == "observed-code"
+    assert observations[1]["ok"] and observations[1]["error_code"] is None
