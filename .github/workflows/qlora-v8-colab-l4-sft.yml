@@ -1,6 +1,6 @@
 name: Qwen3.5-9B v8 actual all-linear QLoRA Colab T4 fallback one shot
 # Python 3.12+ required for google-colab-cli==0.8.0; ADC shape safely verified.
-# L4 was rejected by Colab account entitlement (run 43622800558). Try T4 exactly once.
+# L4 rejected by account; T4 allocated in run 43623352758. Increase official CLI\n# --timeout from 30s to 1800s for silent model downloads; no training changes.
 # GPU one-shot uses explicit marker only, not workflow source edits.
 on:
   workflow_dispatch:
@@ -143,7 +143,7 @@ jobs:
           colab --auth=adc upload -s "$session" inputs/qlora-v8-train.jsonl /content/qlora-v8-train.jsonl
           colab --auth=adc upload -s "$session" inputs/qlora-v8-audit.json /content/qlora-v8-audit.json
           set +e
-          colab --auth=adc exec -s "$session" -f inputs/v8-gpu-train.py 2>&1 | tee "$RUNNER_TEMP/qlora-v8-colab.log"
+          colab --auth=adc exec -s "$session" --timeout 1800 -f inputs/v8-gpu-train.py 2>&1 | tee "$RUNNER_TEMP/qlora-v8-colab.log"
           rc=${PIPESTATUS[0]}
           set -e
           colab --auth=adc download -s "$session" /content/qlora-v8-adapter.zip exported/qlora-v8-adapter.zip || true
