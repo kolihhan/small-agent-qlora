@@ -72,6 +72,15 @@ def main():
             "jinja2>=3.1","sentencepiece>=0.2")
     sys.path.insert(0,str(repo/"src"))
     from gaia_small_agent.training.qlora import train_qlora
+    import inspect
+    required=("data_path","output_dir","model_name","max_length",
+              "epochs","learning_rate","lora_r","lora_alpha",
+              "lora_dropout","max_steps","save_steps","gradient_accumulation_steps",
+              "lora_target_modules","exposure_count","require_full_prompt")
+    missing=sorted(set(required)-set(inspect.signature(train_qlora).parameters))
+    if missing:
+        raise RuntimeError("QLORA_V8_TRAIN_SIGNATURE_DRIFT:"+",".join(missing))
+    print("QLORA_V8_TRAIN_SIGNATURE_VERIFIED",len(required),flush=True)
 
     start=time.monotonic()
     train_qlora(
@@ -80,7 +89,7 @@ def main():
         lora_r=16,lora_alpha=32,lora_dropout=0.05,
         max_steps=MAX_STEPS,save_steps=50,gradient_accumulation_steps=8,
         lora_target_modules="all-linear",exposure_count=None,
-        require_full_prompt=True,preserve_large_half_parameters=False,
+        require_full_prompt=True,
     )
     weights=OUT/"adapter_model.safetensors"
     if not weights.is_file() or weights.stat().st_size<=1_000_000:
