@@ -92,7 +92,7 @@ jobs:
           python-version: '3.12'
       - name: Classify Google OAuth refresh failure without printing secrets or response bodies
         run: |
-          python -m pip -q install 'google-auth>=2.20'
+          python -m pip -q install 'google-auth>=2.20' 'requests>=2.31'
           python - <<'PY'
           import json,os
           import google.auth
