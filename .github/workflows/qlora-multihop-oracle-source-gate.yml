@@ -1,4 +1,5 @@
 name: MuSiQue annotated multi-hop source-to-tool SFT gate (CPU only)
+# Fixed synthetic fixtures to honor official minimum passage length and unique question families.
 on:
   workflow_dispatch:
   push:
