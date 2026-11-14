@@ -36,10 +36,12 @@ def _looks_like_textual_tool_call(content: str) -> bool:
 
 
 class AgentRuntime:
-    def __init__(self, model: Model, tools: list[Tool], max_steps: int = 12):
+    def __init__(self, model: Model, tools: list[Tool], max_steps: int = 12,
+                 *, replay_successful_duplicates: bool = False):
         self.model = model
         self.tools = {tool.name: tool for tool in tools}
         self.max_steps = max_steps
+        self.replay_successful_duplicates = replay_successful_duplicates
 
     def run(self, question: str, workspace: str | Path) -> AgentResult:
         workspace = Path(workspace)
@@ -118,7 +120,10 @@ class AgentRuntime:
                 )
                 if previous is not None and not can_retry:
                     metrics.duplicate_calls_blocked += 1
-                    result = ToolResult(False, "Exact duplicate tool call blocked; choose a different action.", "DUPLICATE_CALL")
+                    # No repeated side effects. Optionally replay the successful
+                    # observation instead of inventing an extra error.
+                    result = (previous if self.replay_successful_duplicates and previous.ok
+                              else ToolResult(False, "Exact duplicate tool call blocked; choose a different action.", "DUPLICATE_CALL"))
                 else:
                     if can_retry:
                         retry_counts[key] = retry_counts.get(key, 0) + 1
