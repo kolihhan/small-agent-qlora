@@ -1,5 +1,6 @@
 """Multi-source QLoRA supervision must not learn GAIA or replay heldout parents."""
 import pytest
+from hashlib import sha256
 
 from scripts.prepare_qlora_v8_multisource import merge_supervision
 
@@ -20,8 +21,11 @@ def _r(source, id, *, user=None, annotated=False):
     }
     if annotated:
         obj["derived_from_annotation_not_observed_model"]=True
-        obj["source_id_sha256"]="f"*64
-        obj["supporting_paragraph_hashes"]=[id+"_paragraph"]
+        obj["source_id_sha256"]=sha256(id.encode()).hexdigest()
+        obj["supporting_paragraph_hashes"]=[
+            sha256((id+":p:"+str(n)).encode()).hexdigest() for n in range(3)
+        ]
+        obj["selection_method"]="human_annotated_support_paths_not_model_generated"
         obj["composition_family"]="3hop1"
         obj["hop_count"]=3
     return obj
