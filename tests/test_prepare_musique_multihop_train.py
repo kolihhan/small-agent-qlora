@@ -5,7 +5,7 @@ from scripts.prepare_musique_multihop_train import select_training_tasks
 
 def row(name, hops=3, *, answerable=True):
     return {
-        "id": f"{hops}hop__{name}",
+        "id": f"{hops}hop{1 if hops == 3 else 2}__{name}",
         "answerable": answerable,
         "question": f"Which artist influenced the album in scenario {name}?",
         "answer": f"Artist {name}",
