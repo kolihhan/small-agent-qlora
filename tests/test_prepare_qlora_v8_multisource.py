@@ -74,20 +74,53 @@ def test_prevent_finqa_dev_or_any_gaia_train():
         merge_supervision([],[_r("finqa-dev","bad")],[],[],set())
 
 
-def test_compact_multihop_supervision_preserves_first_and_last_evidence_and_final():
+
+
+def test_compact_multihop_supervision_uses_only_visibly_grounded_read_targets():
     m=_r("musique-train","chain1",annotated=True)
-    m["messages"]=[{"role":"system","content":"sys"},{"role":"user","content":"q"}]
+    m["messages"]=[{"role":"system","content":"sys"},
+                   {"role":"user","content":"Find which book this refers to."}]
+    sources=["passages/index.txt","passages/p0.txt","passages/p1.txt","passages/p2.txt"]
+    observations=[
+        "passages/p0.txt | First\\npassages/p1.txt | Alpha\\npassages/p2.txt | Gamma",
+        "This passage says Alpha was the subsequent book.",
+        "The Alpha article describes the final answer.",
+        "The Gamma article was also found."
+    ]
     action_ids=[]
-    for j in range(5):
+    for src,observed in zip(sources,observations):
         action_ids.append(len(m["messages"]))
         m["messages"].append({"role":"assistant","content":"",
-                              "tool_calls":[{"function":{"name":"read","arguments":{"source":f"passages/p{j}.txt"}}}]})
-        m["messages"].append({"role":"tool","content":"observed"})
+                              "tool_calls":[{"function":{"name":"read","arguments":{"source":src}}}]})
+        m["messages"].append({"role":"tool","name":"read","content":observed})
     action_ids.append(len(m["messages"]))
     m["messages"].append({"role":"assistant","content":"answer"})
     m["training_action_indices"]=action_ids
     result=compact_multihop_supervision(m)
-    assert result["training_action_indices"]==[action_ids[1],action_ids[-2],action_ids[-1]]
+    assert result["training_action_indices"]==[action_ids[0],action_ids[2],action_ids[-1]]
     assert result["messages"]==m["messages"]
-    assert len(m["training_action_indices"])==6
-    assert result["annotation_supervision_profile"]=="first_support_last_support_final_v1"
+    assert result["annotation_supervision_profile"]=="visible_link_or_final_v1"
+    assert result["unsubstantiated_read_actions_omitted"]==2
+
+
+def test_compact_source_label_ambiguity_never_supervised():
+    m=_r("musique-train","ambiguous",annotated=True)
+    m["messages"]=[{"role":"system","content":"sys"},{"role":"user","content":"Find London."}]
+    index="passages/p0.txt | London\\npassages/p1.txt | London\\npassages/p2.txt | Lisbon"
+    sources=["passages/index.txt","passages/p0.txt","passages/p1.txt","passages/p2.txt"]
+    observations=[index,"A description of London.","This text mentions Lisbon.","answer evidence"]
+    indices=[]
+    for src,observed in zip(sources,observations):
+        indices.append(len(m["messages"]))
+        m["messages"] += [
+            {"role":"assistant","content":"",
+             "tool_calls":[{"function":{"name":"read","arguments":{"source":src}}}]},
+            {"role":"tool","name":"read","content":observed}
+        ]
+    indices.append(len(m["messages"]))
+    m["messages"].append({"role":"assistant","content":"answer"})
+    m["training_action_indices"]=indices
+    v=compact_multihop_supervision(m)
+    assert indices[1] not in v["training_action_indices"]
+    assert indices[2] not in v["training_action_indices"]
+    assert indices[3] in v["training_action_indices"]
