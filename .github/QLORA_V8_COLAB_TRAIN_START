@@ -10,3 +10,8 @@ Colab read-only sessions authenticated in run 43622650283, and the formal
 L4 workflow now avoids adding unconsented scopes (source commit 5b06bb6).
 This one-shot trigger is authorized by the user's explicit "update already go".
 Do not auto-retry if account allocation or training fails.
+
+Attempt 4 (T4-only fallback): ADC refresh and Colab sessions verified in run
+43622650283; L4 GPU allocation was explicitly rejected in run 43622800558.
+Use account-permitted free T4 once with the same 304-parent Qwen9B v8 source
+and strict no-truncation; stop and report if T4 quota/memory insufficient.
