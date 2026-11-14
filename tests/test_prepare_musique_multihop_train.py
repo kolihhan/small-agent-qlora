@@ -33,4 +33,4 @@ def test_exclude_dev_duplicate_and_bad_supporting_evidence():
     bad = row("bad", 3)
     bad["paragraphs"][2]["is_supporting"] = False
     with pytest.raises(ValueError, match="insufficient"):
-        select_training_tasks([row("dev", 3), bad], [row("dev", 3)], limit=1)
+        select_training_tasks([row("dev", 3), bad], [row("dev", 3)], limit=2)
