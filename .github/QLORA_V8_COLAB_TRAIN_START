@@ -4,3 +4,9 @@ Frozen source: GitHub Actions 43619541894, artifact 14124045608.
 If authorization fails, do not infer a training success. Do not retry in a loop.
 
 Attempt 2: Python 3.12 CLI dependency correction; previous run failed during package install before ADC validation.
+
+Attempt 3: verified COLAB_ADC_JSON credential refreshed with original scopes,
+Colab read-only sessions authenticated in run 43622650283, and the formal
+L4 workflow now avoids adding unconsented scopes (source commit 5b06bb6).
+This one-shot trigger is authorized by the user's explicit "update already go".
+Do not auto-retry if account allocation or training fails.
