@@ -184,11 +184,7 @@ def split_oracles(
     selected={"train":[],"holdout":[]}
     used_support_hashes=set()
     used_question_hashes=set()
-    for family,quota in [
-        ("3hop1",per_hop_train),("4hop1",per_hop_train),
-        ("3hop2",per_hop_holdout),("4hop2",per_hop_holdout),
-    ]:
-        target="train" if family in TRAIN_FAMILIES else "holdout"
+    def collect(family: str, quota: int, target: str) -> int:
         accepted=0
         for r in groups.get(family,[]):
             if accepted>=quota:
@@ -211,6 +207,16 @@ def split_oracles(
             used_question_hashes.add(qhash)
             used_support_hashes.update(hashes)
         counts["accepted_"+family]=accepted
+        return accepted
+
+    collect("3hop1",per_hop_train,"train")
+    collect("4hop1",per_hop_train,"train")
+    collect("3hop2",per_hop_holdout,"holdout")
+    # Use a different *holdout composition family* for additional 4-hop
+    # diversity, instead of weakening source-verified answer/step checks.
+    covered=collect("4hop2",per_hop_holdout,"holdout")
+    if covered<per_hop_holdout:
+        collect("4hop3",per_hop_holdout-covered,"holdout")
     if require_full and (len(selected["train"])!=2*per_hop_train
                          or len(selected["holdout"])!=2*per_hop_holdout):
         raise ValueError(
@@ -229,7 +235,7 @@ def split_oracles(
         "train_actions":sum(len(x["training_action_indices"]) for x in selected["train"]),
         "holdout_actions":sum(len(x["training_action_indices"]) for x in selected["holdout"]),
         "train_composition_families":list(TRAIN_FAMILIES),
-        "heldout_composition_families":["3hop2","4hop2"],
+        "heldout_composition_families":sorted({x["composition_family"] for x in selected["holdout"]}),
         "support_passages_shared_train_holdout":0,
         "questions_shared_train_holdout":0,
         "gaia_training_rows":0,
