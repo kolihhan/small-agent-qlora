@@ -2,3 +2,5 @@ QLoRA v8 GPU one-shot requested after user updated Colab repository secret.
 Frozen source: GitHub Actions 43619541894, artifact 14124045608.
 304 unique TRAIN parents; 798 Qwen3.5-9B supervised actions; 35 source-shift holdout parents.
 If authorization fails, do not infer a training success. Do not retry in a loop.
+
+Attempt 2: Python 3.12 CLI dependency correction; previous run failed during package install before ADC validation.
