@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [experiment/musique-multihop-source-gate-20261114]
-    paths: [.github/workflows/qlora-musique-multihop-source-gate.yml]
+    paths: [.github/workflows/qlora-musique-multihop-source-gate.yml, scripts/prepare_musique_multihop_train.py, tests/test_prepare_musique_multihop_train.py]
 permissions:
   contents: read
 
