@@ -107,11 +107,11 @@ jobs:
           target=pathlib.Path(os.environ["RUNNER_TEMP"])/"colab-v8-adc.json"
           target.write_text(json.dumps(creds))
           target.chmod(0o600)
-          scopes=["openid","https://www.googleapis.com/auth/userinfo.email",
-                  "https://www.googleapis.com/auth/cloud-platform",
-                  "https://www.googleapis.com/auth/colaboratory"]
+          # Never add requested scopes to a refreshable user ADC:
+          # previously this caused invalid_scope. Read-only Colab sessions
+          # auth succeeded under the original consented grant (run 43622650283).
           try:
-              auth,_=google.auth.load_credentials_from_file(str(target),scopes=scopes)
+              auth,_=google.auth.load_credentials_from_file(str(target))
               auth.refresh(Request())
               assert auth.valid
           except Exception as exc:
