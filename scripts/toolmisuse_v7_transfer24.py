@@ -12,9 +12,6 @@ from hashlib import sha256
 import json
 from pathlib import Path
 
-from toolmisusebench.harness.runner import run_episode
-from toolmisusebench.types import Task
-from toolmisusebench.version2.llm_agent import OpenAICompatibleToolAgent
 
 DOMAINS = ("crud", "retrieval", "files", "scheduling")
 FAULTS = ("clean", "timeout", "rate_limit", "schema_drift", "authz", "adversarial_error")
@@ -22,7 +19,8 @@ N_SHARDS = 4
 N_TASKS = len(DOMAINS) * len(FAULTS)
 
 
-def select_tasks(source: Path) -> tuple[list[Task], str]:
+def select_tasks(source: Path) -> tuple[list, str]:
+    from toolmisusebench.types import Task
     raw = source.read_bytes()
     digest = sha256(raw).hexdigest()
     rows = [Task.model_validate_json(line) for line in raw.splitlines() if line.strip()]
@@ -56,6 +54,8 @@ def run_shard(*, source: Path, shard: int, model: str,
               endpoint: str) -> dict:
     if shard not in range(N_SHARDS) or not model:
         raise ValueError("invalid shard or model")
+    from toolmisusebench.harness.runner import run_episode
+    from toolmisusebench.version2.llm_agent import OpenAICompatibleToolAgent
     cases, digest = select_tasks(source)
     selection_sha = sha256("|".join(x.task_id for x in cases).encode()).hexdigest()
     agent = OpenAICompatibleToolAgent(
