@@ -42,6 +42,32 @@ def _question(row: dict) -> str:
     return users[0]
 
 
+
+def compact_multihop_supervision(row: dict) -> dict:
+    """Train initial evidence navigation, late-hop grounding and finalization.
+
+    Keep full real tool observations in every prefix; do not supervise all
+    repetitive read calls. v7 over-searched on GAIA. This fixes the 1:5
+    final-to-tool imbalance of full MuSiQue paths without duplicating tasks.
+    It is a training hypothesis, not a demonstrated model improvement.
+    """
+    if row.get("source") != "musique-train":
+        raise ValueError("only annotated MuSiQue rows may be compacted")
+    idx = row.get("training_action_indices")
+    msgs = row.get("messages")
+    if (not isinstance(idx,list) or len(idx) not in (5,6)
+        or not isinstance(msgs,list) or len(set(idx))!=len(idx)
+        or any(type(i) is not int or i<0 or i>=len(msgs) for i in idx)
+        or any(msgs[i].get("role")!="assistant" for i in idx)
+        or not msgs[idx[1]].get("tool_calls")
+        or not msgs[idx[-2]].get("tool_calls")
+        or msgs[idx[-1]].get("tool_calls")):
+        raise ValueError("invalid source-verified MuSiQue tool-to-final sequence")
+    result=dict(row)
+    result["training_action_indices"]=[idx[1],idx[-2],idx[-1]]
+    result["annotation_supervision_profile"]="first_support_last_support_final_v1"
+    return result
+
 def merge_supervision(
     base: list[dict], finqa: list[dict], musique: list[dict],
     holdout: list[dict], protected_hashes: set[str],
@@ -113,6 +139,8 @@ def merge_supervision(
             for s in {r["source"] for r in result}
         }.items())),
         "annotation_oracle_parent_count":sum(r["source"]=="musique-train" for r in result),
+        "annotation_oracle_training_actions":sum(len(r["training_action_indices"]) for r in result if r["source"]=="musique-train"),
+        "train_final_action_fraction":round(sum(1 for r in result for i in r["training_action_indices"] if not r["messages"][i].get("tool_calls"))/max(1,actions(result)),6),
         "observed_finqa_parent_count":sum(r["source"]=="finqa-train" for r in result),
         "protected_question_hashes_loaded":len(protected_hashes),
         "no_gaia_training":True,
@@ -121,7 +149,7 @@ def merge_supervision(
         "whole_parent_repeats":0,
         "train_model":"Qwen/Qwen3.5-9B",
         "training_ran":False,"gaia_evaluated":False,
-        "boundary":"All source rows from TRAIN split; v7 real+synthetic observed, FinQA strict independently observed, MuSiQue human-annotation replay explicitly not model-observed. Final GAIA/FinQA DEV evaluation must remain external.",
+        "boundary":"All TRAIN only: v7 real+synthetic observed, FinQA strict real read+python, MuSiQue source-annotated not observed. MuSiQue supervision is three deliberate decisions per whole trajectory; full prefixes preserved. GAIA/FinQA DEV must remain external.",
     }
     return result,dev,report
 
@@ -155,7 +183,7 @@ def build(
 ) -> tuple[list[dict],list[dict],dict]:
     base=_jsonl(base_file)
     base_dev=_jsonl(base_holdout)
-    mu=_jsonl(musique_file)
+    mu=[compact_multihop_supervision(row) for row in _jsonl(musique_file)]
     mu_dev=_jsonl(musique_holdout)
     mu_report=json.loads(mu_report_file.read_text(encoding="utf-8"))
     if (len(base)!=218 or sum(len(r.get("training_action_indices",[])) for r in base)!=522
@@ -176,7 +204,7 @@ def build(
     if len(protected)<100:
         raise ValueError("GAIA protected validation hashes missing")
     train,dev,report=merge_supervision(base,finqa,mu,base_dev+mu_dev,protected)
-    if (report["train_parents"]!=304 or report["train_actions"]!=958
+    if (report["train_parents"]!=304 or report["train_actions"]!=798
         or report["validation_parents"]!=35):
         raise ValueError("unexpected v8 full-source parent/action exposure")
     report.update({
