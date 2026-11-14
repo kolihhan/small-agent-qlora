@@ -87,6 +87,11 @@ def test_compact_multihop_supervision_uses_only_visibly_grounded_read_targets():
         "The Alpha article describes the final answer.",
         "The Gamma article was also found."
     ]
+    observations[0]="\n".join(
+        ["passages/p0.txt | First","passages/p1.txt | Alpha",
+         "passages/p2.txt | Gamma"] +
+        [f"passages/p{i}.txt | Distractor {i}" for i in range(3,20)]
+    )
     action_ids=[]
     for src,observed in zip(sources,observations):
         action_ids.append(len(m["messages"]))
@@ -106,7 +111,11 @@ def test_compact_multihop_supervision_uses_only_visibly_grounded_read_targets():
 def test_compact_source_label_ambiguity_never_supervised():
     m=_r("musique-train","ambiguous",annotated=True)
     m["messages"]=[{"role":"system","content":"sys"},{"role":"user","content":"Find London."}]
-    index="passages/p0.txt | London\\npassages/p1.txt | London\\npassages/p2.txt | Lisbon"
+    index="\n".join(
+        ["passages/p0.txt | London","passages/p1.txt | London",
+         "passages/p2.txt | Lisbon"] +
+        [f"passages/p{i}.txt | Distractor {i}" for i in range(3,20)]
+    )
     sources=["passages/index.txt","passages/p0.txt","passages/p1.txt","passages/p2.txt"]
     observations=[index,"A description of London.","This text mentions Lisbon.","answer evidence"]
     indices=[]
