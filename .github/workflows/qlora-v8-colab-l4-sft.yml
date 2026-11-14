@@ -1,9 +1,10 @@
 name: Qwen3.5-9B v8 actual all-linear QLoRA Colab L4 one shot
+# No automatic retry while ADC credentials are absent; use explicit marker after authorization.
 on:
   workflow_dispatch:
   push:
     branches: [experiment/qlora-multihop-oracle-supervision-20261115]
-    paths: [.github/workflows/qlora-v8-colab-l4-sft.yml]
+    paths: [.github/QLORA_V8_COLAB_TRAIN_START]
 permissions:
   contents: read
   actions: read
@@ -36,7 +37,7 @@ jobs:
       - name: Import physically source-verified v8 798-action SFT and 35-parent independent holdout
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          run-id: 43618393923
+          run-id: 43619541894
           repository: kolihhan/small-agent-qlora
           github-token: ${{ github.token }}
           name: qlora-v8-protected-source-balanced-token-checked
