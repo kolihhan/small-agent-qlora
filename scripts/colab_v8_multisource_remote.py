@@ -1,4 +1,4 @@
-"""Train one Qwen3.5-9B v8 4-bit all-linear LoRA candidate on Colab L4.
+"""Train one Qwen3.5-9B v8 4-bit all-linear LoRA candidate on Colab T4 if allocated.
 
 This is a NEW from-base QLoRA adapter, not continued v7 weights. v7 training
 examples are replayed once along with verified FinQA and annotation-derived
@@ -36,8 +36,8 @@ def main():
     if not torch.cuda.is_available():
         raise RuntimeError("No GPU; do not mistake CPU artifact preflight for QLoRA")
     vram=torch.cuda.get_device_properties(0).total_memory/2**30
-    if vram < 22:
-        raise RuntimeError("V8 requires >=22 GiB VRAM for full untruncated 3200-token context")
+    if vram < 14:
+        raise RuntimeError("V8 requires >=14 GiB VRAM for full untruncated 3200-token context on T4; no CPU fallback")
     if SOURCE_SHA=="__SOURCE_SHA__" or len(SOURCE_SHA)!=40:
         raise RuntimeError("GitHub SHA not attested")
     report=json.loads(AUDIT.read_text(encoding="utf-8"))
