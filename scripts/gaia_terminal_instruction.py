@@ -1,4 +1,4 @@
-"""Paired terminal-only intervention on untouched GAIA validation tasks.
+"""Paired terminal-only diagnostic on the fixed 15-case GAIA cohort.
 
 The legacy rollout supplies the same observations to both last requests.
 The intervention adds one explicit instruction and executes no extra tools.
@@ -25,14 +25,13 @@ from gaia_small_agent.tools import default_tools
 
 
 def terminal_messages(messages: list[dict]) -> list[dict]:
-    system, *history = messages
-    return [
-        {**system, "content": system["content"] + (
-            "\n\nThis is the final response. No more tools are available. "
+    return [*messages, {
+        "role": "user",
+        "content": (
+            "This is the final response. No more tools are available. "
             "Use the observations you have and return only the requested answer."
-        )},
-        *history,
-    ]
+        ),
+    }]
 
 
 def final_outcome(turn: AssistantTurn | ModelRuntimeError) -> tuple[str, str]:
@@ -51,17 +50,20 @@ def final_outcome(turn: AssistantTurn | ModelRuntimeError) -> tuple[str, str]:
 class TerminalProbe(OpenAICompatModel):
     def __init__(self, model: str, base_url: str):
         super().__init__(model=model, base_url=base_url, max_new_tokens=512)
+        self.terminal_model = OpenAICompatModel(
+            model=model, base_url=base_url, timeout_s=600, max_new_tokens=512,
+        )
         self.terminals: list[tuple[AssistantTurn | ModelRuntimeError, float, float]] = []
 
     def complete_final(self, messages, tools):
         begin = perf_counter()
         try:
-            original = super().complete_final(messages, tools)
+            original = self.terminal_model.complete_final(messages, tools)
         except ModelRuntimeError as exc:
             original = exc
         start = perf_counter()
         try:
-            changed = super().complete_final(terminal_messages(messages), tools)
+            changed = self.terminal_model.complete_final(terminal_messages(messages), tools)
         except ModelRuntimeError as exc:
             changed = exc
         end = perf_counter()
@@ -112,6 +114,8 @@ def replay(rows: list[dict], model: TerminalProbe) -> list[dict]:
             # Remove the opposite arm's request from the shared rollout time.
             changed["latency_ms"] -= legacy_s * 1000
             baseline["latency_ms"] -= changed_s * 1000
+            baseline["terminal_ms"] = round(legacy_s * 1000, 2)
+            changed["terminal_ms"] = round(changed_s * 1000, 2)
             answer, reason = final_outcome(turn)
             changed.update(correct=bool(answer and gaia_score(answer, reference[case_id])),
                            completed=reason == "final", stop_reason=reason)
@@ -143,6 +147,8 @@ def aggregate(shards: list[dict]) -> dict:
                     "duplicate_calls_blocked", "premature_final_proxy",
                 )},
                 "terminal_cases": sum(r["steps"] == 12 for r in p),
+                "terminal_mean_ms": round(sum(r.get("terminal_ms", 0.0) for r in p)
+                                          / max(1, sum("terminal_ms" in r for r in p)), 2),
                 "mean_latency_ms": round(sum(r["latency_ms"] for r in p) / len(p), 2),
                 "stop_reasons": dict(Counter(r["stop_reason"] for r in p)),
             }

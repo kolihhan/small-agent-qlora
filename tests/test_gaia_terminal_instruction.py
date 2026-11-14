@@ -1,4 +1,3 @@
-
 from gaia_small_agent.agent.types import AssistantTurn, ModelRuntimeError, ToolCall
 from scripts.gaia_terminal_instruction import final_outcome, terminal_messages
 
@@ -10,9 +9,9 @@ def test_terminal_instruction_preserves_exact_tool_prefix_and_source_messages():
         {"role": "tool", "content": "Observation", "tool_call_id": "id-1"},
     ]
     changed = terminal_messages(original)
-    assert changed[1:] == original[1:]
-    assert changed[0]["content"].startswith("Existing policy.\n\n")
-    assert "No more tools" in changed[0]["content"]
+    assert changed[:-1] == original
+    assert changed[-1]["role"] == "user"
+    assert "No more tools" in changed[-1]["content"]
     assert original[0]["content"] == "Existing policy."
 
 

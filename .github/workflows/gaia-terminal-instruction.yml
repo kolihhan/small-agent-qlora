@@ -1,8 +1,8 @@
-name: GAIA terminal instruction paired validation
+name: GAIA same-prefix terminal suffix retry
 on:
   workflow_dispatch:
   push:
-    branches: [experiment/gaia-terminal-request-20261114]
+    branches: [experiment/gaia-terminal-suffix-20261114]
     paths: [.github/workflows/gaia-terminal-instruction.yml]
 permissions:
   contents: read
@@ -18,7 +18,7 @@ env:
 jobs:
   paired:
     runs-on: ubuntu-latest
-    timeout-minutes: 175
+    timeout-minutes: 205
     strategy:
       fail-fast: false
       matrix:
@@ -51,7 +51,7 @@ jobs:
           server=$(find "$PWD/llama" -type f -name llama-server -print -quit)
           test -x "$server"
           echo "LLAMA_SERVER=$server" >> "$GITHUB_ENV"
-      - name: Evaluate Base and v7 with two terminal requests per shared rollout
+      - name: Evaluate matched final requests with the original prefix intact
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           SHARD: ${{ matrix.shard }}
