@@ -60,7 +60,7 @@ jobs:
           report=json.load(open('musique-oracle-source-gate.json'))
           assert len(train)==64 and len(hold)==24
           assert {r['composition_family'] for r in train}=={'3hop1','4hop1'}
-          assert {r['composition_family'] for r in hold}=={'3hop2','4hop2'}
+          assert {r['composition_family'] for r in hold}=={'3hop2','4hop2','4hop3'}
           assert {x['task_id'] for x in train}.isdisjoint({x['task_id'] for x in hold})
           support=lambda rows:{h for r in rows for h in r['supporting_paragraph_hashes']}
           assert support(train).isdisjoint(support(hold))
