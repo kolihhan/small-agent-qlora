@@ -21,3 +21,9 @@ in run 43623074100 (Tesla T4 14.56 GiB), but model training call failed
 before first optimizer step due an unsupported v7-only optional kwarg.
 Script now checks the exact train_qlora signature before optimizer setup.
 Do not repeat after this attempt without new evidence.
+
+Attempt 6: observed T4 14.56 GiB and verified 15 trainer args in
+run 43623352758. Colab CLI interrupted the silent model load after its
+30-second default idle deadline. This attempt uses the documented
+--timeout 1800 option; identical frozen data, Qwen9B, LR and optimizer steps.
+No further automatic retries.
