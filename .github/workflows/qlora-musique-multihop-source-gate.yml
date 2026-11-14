@@ -53,6 +53,35 @@ jobs:
                   'passed_static':_hop(row,excluded_ids=set(),excluded_questions=set(),excluded_decomp=set()),
               }), flush=True)
           PY
+          python - <<'PY'
+          import json, re
+          from collections import Counter
+          from pathlib import Path
+          from scripts.prepare_musique_multihop_train import _hop
+          prefixes=Counter()
+          examples={}
+          static=Counter()
+          with Path('source/train.jsonl').open(encoding='utf-8') as f:
+              for line in f:
+                  row=json.loads(line)
+                  prefix=str(row.get('id','')).split('__')[0]
+                  prefixes[prefix]+=1
+                  if prefix.startswith(('3hop','4hop')):
+                      static[str(_hop(row,excluded_ids=set(),excluded_questions=set(),excluded_decomp=set()))]+=1
+                      if prefix not in examples:
+                          p=row.get('paragraphs') or []
+                          d=row.get('question_decomposition') or []
+                          examples[prefix]={
+                              'id_prefix':prefix,'hop_decomp':len(d),'num_paragraphs':len(p),
+                              'supporting':sum(x.get('is_supporting') is True for x in p),
+                              'length_min':min((len(x.get('paragraph_text') or '') for x in p),default=0),
+                              'length_max':max((len(x.get('paragraph_text') or '') for x in p),default=0),
+                              'decomp_ids_count':len([x for x in d if x.get('id') is not None])
+                          }
+          print('MUSIQUE_PREFIX_COUNTS',dict(prefixes),flush=True)
+          print('MUSIQUE_STATIC_PASS',dict(static),flush=True)
+          print('MUSIQUE_HOP_SCHEMAS',json.dumps(examples,sort_keys=True),flush=True)
+          PY
       - name: Freeze 4 three-hop and 4 four-hop TRAIN candidate tasks, no DEV exposure
         run: |
           set -euo pipefail
