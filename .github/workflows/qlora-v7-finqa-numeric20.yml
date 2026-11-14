@@ -18,11 +18,11 @@ env:
 jobs:
   paired:
     runs-on: ubuntu-latest
-    timeout-minutes: 160
+    timeout-minutes: 225
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
@@ -31,7 +31,6 @@ jobs:
       - name: Install project and test numeric-source pairing; no external benchmark framework
         run: |
           python -m pip install -e '.[dev]'
-          python -m pip install 'git+https://github.com/akgitrepos/toolmisusebench@b6ee3412f98d2058ee487e182a72b26c58046d51'
           python -m pytest -q tests/test_finqa_numeric_v7_transfer20.py
       - name: Pin official FinQA DEV financial reports; require 20 internally coherent numeric labels
         run: |
