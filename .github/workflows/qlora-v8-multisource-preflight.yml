@@ -98,12 +98,12 @@ jobs:
               rows=load_verified_rows(path,'inputs/gaia-protected.json')
               rendered=_render_turn_examples(t,rows)
               assert len(rendered)==expected,(path,len(rendered),expected)
-              tokenized=_tokenize_completion_examples(t,rendered,max_length=3072,require_full_prompt=True)
+              tokenized=_tokenize_completion_examples(t,rendered,max_length=4096,require_full_prompt=True)
               assert len(tokenized)==expected
-              print('FULL_PROMPT_3072_SAFE',path,'count',len(tokenized),
+              print('FULL_PROMPT_4096_SAFE',path,'count',len(tokenized),
                     'max_tokens',max(len(row['input_ids']) for row in tokenized))
           report['training_ready_no_gpu_yet']=True
-          report['token_context_max']=3072
+          report['token_context_max']=4096
           Path('qlora-v8-audit.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
           PY
       - name: Export frozen training and validation, never GAIA protected hashes
