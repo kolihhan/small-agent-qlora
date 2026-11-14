@@ -87,8 +87,20 @@ def _render_turn_examples(processor, rows: list[dict]) -> list[dict[str, Any]]:
         tools = row.get("tools") or []
         task_id = str(row.get("task_id") or f"row-{row_index}")
         capability = str(row.get("capability") or "unspecified")
+        indices = row.get("training_action_indices")
+        if indices is not None:
+            if (not isinstance(indices, list) or not indices
+                or any(type(i) is not int or i < 0 or i >= len(messages) for i in indices)
+                or indices != sorted(set(indices))
+                or any(not isinstance(messages[i], dict) or messages[i].get("role") != "assistant"
+                       for i in indices)):
+                raise ValueError("invalid curated assistant training_action_indices")
+            selected_indices = set(indices)
+        else:
+            selected_indices = None
         for index, message in enumerate(messages):
-            if not isinstance(message, dict) or message.get("role") != "assistant":
+            if (not isinstance(message, dict) or message.get("role") != "assistant"
+                or selected_indices is not None and index not in selected_indices):
                 continue
             prefix = messages[:index]
             if not prefix:
