@@ -153,3 +153,54 @@ def test_cpu_safe_loss_can_return_outputs():
 
     assert loss == 2.5
     assert returned is output
+
+
+def test_qlora_respects_curator_indices_and_never_supervises_failed_action():
+    from gaia_small_agent.training.qlora import _render_turn_examples
+
+    class NativeTokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            def dump(value):
+                return json.dumps(value, sort_keys=True, separators=(",", ":"))
+            if kwargs.get("add_generation_prompt"):
+                return dump(messages) + "<assistant>"
+            if messages and messages[-1].get("role") == "assistant":
+                return dump(messages[:-1]) + "<assistant>" + dump(messages[-1])
+            return dump(messages)
+
+    row = _verified_row()
+    row["messages"] = [
+        {"role": "system", "content": "use tools"},
+        {"role": "user", "content": "read then recover"},
+        {"role": "assistant", "tool_calls": [
+            {"id": "bad", "type": "function", "function": {
+                "name": "read", "arguments": {"source": "missing.txt"}}}]},
+        {"role": "tool", "tool_call_id": "bad", "name": "read",
+         "content": "ToolError[READ_ERROR]: missing file"},
+        {"role": "assistant", "tool_calls": [
+            {"id": "good", "type": "function", "function": {
+                "name": "read", "arguments": {"source": "report.txt"}}}]},
+        {"role": "tool", "tool_call_id": "good", "name": "read",
+         "content": "The report contains 42."},
+        {"role": "assistant", "content": "42"},
+    ]
+    row["training_action_indices"] = [4, 6]
+    got = _render_turn_examples(NativeTokenizer(), [row])
+    assert [x["metadata"]["assistant_message_index"] for x in got] == [4, 6]
+    assert all('"source":"missing.txt"' not in x["completion"] for x in got)
+    assert "ToolError[READ_ERROR]" in got[0]["prompt"]
+
+
+@pytest.mark.parametrize("indices", [
+    [], [2, 2], [6, 2], [True], [-1], [99], [3], ["2"]
+])
+def test_qlora_rejects_invalid_curated_action_indices(indices):
+    from gaia_small_agent.training.qlora import _render_turn_examples
+
+    class Template:
+        def apply_chat_template(self, messages, **kwargs):
+            return ""
+    row = _verified_row()
+    row["training_action_indices"] = indices
+    with pytest.raises(ValueError, match="training_action_indices"):
+        _render_turn_examples(Template(), [row])
