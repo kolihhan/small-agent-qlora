@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 from typing import Iterable
 
-HOP_ID = re.compile(r"^([34])hop__")
+HOP_ID = re.compile(r"^([34])hop[0-9]+__")
 SEED = "musique-train-multihop-20261114"
 SOURCE = "bdsaglam/musique@667064b514d22deecae00a3dccbd92bccf88869e"
 
