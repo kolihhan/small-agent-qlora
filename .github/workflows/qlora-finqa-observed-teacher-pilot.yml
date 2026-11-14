@@ -99,7 +99,7 @@ jobs:
           shard=int(os.environ['SHARD'])
           def factory():
               return AgentRuntime(
-                  OllamaModel(model='qwen3.5:9b-q4_K_M',temperature=0.3,
+                  OllamaModel(model='qwen3.5:9b-q4_K_M',
                               max_new_tokens=512,timeout_s=600,enable_thinking=False),
                   default_tools(),max_steps=12,
               )
