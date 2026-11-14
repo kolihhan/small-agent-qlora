@@ -1,0 +1,57 @@
+name: Curate completed FinQA TRAIN16 observed teacher traces (CPU only)
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/v7-finqa-numeric20-20261114]
+    paths: [.github/workflows/qlora-finqa-curate-existing16.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  curate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Install native curation and validate audit contracts
+        run: |
+          python -m pip install -e '.[dev]'
+          python -m pytest -q tests/test_curate_finqa_teacher.py tests/test_training_contract.py
+      - name: Fetch completed pinned Qwen9B CPU rollout artifacts, not GAIA questions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43589193208
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          pattern: finqa-observed-teacher-shard-*
+          path: observations
+          merge-multiple: true
+      - name: Accept exact four .jsonl trajectory files (exclude progress .jsonl)
+        run: |
+          set -euo pipefail
+          files=(observations/finqa-observed-[0-3].jsonl)
+          test "${#files[@]}" -eq 4
+          python -m scripts.curate_finqa_teacher \
+            --inputs "${files[@]}" \
+            --output finqa-train16-curated.jsonl \
+            --report finqa-train16-curated-report.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path('finqa-train16-curated-report.json').read_text())
+          assert report['input_verified_rollouts']==18,report
+          assert 1<=report['accepted_unique_parents']<=16,report
+          assert report['gaia_rows']==0 and not report['training_ran']
+          print('FINQA_TRAIN16_CURATED',json.dumps(report,sort_keys=True),flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: finqa-train16-curated-observed-real
+          path: |
+            finqa-train16-curated.jsonl
+            finqa-train16-curated-report.json
+          if-no-files-found: error
+          retention-days: 30
