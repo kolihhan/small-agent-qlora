@@ -13,6 +13,7 @@ import argparse
 from collections import Counter
 from hashlib import sha256
 import json
+import re
 from pathlib import Path
 
 from gaia_small_agent.training.protection import (
@@ -44,29 +45,68 @@ def _question(row: dict) -> str:
 
 
 def compact_multihop_supervision(row: dict) -> dict:
-    """Train initial evidence navigation, late-hop grounding and finalization.
+    """Train only next read actions justified by *already visible* evidence.
 
-    Keep full real tool observations in every prefix; do not supervise all
-    repetitive read calls. v7 over-searched on GAIA. This fixes the 1:5
-    final-to-tool imbalance of full MuSiQue paths without duplicating tasks.
-    It is a training hypothesis, not a demonstrated model improvement.
+    MuSiQue's human gold decomposition reveals passages the model cannot
+    necessarily identify from the title-only index. Supervision on those
+    hidden oracle choices would reward benchmark-specific guessing.
+    This conservative rule keeps the explicitly requested first index read,
+    link-evidenced support reads, and a final answer after all real evidence.
     """
     if row.get("source") != "musique-train":
         raise ValueError("only annotated MuSiQue rows may be compacted")
-    idx = row.get("training_action_indices")
-    msgs = row.get("messages")
+    idx=row.get("training_action_indices")
+    msgs=row.get("messages")
     if (not isinstance(idx,list) or len(idx) not in (5,6)
         or not isinstance(msgs,list) or len(set(idx))!=len(idx)
+        or any(type(i) is not int or i<0 or i+1>=len(msgs) for i in idx[:-1])
         or any(type(i) is not int or i<0 or i>=len(msgs) for i in idx)
         or any(msgs[i].get("role")!="assistant" for i in idx)
-        or not msgs[idx[1]].get("tool_calls")
-        or not msgs[idx[-2]].get("tool_calls")
         or msgs[idx[-1]].get("tool_calls")):
         raise ValueError("invalid source-verified MuSiQue tool-to-final sequence")
+    source=lambda i:(msgs[i]["tool_calls"][0].get("function") or {}).get("arguments",{}).get("source")
+    if source(idx[0])!="passages/index.txt":
+        raise ValueError("expected actual first index read")
+    index_response=msgs[idx[0]+1]
+    if index_response.get("role")!="tool":
+        raise ValueError("index observation missing")
+    available={}
+    for line in str(index_response.get("content") or "").splitlines():
+        found=re.match(r"^\\s*(passages/p\\d+\\.txt)\\s*\\|\\s*(.*?)\\s*$",line)
+        if found:
+            available[found.group(1)]=found.group(2).strip()
+    if len(available)!=20:
+        raise ValueError("unsupported source index: expected twenty genuine passages")
+    title_frequency=Counter(title.casefold() for title in available.values())
+    question=_question(row).casefold()
+    choices=[idx[0]]
+    link_reads=0
+    for i in idx[1:-1]:
+        file=source(i)
+        if (not isinstance(file,str) or file not in available
+            or msgs[i+1].get("role")!="tool"):
+            raise ValueError("invalid supported read observation")
+        title=available[file].casefold()
+        if not title or len(title)<4 or title_frequency[title]!=1:
+            continue
+        # The index itself lists every possible title, therefore indexing
+        # cannot count as evidence that a specific passage was selected.
+        prior_observations=[
+            str(msgs[j+1].get("content") or "").casefold()
+            for j in idx[1:-1] if j<i
+        ]
+        seen=question+"\\n"+"\\n".join(prior_observations)
+        if title in seen:
+            choices.append(i)
+            link_reads+=1
+    choices.append(idx[-1])
     result=dict(row)
-    result["training_action_indices"]=[idx[1],idx[-2],idx[-1]]
-    result["annotation_supervision_profile"]="first_support_last_support_final_v1"
+    result["training_action_indices"]=choices
+    result["annotation_supervision_profile"]="visible_link_or_final_v1"
+    result["link_grounded_read_labels"]=link_reads
+    result["unsubstantiated_read_actions_omitted"]=(len(idx)-2)-link_reads
     return result
+
 
 def merge_supervision(
     base: list[dict], finqa: list[dict], musique: list[dict],
@@ -140,6 +180,8 @@ def merge_supervision(
         }.items())),
         "annotation_oracle_parent_count":sum(r["source"]=="musique-train" for r in result),
         "annotation_oracle_training_actions":sum(len(r["training_action_indices"]) for r in result if r["source"]=="musique-train"),
+        "annotation_unsubstantiated_reads_omitted":sum(r.get("unsubstantiated_read_actions_omitted",0) for r in result if r["source"]=="musique-train"),
+        "annotation_visibly_grounded_read_labels":sum(r.get("link_grounded_read_labels",0) for r in result if r["source"]=="musique-train"),
         "train_final_action_fraction":round(sum(1 for r in result for i in r["training_action_indices"] if not r["messages"][i].get("tool_calls"))/max(1,actions(result)),6),
         "observed_finqa_parent_count":sum(r["source"]=="finqa-train" for r in result),
         "protected_question_hashes_loaded":len(protected_hashes),
@@ -149,7 +191,7 @@ def merge_supervision(
         "whole_parent_repeats":0,
         "train_model":"Qwen/Qwen3.5-9B",
         "training_ran":False,"gaia_evaluated":False,
-        "boundary":"All TRAIN only: v7 real+synthetic observed, FinQA strict real read+python, MuSiQue source-annotated not observed. MuSiQue supervision is three deliberate decisions per whole trajectory; full prefixes preserved. GAIA/FinQA DEV must remain external.",
+        "boundary":"All TRAIN only: v7 real+synthetic observed, FinQA strict real read+python, MuSiQue source-annotated not observed. MuSiQue selected next-actions only where supported by currently visible evidence plus index and final; full prefixes preserved. GAIA/FinQA DEV must remain external.",
     }
     return result,dev,report
 
@@ -204,8 +246,8 @@ def build(
     if len(protected)<100:
         raise ValueError("GAIA protected validation hashes missing")
     train,dev,report=merge_supervision(base,finqa,mu,base_dev+mu_dev,protected)
-    if (report["train_parents"]!=304 or report["train_actions"]!=798
-        or report["validation_parents"]!=35):
+    if (report["train_parents"]!=304 or not 700<=report["train_actions"]<=800
+        or report["validation_parents"]!=35 or not 128<=report["annotation_oracle_training_actions"]<=256):
         raise ValueError("unexpected v8 full-source parent/action exposure")
     report.update({
         "removed_first16_failed_python_verification":rej1,
