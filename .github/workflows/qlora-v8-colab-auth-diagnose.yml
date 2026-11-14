@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     env:
-      COLAB_ADC_JSON: \${{ secrets.COLAB_ADC_JSON }}
+      COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       - name: Check credential shape only; print no JSON or values
