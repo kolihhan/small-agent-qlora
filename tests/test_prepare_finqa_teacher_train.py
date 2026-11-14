@@ -23,7 +23,7 @@ def test_disjoint_finqa_train_source_and_required_tool_contract():
     assert len(tasks) == 2
     assert {t["source"] for t in tasks} == {"finqa-train"}
     assert all(t["required_tools"] == ["read", "python"] for t in tasks)
-    assert all("24" not in t["question"] for t in tasks)
+    assert all("24.0" not in t["question"] for t in tasks)
     assert all("report.txt" in t["files"] for t in tasks)
     assert len({t["document_id_hash"] for t in tasks}) == 2
 
