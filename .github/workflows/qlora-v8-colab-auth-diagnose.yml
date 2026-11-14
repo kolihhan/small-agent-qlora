@@ -86,3 +86,37 @@ jobs:
           else:
               print("COLAB_ADC_SHAPE: opaque_or_invalid_json")
           PY
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Classify Google OAuth refresh failure without printing secrets or response bodies
+        run: |
+          python -m pip -q install 'google-auth>=2.20'
+          python - <<'PY'
+          import json,os
+          import google.auth
+          from google.auth.transport.requests import Request
+          from google.auth.exceptions import RefreshError
+          try:
+              info=json.loads(os.environ['COLAB_ADC_JSON'])
+              if not isinstance(info,dict):
+                  print('COLAB_REFRESH_CLASS: malformed_json')
+                  raise SystemExit(0)
+              scopes=['openid','https://www.googleapis.com/auth/userinfo.email',
+                      'https://www.googleapis.com/auth/cloud-platform',
+                      'https://www.googleapis.com/auth/colaboratory']
+              cred,_=google.auth.load_credentials_from_dict(info,scopes=scopes)
+              cred.refresh(Request())
+              print('COLAB_REFRESH_CLASS: authenticated')
+          except RefreshError as e:
+              message=str(e).casefold()
+              category=next((name for name in (
+                  'invalid_grant','invalid_client','invalid_scope',
+                  'unauthorized_client','access_denied','interaction_required',
+                  'temporarily_unavailable','rate_limit_exceeded')
+                  if name in message),'refresh_error_other')
+              print('COLAB_REFRESH_CLASS:',category)
+          except Exception as e:
+              print('COLAB_REFRESH_CLASS:',type(e).__name__)
+          PY
