@@ -77,7 +77,12 @@ def trajectory_from_result(
                 content = str(event.data.get("content", ""))
                 if not event.data.get("ok", False):
                     code = event.data.get("error_code") or "TOOL_ERROR"
-                    content = f"ToolError[{code}]: {content}"
+                    prefix = f"ToolError[{code}]: "
+                    # Runtime traces already contain this serialized prefix.
+                    # The optional ToolMeta header precedes the error line.
+                    rendered = content.split("\n", 1)[-1] if content.startswith("ToolMeta: ") else content
+                    if not rendered.startswith(prefix):
+                        content = prefix + content
                 messages.append({
                     "role": "tool",
                     "tool_call_id": str(event.data["id"]),
