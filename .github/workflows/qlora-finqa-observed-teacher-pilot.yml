@@ -1,0 +1,152 @@
+name: FinQA TRAIN observed multi-tool Qwen teacher pilot (no GPU)
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/v7-finqa-numeric20-20261114]
+    paths: [.github/workflows/qlora-finqa-observed-teacher-pilot.yml]
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  observed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 235
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Install native agent and validate strict observed-trace filter
+        run: |
+          python -m pip install -e '.[dev,eval,search,files]'
+          python -m pytest -q tests/test_curate_finqa_teacher.py tests/test_trajectory_collection.py
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43588611087
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: finqa-train-candidate16-source-only
+          path: candidate
+      - name: Partition frozen source-disjoint 16 TRAIN tasks into two observed trials each
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          tasks=[json.loads(x) for x in Path('candidate/finqa-train-candidate16.jsonl').read_text().splitlines() if x.strip()]
+          assert len(tasks)==16
+          shard=int(os.environ['SHARD'])
+          selected=[x for i,x in enumerate(tasks) if i%4==shard]
+          assert len(selected)==4 and len({x['document_id_hash'] for x in selected})==4
+          expanded=[]
+          for x in selected:
+              for n in (1,2):
+                  row=dict(x)
+                  row["id"]=x["id"]+f"::sample-{n}"
+                  expanded.append(row)
+          Path('pilot-tasks.jsonl').write_text(''.join(json.dumps(x,ensure_ascii=False)+'\n' for x in expanded))
+          print('FINQA_TRAIN_SHARD', shard,'parents',len(selected),'trials',len(expanded),flush=True)
+          PY
+      - name: Hash-protect all original GAIA validation questions from training
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          mkdir -p runs
+          python - <<'PY'
+          from gaia_small_agent.benchmark.gaia100 import load_validation
+          from gaia_small_agent.training.protection import build_protected_question_hashes
+          hashes=build_protected_question_hashes(load_validation(token=None),"runs/gaia-protected-hashes.json")
+          assert len(hashes)>=100
+          print("REAL_GAIA_PROTECTION", len(hashes))
+          PY
+      - name: Install pinned Ollama Qwen3.5-9B CPU teacher, verify model identity
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 4 https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+          OLLAMA_MAX_LOADED_MODELS=1 ollama serve > "$RUNNER_TEMP/ollama-finqa.log" 2>&1 &
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          ollama pull qwen3.5:9b-q4_K_M
+          python - <<'PY'
+          import requests
+          models=requests.get('http://127.0.0.1:11434/api/tags',timeout=15).json()['models']
+          actual=[m['digest'] for m in models if m['name'].startswith('qwen3.5:9b-q4_K_M')]
+          assert actual==['56671c2ab9385f9cfcb404638e32cd62d88e3501d44822208363c010179a3c90'], actual
+          print('FINQA_TEACHER_MODEL_PINNED',actual[0][:12])
+          PY
+      - name: Observe actual tool actions and retain only independently correct complete traces
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          from gaia_small_agent.agent.loop import AgentRuntime
+          from gaia_small_agent.model.ollama import OllamaModel
+          from gaia_small_agent.tools import default_tools
+          from gaia_small_agent.training.trajectories import collect_verified_trajectories
+          shard=int(os.environ['SHARD'])
+          def factory():
+              return AgentRuntime(
+                  OllamaModel(model='qwen3.5:9b-q4_K_M',temperature=0.3,
+                              max_new_tokens=512,timeout_s=600,enable_thinking=False),
+                  default_tools(),max_steps=12,
+              )
+          stats=collect_verified_trajectories(
+              tasks_path='pilot-tasks.jsonl',
+              output_path=f'runs/finqa-observed-{shard}.jsonl',
+              runtime_factory=factory,
+              work_root=f'runs/finqa-work-{shard}',
+              protected_questions_path='runs/gaia-protected-hashes.json',
+          )
+          assert stats['total']==8 and stats['rejected_gaia']==0 and stats.get('rejected_protected',0)==0
+          print('FINQA_OBSERVED_SHARD',shard,json.dumps(stats,sort_keys=True),flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: finqa-observed-teacher-shard-${{ matrix.shard }}
+          path: |
+            runs/finqa-observed-*.jsonl
+            runs/finqa-observed-*.jsonl.summary.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  curate:
+    needs: observed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e '.[dev]'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: finqa-observed-teacher-shard-*
+          path: observations
+          merge-multiple: true
+      - name: Curate one strict clean observed read+python trajectory per independent FinQA parent
+        run: |
+          python -m scripts.curate_finqa_teacher \
+            --inputs observations/finqa-observed-*.jsonl \
+            --output finqa-train-curated.jsonl --report finqa-train-curated-report.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: finqa-training-observed-curated-only
+          path: |
+            finqa-train-curated.jsonl
+            finqa-train-curated-report.json
+          if-no-files-found: error
+          retention-days: 30
