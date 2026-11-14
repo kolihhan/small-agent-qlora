@@ -2,7 +2,7 @@
 import pytest
 from hashlib import sha256
 
-from scripts.prepare_qlora_v8_multisource import merge_supervision
+from scripts.prepare_qlora_v8_multisource import merge_supervision, compact_multihop_supervision
 
 
 def _r(source, id, *, user=None, annotated=False):
@@ -72,3 +72,22 @@ def test_prevent_finqa_dev_or_any_gaia_train():
         merge_supervision([_r("gaia-val","g")],[],[],[],set())
     with pytest.raises(ValueError,match="forbidden"):
         merge_supervision([],[_r("finqa-dev","bad")],[],[],set())
+
+
+def test_compact_multihop_supervision_preserves_first_and_last_evidence_and_final():
+    m=_r("musique-train","chain1",annotated=True)
+    m["messages"]=[{"role":"system","content":"sys"},{"role":"user","content":"q"}]
+    action_ids=[]
+    for j in range(5):
+        action_ids.append(len(m["messages"]))
+        m["messages"].append({"role":"assistant","content":"",
+                              "tool_calls":[{"function":{"name":"read","arguments":{"source":f"passages/p{j}.txt"}}}]})
+        m["messages"].append({"role":"tool","content":"observed"})
+    action_ids.append(len(m["messages"]))
+    m["messages"].append({"role":"assistant","content":"answer"})
+    m["training_action_indices"]=action_ids
+    result=compact_multihop_supervision(m)
+    assert result["training_action_indices"]==[action_ids[1],action_ids[-2],action_ids[-1]]
+    assert result["messages"]==m["messages"]
+    assert len(m["training_action_indices"])==6
+    assert result["annotation_supervision_profile"]=="first_support_last_support_final_v1"
