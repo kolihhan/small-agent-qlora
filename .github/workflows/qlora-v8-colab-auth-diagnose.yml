@@ -90,33 +90,52 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.12'
-      - name: Classify Google OAuth refresh failure without printing secrets or response bodies
+      - name: Check original-grant refresh and Colab read-only session access without revealing identity
         run: |
-          python -m pip -q install 'google-auth>=2.20' 'requests>=2.31'
+          python -m pip -q install 'google-auth>=2.20' 'requests>=2.31' 'google-colab-cli==0.8.0'
           python - <<'PY'
-          import json,os
-          import google.auth
-          from google.auth.transport.requests import Request
+          import json,os,subprocess,pathlib
           from google.auth.exceptions import RefreshError
+          from google.auth.transport.requests import Request
+          from google.oauth2.credentials import Credentials
+          raw=os.environ.get('COLAB_ADC_JSON','')
           try:
-              info=json.loads(os.environ['COLAB_ADC_JSON'])
-              if not isinstance(info,dict):
-                  print('COLAB_REFRESH_CLASS: malformed_json')
+              obj=json.loads(raw)
+              if not isinstance(obj,dict):
+                  print('COLAB_REFRESH_ORIGINAL: malformed_json')
                   raise SystemExit(0)
-              scopes=['openid','https://www.googleapis.com/auth/userinfo.email',
-                      'https://www.googleapis.com/auth/cloud-platform',
-                      'https://www.googleapis.com/auth/colaboratory']
-              cred,_=google.auth.load_credentials_from_dict(info,scopes=scopes)
-              cred.refresh(Request())
-              print('COLAB_REFRESH_CLASS: authenticated')
-          except RefreshError as e:
-              message=str(e).casefold()
-              category=next((name for name in (
-                  'invalid_grant','invalid_client','invalid_scope',
-                  'unauthorized_client','access_denied','interaction_required',
-                  'temporarily_unavailable','rate_limit_exceeded')
-                  if name in message),'refresh_error_other')
-              print('COLAB_REFRESH_CLASS:',category)
-          except Exception as e:
-              print('COLAB_REFRESH_CLASS:',type(e).__name__)
+              # Do NOT request scopes not originally consented. User ADCs
+              # cannot expand scopes via google.auth.default(scopes=...).
+              credentials=Credentials.from_authorized_user_info(obj, scopes=None)
+              credentials.refresh(Request())
+              print('COLAB_REFRESH_ORIGINAL: authenticated')
+          except RefreshError as exc:
+              message=str(exc).casefold()
+              kind=next((x for x in ('invalid_scope','invalid_grant','invalid_client',
+                                     'unauthorized_client','access_denied','interaction_required')
+                         if x in message),'refresh_error_other')
+              print('COLAB_REFRESH_ORIGINAL:',kind)
+              raise SystemExit(0)
+          except Exception as exc:
+              print('COLAB_REFRESH_ORIGINAL:',type(exc).__name__)
+              raise SystemExit(0)
+          path=pathlib.Path(os.environ['RUNNER_TEMP'])/'colab-diagnostic-adc.json'
+          path.write_text(raw)
+          path.chmod(0o600)
+          env=dict(os.environ,GOOGLE_APPLICATION_CREDENTIALS=str(path))
+          try:
+              proc=subprocess.run(['colab','--auth=adc','sessions'],
+                   text=True,capture_output=True,timeout=90,env=env)
+              if proc.returncode==0:
+                  print('COLAB_READ_ONLY_SESSIONS: authenticated')
+              else:
+                  output=(proc.stderr+'\n'+proc.stdout).casefold()
+                  tag=next((x for x in ('invalid_scope','invalid_grant','401',
+                           '403','permission','unauthorized','no valid default credentials')
+                           if x in output),'cli_error_other')
+                  print('COLAB_READ_ONLY_SESSIONS:',tag,'exit',proc.returncode)
+          except Exception as exc:
+              print('COLAB_READ_ONLY_SESSIONS:',type(exc).__name__)
+          finally:
+              path.unlink(missing_ok=True)
           PY
