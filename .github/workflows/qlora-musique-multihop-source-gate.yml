@@ -29,6 +29,30 @@ jobs:
           curl -fL --retry 5 --retry-all-errors --connect-timeout 30 --max-time 1500             "$root/musique_ans_v1.0_train.jsonl" -o source/train.jsonl
           curl -fL --retry 5 --retry-all-errors --connect-timeout 30 --max-time 600             "$root/musique_ans_v1.0_dev.jsonl" -o source/dev.jsonl
           printf '%s  %s\n'             83a75b1e11e4e9bb8f8308e72ac40ca617ae4431b3a0d955b61cab259248490a source/train.jsonl             15fa63794d18a94ce12411aca6e2327e65b6e83b0b1490efab3f1962e48abf3b source/dev.jsonl             | sha256sum --check
+      - name: Diagnose pinned source schema before filtering (no question text)
+        run: |
+          python - <<'PY'
+          import json, itertools
+          from pathlib import Path
+          from scripts.prepare_musique_multihop_train import _hop
+          with Path('source/train.jsonl').open(encoding='utf-8') as f:
+              examples = [json.loads(x) for x in itertools.islice(f, 20)]
+          for row in examples[:3]:
+              parts=row.get('paragraphs') or []
+              decomp=row.get('question_decomposition') or []
+              print('MUSIQUE_SCHEMA', json.dumps({
+                  'id_prefix':str(row.get('id','')).split('__')[0],
+                  'keys':sorted(row),
+                  'answerable':row.get('answerable'),
+                  'decomp_count':len(decomp),
+                  'decomp_keys':sorted(decomp[0]) if decomp and isinstance(decomp[0],dict) else [],
+                  'paragraph_count':len(parts),
+                  'paragraph_keys':sorted(parts[0]) if parts and isinstance(parts[0],dict) else [],
+                  'paragraph0_length':len(str(parts[0].get('paragraph_text',''))) if parts else 0,
+                  'supporting':sum(p.get('is_supporting') is True for p in parts),
+                  'passed_static':_hop(row,excluded_ids=set(),excluded_questions=set(),excluded_decomp=set()),
+              }), flush=True)
+          PY
       - name: Freeze 4 three-hop and 4 four-hop TRAIN candidate tasks, no DEV exposure
         run: |
           set -euo pipefail
