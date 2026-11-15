@@ -157,3 +157,27 @@ regression, rescues in both states, no completion regression in either
 state, and no worse first useful reads or premature submits when incomplete.
 These are paired seeded recoveries. A positive result merits cold-start
 confirmation and source-shift tests before agent integration or QLoRA.
+
+**Result — REJECT the joint typed read/submit policy.** With complete
+evidence, native and typed evidence-supported exact success were **0/8 →
+6/8**. With missing evidence, supported success stayed **0/8 → 0/8**.
+The native policy read the withheld source first in **7/8 → 0/8** across
+arms. Premature submissions were **1/8 → 8/8**. The typed arm made zero
+additional reads in either state. Both arms finished all episodes.
+All six typed exact answers in the complete state also scored exact on
+the same six tasks without the decisive submitted evidence. The task
+identities and strict outcomes are preserved. This rules out attributing
+the exact-score gain to successfully identifying missing evidence. It
+does not distinguish prior knowledge from clues in the remaining text.
+The run recorded scores and read/stop outcomes and did not store final
+answer text. Both states begin from controlled reads, rather than cold
+search. [CPU run](https://github.com/kolihhan/small-agent-qlora/actions/runs/43703160088) ·
+[Final artifact](https://github.com/kolihhan/small-agent-qlora/actions/runs/43703160088/artifacts/14158056217).
+
+Keep the original native tool policy as the control. A later test can
+bind the final rendering boundary after a native stop and independently
+check groundedness with pairs where changing delivered evidence changes
+the correct answer. The current result does not establish a long-horizon
+training signal or an adapter result. New QLoRA remains blocked on verified
+decision supervision and checkpoint evidence; the matched GAIA100 bar is
+18/100.
