@@ -1,0 +1,1 @@
+2026-11-15 one-shot CPU-only physical reconstruction of v8 24 MuSiQue heldout TRAIN parents from pinned original 20-passage dataset. Full validation of original observed read bytes, never teacher-force model, train, or make GAIA score claims. Do not start another T4 while v8 training run 43671254880 is active.

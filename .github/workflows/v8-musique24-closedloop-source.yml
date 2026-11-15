@@ -1,0 +1,74 @@
+name: v8 source-complete MuSiQue24 holdout reconstruction (no GPU/no GAIA)
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/v8-full-multihop-holdout-gate-20261115]
+    paths: [.github/V8_MUSIQUE_CLOSEDLOOP_SOURCE_START]
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  reconstruct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Test source/provenance and leakage safety
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev]'
+          python -m pytest -q tests/test_prepare_v8_closedloop_holdout.py
+      - name: Fetch frozen v8 TRAIN/HOLDOUT 304/35 from successful immutable preflight
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43619541894
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: qlora-v8-protected-source-balanced-token-checked
+          path: input
+      - name: Fetch exact upstream MuSiQue ANSWERABLE TRAIN source; no DEV, GAIA or teacher prediction
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 4 --retry-delay 3 \
+            'https://huggingface.co/datasets/bdsaglam/musique/resolve/667064b514d22deecae00a3dccbd92bccf88869e/musique_ans_v1.0_train.jsonl?download=true' \
+            -o input/musique_ans_v1.0_train.jsonl
+          echo '83a75b1e11e4e9bb8f8308e72ac40ca617ae4431b3a0d955b61cab259248490a  input/musique_ans_v1.0_train.jsonl' | sha256sum -c -
+      - name: Rebuild all 20 passage files for each physically held-out 3/4-hop task
+        run: |
+          set -euo pipefail
+          python -m scripts.prepare_v8_closedloop_holdout \
+            --train input/qlora-v8-train.jsonl \
+            --holdout input/qlora-v8-holdout.jsonl \
+            --source input/musique_ans_v1.0_train.jsonl \
+            --audit input/qlora-v8-audit.json \
+            --tasks v8-musique24-full-workspace.jsonl \
+            --report v8-musique24-source-reconstruction-report.json
+      - name: Check 24 complete environments are ready for future actual model rollouts
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          path=Path("v8-musique24-full-workspace.jsonl")
+          tasks=[json.loads(x) for x in path.read_text().splitlines() if x.strip()]
+          audit=json.loads(Path("v8-musique24-source-reconstruction-report.json").read_text())
+          assert len(tasks)==24 and len({x["task_id"] for x in tasks})==24
+          assert all(len(t["eval_task"]["files"])==21 for t in tasks)
+          assert all("training_action_indices" not in t["eval_task"] and "messages" not in t["eval_task"] for t in tasks)
+          assert audit["eligible_mu_parents"]==24 and audit["not_GAIA"] and audit["not_model_evaluation"]
+          print("V8_MUSIQUE24_COMPLETE_ENVIRONMENT_READY; model_evaluated=FALSE",
+                "input_sha256",hashlib.sha256(path.read_bytes()).hexdigest())
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: qwen9b-v8-musique24-autonomous-source-ready-if-verified
+          path: |
+            v8-musique24-full-workspace.jsonl
+            v8-musique24-source-reconstruction-report.json
+          if-no-files-found: warn
+          retention-days: 30
