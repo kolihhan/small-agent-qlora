@@ -83,6 +83,24 @@ def main():
         raise RuntimeError("QLORA_V8_TRAIN_SIGNATURE_DRIFT:"+",".join(missing))
     print("QLORA_V8_TRAIN_SIGNATURE_VERIFIED",len(required),flush=True)
 
+    # Test the exact TRL backward GEMM primitive on the actual assigned CUDA
+    # architecture BEFORE loading 9B or consuming a training step.
+    from gaia_small_agent.training.qlora import _configure_trl_legacy_addmm
+    from trl.kernels import chunked_logprob
+    capability=torch.cuda.get_device_capability(0)
+    if _configure_trl_legacy_addmm(chunked_logprob,capability=capability):
+        for dtype in (torch.float16,torch.bfloat16):
+            a=torch.ones((2,3),dtype=dtype,device="cuda")
+            b=torch.ones((3,2),dtype=dtype,device="cuda")
+            acc=torch.zeros((2,2),dtype=torch.float32,device="cuda")
+            chunked_logprob._addmm_fp32(acc,a,b)
+            torch.cuda.synchronize()
+            assert torch.all(acc==3),f"TRL FP32 fallback mismatch: {dtype}"
+        print("QLORA_T4_TRL_BACKWARD_GEMM_ACTUAL_CUDA_PREFLIGHT_PASS",
+              {"compute_capability":capability,"tested":["fp16","bf16"]},flush=True)
+    else:
+        print("QLORA_NATIVE_TRL_GEMM_FASTPATH_SUPPORTED",capability,flush=True)
+
     start=time.monotonic()
     train_qlora(
         data_path=TRAIN,output_dir=OUT,model_name=MODEL,
