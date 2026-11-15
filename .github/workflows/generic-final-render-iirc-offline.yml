@@ -1,0 +1,40 @@
+name: PRO frozen generic answer renderer source-shift IIRC physical replay (no model)
+on:
+  push:
+    branches: [experiment/generic-final-render-iirc-replay-20261115]
+    paths: [.github/workflows/generic-final-render-iirc-offline.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e '.[dev]'
+      - name: Test pre-frozen multi-domain final-rendering contract before opening IIRC original finals
+        run: |
+          python -m pytest -q tests/test_pro_generic_final_render.py
+      - name: Download physically completed ORIGINAL IIRC Qwen native finals from separate source family
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43700029046
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: iirc-qwen9b-links-final
+          path: inputs
+      - name: Verify scorer identity and compare strict original vs renderer outputs without any model
+        run: |
+          python -m scripts.replay_iirc_generic_final_render \
+            --source inputs/iirc-qwen9b-links-final.json \
+            --output iirc-generic-final-render-report.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: iirc-generic-final-render-retrospective-report
+          path: iirc-generic-final-render-report.json
+          if-no-files-found: error
