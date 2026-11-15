@@ -1,0 +1,50 @@
+name: PRO read-only inspect existing private HF training API shape (no mutation)
+on:
+  push:
+    branches: [experiment/nextsearch-gold-grounded-search-traces-20261115]
+    paths: [.github/workflows/nextsearch-existing-space-readonly-api.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - run: |
+          test -n "$HF_TOKEN" || exit 2
+          python -m pip install -q 'huggingface_hub>=1.0'
+          python - <<'PY'
+          from huggingface_hub import HfApi,hf_hub_download
+          import ast,json,os
+          from pathlib import Path
+          api=HfApi(token=os.environ["HF_TOKEN"])
+          report=[]
+          for repo in ("kolihhan/small-agent-qlora-v2-train",
+                       "kolihhan/small-agent-qlora-v7-batch-trainer"):
+              files=api.list_repo_files(repo,repo_type="space")
+              apps=[]
+              for path in files:
+                  if not path.endswith(".py") or len(apps)>=3:
+                      continue
+                  try:
+                      text=Path(hf_hub_download(repo,path,repo_type="space",
+                                 token=os.environ["HF_TOKEN"])).read_text()
+                      tree=ast.parse(text)
+                  except Exception:
+                      continue
+                  defs=[]
+                  for node in tree.body:
+                      if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)):
+                          defs.append({"name":node.name,"params":[a.arg for a in node.args.args]})
+                  apps.append({"path":path,"functions":defs[:30],
+                               "has_original_data_upload":"upload" in text.lower(),
+                               "mentions_zero_gpu":"@spaces.GPU" in text,
+                               "mentions_qlora":"train_qlora(" in text,
+                               "hardcoded_v3b":"v3b" in text.lower(),
+                               "hardcoded_v7":"v7" in text.lower()})
+              report.append({"id":repo,"files":files[:50],"apps":apps})
+          print("NEXTSEARCH_EXISTING_HF_SPACE_API_SHAPE",json.dumps(report,sort_keys=True),flush=True)
+          PY
