@@ -1,0 +1,33 @@
+name: PRO 2Wiki TRAIN nonoracle search-read long-path feasibility
+on:
+  push:
+    branches: [experiment/2wiki-nonoracle-search-read-paths-20261115]
+    paths: [.github/workflows/2wiki-search-read-nonoracle.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Install source dataset read-only and project runtime
+        run: |
+          python -m pip install -e '.[eval,dev]'
+      - name: Prove no oracle action leakage, positive and negative source paths
+        run: |
+          python -m pytest -q tests/test_audit_2wiki_search_read_paths.py
+      - name: Audit real pinned original TRAIN source from 2WikiMultiHopQA
+        run: |
+          python -m scripts.audit_2wiki_search_read_paths --limit 1024 --output 2wiki-nonoracle-search-read-report.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: 2wiki-source-nonoracle-search-read-audit
+          path: 2wiki-nonoracle-search-read-report.json
+          retention-days: 30
+          if-no-files-found: warn
