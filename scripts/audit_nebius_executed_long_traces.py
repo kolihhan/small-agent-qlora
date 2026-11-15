@@ -23,91 +23,118 @@ MAX_LIMIT = 2000
 
 
 def examine(row: dict) -> dict:
+    """Pair executed actions; finish is the terminal unobserved OpenHands action.
+
+    Real publisher protocol has exactly one assistant finish as its last
+    message. No tool-role response for finish is expected. Every OTHER
+    tool call must have an original, nonempty, later tool observation.
+    """
     messages = row.get("trajectory") or []
     if not isinstance(messages, list):
         raise ValueError("unexpected published trajectory schema")
     pending, unique, seen, function_names = {}, set(), set(), Counter()
-    bad_args, missing_ids = 0, 0
+    all_ids = set()
+    bad_args, missing_ids, bad_terminal = 0, 0, 0
     turns_with_tools, verified_results, response_chars = 0, 0, 0
     orphan, duplicated, out_of_order = 0, 0, 0
+    terminal_finish = 0
     tool_errors = 0
     for idx, message in enumerate(messages):
-        role=message.get("role")
-        if role=="assistant" and message.get("tool_calls"):
-            turns_with_tools+=1
-            for call in message["tool_calls"]:
-                if not isinstance(call,dict):
-                    bad_args+=1
+        if not isinstance(message, dict):
+            raise ValueError("publisher message must be dictionary")
+        role = message.get("role")
+        if role == "assistant" and message.get("tool_calls"):
+            active_actions = 0
+            calls = message["tool_calls"]
+            for call in calls:
+                if not isinstance(call, dict):
+                    bad_args += 1
                     continue
-                callid=call.get("id")
-                function=call.get("function") or {}
-                name=function.get("name")
-                args=function.get("arguments")
-                if not isinstance(callid,str) or not callid:
-                    missing_ids+=1
+                callid = call.get("id")
+                function = call.get("function") or {}
+                name = function.get("name")
+                args = function.get("arguments")
+                if not isinstance(callid, str) or not callid:
+                    missing_ids += 1
                     continue
-                if callid in unique:
-                    duplicated+=1
+                if callid in all_ids:
+                    duplicated += 1
+                    continue
+                all_ids.add(callid)
+                if not isinstance(name, str) or not name:
+                    bad_args += 1
+                    continue
+                if isinstance(args, str):
+                    try:
+                        decoded = json.loads(args)
+                        if not isinstance(decoded, dict):
+                            bad_args += 1
+                    except (ValueError, TypeError):
+                        bad_args += 1
+                elif not isinstance(args, dict):
+                    bad_args += 1
+                if name == "finish":
+                    # Original OpenHands source emits a final finish tool
+                    # call, without any subsequent tool reply. Only one
+                    # final assistant message may use this exception.
+                    terminal_finish += 1
+                    if idx != len(messages) - 1 or len(calls) != 1:
+                        bad_terminal += 1
                     continue
                 unique.add(callid)
-                if not isinstance(name,str) or not name:
-                    bad_args+=1
-                    continue
-                if isinstance(args,str):
-                    try:
-                        decoded=json.loads(args)
-                        if not isinstance(decoded,dict):
-                            bad_args+=1
-                    except (ValueError,TypeError):
-                        bad_args+=1
-                elif not isinstance(args,dict):
-                    bad_args+=1
-                pending[callid]=idx
-                function_names[name]+=1
-        elif role=="tool":
-            callid=message.get("tool_call_id")
-            if not isinstance(callid,str) or not callid or callid not in pending:
-                orphan+=1
+                pending[callid] = idx
+                function_names[name] += 1
+                active_actions += 1
+            turns_with_tools += int(active_actions > 0)
+        elif role == "tool":
+            callid = message.get("tool_call_id")
+            if not isinstance(callid, str) or not callid or callid not in pending:
+                orphan += 1
                 continue
             if callid in seen:
-                duplicated+=1
+                duplicated += 1
                 continue
-            sent_idx=pending[callid]
-            if sent_idx >= idx:
-                out_of_order+=1
+            if pending[callid] >= idx:
+                out_of_order += 1
                 continue
-            # A tool output must contain real data (empty or null is not
-            # evidence, even if the operation was externally executed).
-            body=message.get("content")
-            if not isinstance(body,str) or not body.strip():
+            body = message.get("content")
+            if not isinstance(body, str) or not body.strip():
                 continue
             seen.add(callid)
-            verified_results+=1
-            response_chars+=len(body)
+            verified_results += 1
+            response_chars += len(body)
             if "error" in body[:250].casefold() or "traceback" in body[:250].casefold():
-                tool_errors+=1
-    labeled_success=(row.get("resolved")==1 and row.get("exit_status")=="submit")
-    complete=(bool(unique) and len(seen)==len(unique) and bad_args==0
-              and missing_ids==0 and orphan==0 and duplicated==0 and out_of_order==0)
-    good=bool(labeled_success and complete and len(unique)>=MIN_ACTIONS
-              and turns_with_tools>=3 and str(row.get("model_patch") or "").strip())
+                tool_errors += 1
+    labeled_success = row.get("resolved") == 1 and row.get("exit_status") == "submit"
+    complete = (
+        bool(unique) and len(seen) == len(unique)
+        and terminal_finish == 1 and bad_terminal == 0
+        and bad_args == 0 and missing_ids == 0
+        and orphan == 0 and duplicated == 0 and out_of_order == 0
+    )
+    good = bool(
+        labeled_success and complete and len(unique) >= MIN_ACTIONS
+        and turns_with_tools >= 3 and str(row.get("model_patch") or "").strip()
+    )
     return {
-        "success_label":labeled_success,
-        "resolved":row.get("resolved"),
-        "tool_calls":len(unique),
-        "paired_tool_observations":verified_results,
-        "assistant_tool_turns":turns_with_tools,
-        "all_calls_observed":complete,
-        "tool_errors_heuristic":tool_errors,
-        "total_observation_chars":response_chars,
-        "bad_arguments":bad_args,
-        "orphan_observations":orphan,
-        "duplicate_call_ids":duplicated,
-        "out_of_order_observations":out_of_order,
-        "function_names":dict(function_names),
-        "long_executed_success_candidate":good,
-        "success_independently_replayed":False,
-        "training_ready_for_native_gaia_policy":False
+        "success_label": labeled_success,
+        "resolved": row.get("resolved"),
+        "tool_calls": len(unique),
+        "paired_tool_observations": verified_results,
+        "terminal_finish_without_response": terminal_finish,
+        "terminal_finish_valid": terminal_finish == 1 and bad_terminal == 0,
+        "assistant_tool_turns": turns_with_tools,
+        "all_calls_observed": complete,
+        "tool_errors_heuristic": tool_errors,
+        "total_observation_chars": response_chars,
+        "bad_arguments": bad_args,
+        "orphan_observations": orphan,
+        "duplicate_call_ids": duplicated,
+        "out_of_order_observations": out_of_order,
+        "function_names": dict(function_names),
+        "long_executed_success_candidate": good,
+        "success_independently_replayed": False,
+        "training_ready_for_native_gaia_policy": False,
     }
 
 
