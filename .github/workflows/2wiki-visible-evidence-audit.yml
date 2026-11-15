@@ -1,0 +1,33 @@
+name: PRO 2Wiki TRAIN visible next-evidence feasibility (free CPU, no training)
+on:
+  push:
+    branches: [experiment/2wiki-visible-evidence-readiness-20261115]
+    paths: [.github/workflows/2wiki-visible-evidence-audit.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Install source dataset read-only and project runtime
+        run: |
+          python -m pip install -e '.[eval,dev]'
+      - name: Prove no oracle action leakage, positive and negative source paths
+        run: |
+          python -m pytest -q tests/test_audit_2wiki_train_visible_evidence.py
+      - name: Audit real pinned original TRAIN source from 2WikiMultiHopQA
+        run: |
+          python -m scripts.audit_2wiki_train_visible_evidence --limit 1024 --output 2wiki-visible-train-audit.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: 2wiki-original-source-visible-audit
+          path: 2wiki-visible-train-audit.json
+          retention-days: 30
+          if-no-files-found: warn
