@@ -150,6 +150,7 @@ def audit(rows,revision):
     if not rows:
         raise ValueError("empty publisher source")
     ids=set()
+    long_unique_ids=set()
     summary=Counter()
     by_source=Counter()
     names=Counter()
@@ -158,8 +159,13 @@ def audit(rows,revision):
     for row in rows:
         scored=inspect(row)
         ident=scored["id"]
-        if not ident or ident in ids:
-            raise ValueError("duplicate/missing original NextSearch task identity")
+        if not ident:
+            raise ValueError("missing original NextSearch task identity")
+        if ident in ids:
+            # Original corpus contains multiple *distinct attempts* for the
+            # same task ID (e.g. difficulty/failure bands). Not a corrupt
+            # row, but a strict train/test/parent separation requirement.
+            summary["duplicate_task_id_rows"]+=1
         ids.add(ident)
         if scored["license"].casefold()!="apache-2.0":
             raise ValueError("nonpermissive training license appears in Apache config")
@@ -172,6 +178,8 @@ def audit(rows,revision):
         summary["seven_or_more_real_tool_actions"]+=int(scored["tool_actions"]>=MIN_OBSERVED)
         summary["source_gold_exact_and_tool_feedback"]+=int(scored["strict_gold_answer_exact"] and scored["all_actual_calls_observed"])
         summary["long_search_fetch_gold_exact"]+=scored["long_search_fetch_candidate"]
+        if scored["long_search_fetch_candidate"]:
+            long_unique_ids.add(ident)
         summary["had_original_error_then_new_tool_action"]+=scored["recovery_after_error_observed"]
         summary["long_candidate_real_actions"]+=scored["tool_actions"] if scored["long_search_fetch_candidate"] else 0
         summary["long_candidate_observation_chars"]+=scored["observation_chars"] if scored["long_search_fetch_candidate"] else 0
@@ -191,6 +199,8 @@ def audit(rows,revision):
         "split":"train","source_revision":revision,
         "first_n_not_random":len(rows),"license":"apache-2.0",
         "stats":dict(summary),
+        "unique_task_ids":len(ids),
+        "unique_long_gold_exact_task_ids":len(long_unique_ids),
         "source_counts":dict(by_source),
         "band_counts":dict(bands),
         "declared_tools_seen":dict(names),
