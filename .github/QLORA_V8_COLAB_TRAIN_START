@@ -37,3 +37,12 @@ uses non-reentrant gradient checkpointing, preserves all 304/798 Qwen9B data,
 CPU TDD red + green, Ubuntu/Windows CI success 43658297083.
 ONE GPU attempt authorized by user's request to continue improving original
 QLoRA. No repeat retry on failure. No checkpoint claim until SHA verified.
+
+Attempt 8 (explicit 2026-11-15 user GO): run 43658530171 overcame the 3.79-GiB
+upcast OOM and entered the real first backward pass, then failed with
+TRL BF16 addmm on T4 SM7.5 (requires SM8+). Current isolated code at
+42722e2a6820aedc781bee691e033c61c0e0c778 now loads Qwen9B's
+nonquantized weights in fp16 on T4 and checks no unsupported BF16 tensors;
+Ubuntu and Windows CI 43659234505 passed, 259 tests. Same 304/798 source,
+3200 context, 100 optimizer steps, Qwen base weights and 35 holdout.
+Trigger exactly once for measured new failure; no automatic retries.
