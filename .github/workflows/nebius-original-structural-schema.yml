@@ -2,7 +2,7 @@ name: Inspect Nebius original OpenHands trace structural schema (no content)
 on:
   push:
     branches: [experiment/openhands-executed-long-traces-20261115]
-    paths: [.github/workflows/nebius-original-structural-schema.yml]
+    paths: [.github/workflows/nebius-original-structural-schema.yml, scripts/inspect_nebius_original_message_shape.py]
   workflow_dispatch:
 permissions:
   contents: read
