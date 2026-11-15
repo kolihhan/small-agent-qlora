@@ -42,3 +42,90 @@
 - Source of truth for v8 candidate and physical T4 action: [PR #34](https://github.com/kolihhan/small-agent-qlora/pull/34). Do not confuse passing unit tests with trained adapter.
 - Original v3B still has the best matched **GAIA100 18/100 with 44% completion**; v3D is stronger on the controlled200 but is not better on GAIA.
 - Physically verified **v8 checkpoint absent**; [PR #36](https://github.com/kolihhan/small-agent-qlora/pull/36) checkpoint export code exists, but T4 allocation twice failed. Unpaid GitHub CPU **Base-only real MuSiQue8 score 0/8**, not GAIA. Diagnostic read-path and source-support studies in PR #38/#39 are nonpromotional; wait for their actual artifacts before inferring cause. Avoid blindly creating more synthetic training trajectories.
+
+## Source hyperlink positions in independent IIRC evaluation
+
+The LLM Prompt Recovery fifth-place team treated evidence retrieval, candidate
+generation and scoring as distinct failure points and checked the T5
+implementation after a local gain failed to transfer. The Konwinski Prize host
+froze submissions before collecting final GitHub issues. Our application is to
+alter only a source-native evidence signal and measure delivered evidence
+separately from exact task completion. Sources:
+[Prompt Recovery](https://www.kaggle.com/competitions/llm-prompt-recovery/writeups/z-d-z-5th-place-solution)
+and [Konwinski Prize data protocol](https://www.kaggle.com/competitions/konwinski-prize/data).
+
+**P.** The PR #40 answer-only task trial scored 0/8 in both arms. PR #39
+established that the model omitted at least one annotated passage path on six
+of eight different MuSiQue episodes. A path alone cannot establish that the
+right text reached the model. Two hypotheses remain: the agent cannot connect
+a clue to the next source, or it gets the source text and fails to combine it
+or stop with the correct answer.
+
+**R.** On eight frozen [IIRC](https://aclanthology.org/2020.emnlp-main.86/)
+DEV questions from distinct primary pages, compare a flat directory against the
+same full local documents with original hyperlink destinations annotated inline
+in the primary page. Include all usable original link positions without
+consulting question-level labels at inference. Both arms run the original
+Qwen3.5-9B manifest and AgentRuntime with one local read tool, eight turns,
+the same user input and strict answer scoring. Freeze archive checksums,
+all workspace bytes and the eligible two-to-three-linked-source slice first.
+Report exact success and paired flips with model-visible annotated spans
+and completion/tool use. The preregistered positive screen requires at least
+two rescues, zero regressions, at least two more episodes receiving all
+annotated evidence and no completion decline.
+
+**O.** IIRC is a different published benchmark from MuSiQue. The selected
+primary and supporting titles exclude IIRC TRAIN primary titles. The evaluation
+conditions on evidence within an initial tool observation to control for
+pagination; it does not estimate whole-IIRC accuracy or GAIA transfer. This
+local read task is narrower than the full GAIA tool surface.
+A positive result can motivate a separate TRAIN-only label feasibility audit
+and longer real closed-loop evidence, but cannot qualify a QLoRA adapter.
+
+**Result — REJECT inline source hyperlinks as the standalone intervention.**
+All four paired shards completed on CPU. Strict success was **0/8 → 0/8**,
+with zero rescues and zero regressions. Both arms recorded 8/8 runtime finals.
+Actual tool observations contained **27/29 annotated spans in both arms**.
+Full annotated text arrived in **6/8 → 7/8** episodes, below the two-task
+evidence gate. Calls were **34 → 33**, and summed runtime was 1053.5s → 1042.9s.
+[Run 43700029046](https://github.com/kolihhan/small-agent-qlora/actions/runs/43700029046) ·
+[Raw paired artifact](https://github.com/kolihhan/small-agent-qlora/actions/runs/43700029046/artifacts/14156237462).
+
+**Failure attribution.** PR #40 was independently rechecked against the exact
+original MuSiQue paragraph bytes and published support labels. The original
+arm visited all annotated paths in **4/8** episodes (21/28 paths), versus
+**2/8** (20/28) with the short-final prompt. The old trace stores paths, so
+these counts upper-bound prior evidence delivery. The IIRC trace measures
+actually delivered annotated text. Examples `q_12134`, `q_11664`, and
+`q_11268` support the correct comparisons in both arms, with the reference
+entity expressed inside a longer answer. `q_10893` illustrates ambiguity
+between the founding of an institution and the opening of its current building.
+`q_11543` asks for a year and the public reference is a seminary name. Keep
+the full cohort and original strict scorer. These observations support a
+mixture of evidence access, answer selection, response format and reference
+quality. The IIRC cohort favors evidence that fits in an initial observation.
+The standard read tool also retains URL capability; only matching local
+observations were counted and external attempts were not separately preserved.
+
+**Training-data feasibility.** Replayed actual bounded ReadTool calls on
+128 hash-selected IIRC TRAIN primary pages (357 candidate questions). The
+audit excluded protected IIRC DEV identities and known overlapping titles
+from the frozen DEV workspaces and the previous MuSiQue24 workspaces. Seven
+parents supplied 14 physically verified linked read targets and seven
+evidence-complete final states. Each eligible next-read target has a published
+anchor in visible source text and a matching support span returned by its
+tool read. The audit allows any verified unvisited target; the source does
+not prescribe a unique reading order. Allowing up to three pages by following
+the actual emitted `next_offset_chars` reduced missing-support exclusions
+from 26 to 15, with still **7 eligible parents**, all short. There were
+**zero** eligible 7–8-decision parents. This is a feasibility screen with zero
+training labels exported. Keep the 160 ungrounded MuSiQue reads excluded.
+
+**Training decision — BLOCKED.** The independent source did not yield
+enough authentic long trajectories. Use matched under-evidenced and
+evidence-complete states to test continuation versus finalization before
+training, with genuine tool observations and separate source families.
+A real candidate requires persistent adapter, optimizer, scheduler and RNG
+state. Rechecked both historical T4 runs. The original run artifact contains
+only a runtime notebook, and the Stage35 retry produced no checkpoint artifact.
+The matched GAIA100 bar remains **18/100 with 44% completion** for v3B.
