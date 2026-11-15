@@ -1,0 +1,33 @@
+name: PRO Nebius real Qwen OpenHands executed long trajectories source audit
+on:
+  push:
+    branches: [experiment/openhands-executed-long-traces-20261115]
+    paths: [.github/workflows/nebius-executed-long-traces-source.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Install original HF public dataset reader, no models or GPU
+        run: |
+          python -m pip install -e '.[eval,dev]'
+      - name: Prove no missing tool outputs, short paths or failed tasks labeled eligible
+        run: python -m pytest -q tests/test_audit_nebius_executed_long_traces.py
+      - name: Inspect first 500 original recorded Qwen OpenHands runs, do not export raw tool data
+        run: |
+          python -m scripts.audit_nebius_executed_long_traces \
+            --limit 500 --output nebius-real-success-long-trace-source-report.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: nebius-real-executed-source-metadata-only
+          path: nebius-real-success-long-trace-source-report.json
+          retention-days: 30
+          if-no-files-found: warn
