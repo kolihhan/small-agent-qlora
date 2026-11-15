@@ -71,7 +71,6 @@ def make_fragment(parent:dict,source_prefix:list[dict],
                   state:str)->dict:
     if state not in ("evidence_missing_continue","evidence_present_finalize"):
         raise ValueError(state)
-    original_ids=[parent["task_id"]]
     context_messages=[dict(m) for group in context for m in group]
     dialogue=[dict(m) for m in source_prefix]+context_messages+[dict(target)]
     final_idx=len(dialogue)-1
@@ -112,7 +111,7 @@ def state_windows(parent:dict)->tuple[list[dict],Counter]:
     # received observations, before source answer is visible in any of them.
     for index in range(2,len(groups)):
         previous=groups[max(0,index-2):index]
-        if not contains_gold(previous,answer):
+        if not contains_gold(groups[:index],answer):
             teacher=groups[index][0]
             x=make_fragment(parent,prefix,previous,teacher,
                             "evidence_missing_continue")
@@ -123,6 +122,14 @@ def state_windows(parent:dict)->tuple[list[dict],Counter]:
             break
     else:
         stats["no_eligible_missing_state"]+=1
+
+    # Reject teacher examples where the source answer was already
+    # visible far earlier and unnecessary source browsing continued.
+    first_reveal=next((i for i,g in enumerate(groups)
+                       if contains_gold([g],answer)),None)
+    if first_reveal is not None and first_reveal < len(groups)-MAX_SOURCE_GROUPS:
+        stats["oversearched_after_evidence"]+=1
+        return out,stats
 
     # Source answer must be present within a contiguous suffix of the
     # *actual* original web observations, before original recorded final.
