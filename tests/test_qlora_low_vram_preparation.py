@@ -91,3 +91,22 @@ def test_t4_preflight_rejects_unquantized_bf16_before_backward():
         _assert_cuda_precision_compatible(model, FakeTorch, cuda_bf16_supported=False)
     model.embeddings = FakeParameter("fp16")
     _assert_cuda_precision_compatible(model, FakeTorch, cuda_bf16_supported=False)
+
+
+def test_trl_t4_mixed_precision_addmm_uses_builtin_fp32_fallback():
+    from types import SimpleNamespace
+    from gaia_small_agent.training.qlora import _configure_trl_legacy_addmm
+    trl_kernel = SimpleNamespace(_MM_OUT_DTYPE=True)
+    assert _configure_trl_legacy_addmm(trl_kernel, capability=(7, 5)) is True
+    assert trl_kernel._MM_OUT_DTYPE is False
+    newer_gpu = SimpleNamespace(_MM_OUT_DTYPE=True)
+    assert _configure_trl_legacy_addmm(newer_gpu, capability=(8, 0)) is False
+    assert newer_gpu._MM_OUT_DTYPE is True
+
+
+def test_trl_t4_addmm_fails_closed_if_upstream_fallback_interface_changes():
+    import pytest
+    from types import SimpleNamespace
+    from gaia_small_agent.training.qlora import _configure_trl_legacy_addmm
+    with pytest.raises(RuntimeError, match="TRL mixed-precision"):
+        _configure_trl_legacy_addmm(SimpleNamespace(), capability=(7, 5))
