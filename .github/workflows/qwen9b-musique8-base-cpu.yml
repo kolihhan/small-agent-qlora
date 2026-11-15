@@ -1,0 +1,154 @@
+name: Qwen9B true autonomous MuSiQue multi-hop 8-task CPU baseline (no GPU/GAIA)
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/qwen9b-musique8-cpu-autonomous-baseline-20261115]
+    paths: [.github/QWEN9B_MUSIQUE8_CPU_START]
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  source-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Test closed-loop score and model-provenance checks before expensive model calls
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev,search,files]'
+          python -m pytest -q tests/test_eval_qwen9b_musique8_cpu_baseline.py
+      - name: Download immutable original MuSiQue24 full workspaces from verified source run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43683645483
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: qwen9b-v8-musique24-autonomous-source-ready-if-verified
+          path: source
+      - name: Preregister four 3-hop + four 4-hop task IDs without gold answers/outcomes
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,hashlib
+          from pathlib import Path
+          from scripts.eval_qwen9b_musique8_cpu_baseline import freeze
+          rows=[json.loads(line) for line in Path('source/v8-musique24-full-workspace.jsonl').read_text().splitlines() if line.strip()]
+          source=json.loads(Path('source/v8-musique24-source-reconstruction-report.json').read_text())
+          selected=freeze(rows,source)
+          ids=[r['task_id'] for r in selected]
+          assert len(ids)==8 and len(set(ids))==8
+          Path('musique8-task-ids.json').write_text(json.dumps(ids,indent=2)+'\n')
+          print('QWEN9B_MUSIQUE8_BASE_TASK_IDS_FROZEN',json.dumps(ids),flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: musique8-task-ids-gold-blind-frozen
+          path: musique8-task-ids.json
+          if-no-files-found: error
+          retention-days: 30
+
+  base:
+    needs: source-preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 230
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      OLLAMA_CONTEXT_LENGTH: "8192"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Install original tool/agent runtime and CPU test dependencies
+        run: python -m pip install -e '.[dev,search,files]'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43683645483
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: qwen9b-v8-musique24-autonomous-source-ready-if-verified
+          path: source
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: musique8-task-ids-gold-blind-frozen
+          path: source
+      - name: Verify independent immutable task selection before model pull
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from scripts.eval_qwen9b_musique8_cpu_baseline import freeze
+          rows=[json.loads(x) for x in Path('source/v8-musique24-full-workspace.jsonl').read_text().splitlines() if x.strip()]
+          report=json.loads(Path('source/v8-musique24-source-reconstruction-report.json').read_text())
+          expected=json.loads(Path('source/musique8-task-ids.json').read_text())
+          assert [r['task_id'] for r in freeze(rows,report)]==expected
+          print('SOURCE_FROZEN_COHORT_PASS',len(expected))
+          PY
+      - name: Start physical CPU-only original Qwen3.5-9B Ollama; no GPU or adapter
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+          ollama serve > "$RUNNER_TEMP/ollama-musique8.log" 2>&1 &
+          for i in {1..60}; do
+            curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break
+            sleep 1
+          done
+          ollama pull qwen3.5:9b-q4_K_M
+      - name: Execute two autonomous multi-hop episodes with actual tools, 12-step horizon
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python -m scripts.eval_qwen9b_musique8_cpu_baseline \
+            --tasks source/v8-musique24-full-workspace.jsonl \
+            --source-report source/v8-musique24-source-reconstruction-report.json \
+            --shard "$SHARD" --work-root "work/shard-$SHARD" \
+            --output "musique8-base-shard-$SHARD.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: qwen9b-musique8-base-shard-${{ matrix.shard }}
+          path: musique8-base-shard-*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    needs: base
+    if: ${{ always() && needs.base.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e '.[dev,search,files]'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: qwen9b-musique8-base-shard-*
+          path: results
+          merge-multiple: true
+      - name: Aggregate all 8 actual autonomous agent successes and failure metrics
+        run: |
+          set -euo pipefail
+          python -m scripts.eval_qwen9b_musique8_cpu_baseline \
+            --inputs results/musique8-base-shard-0.json results/musique8-base-shard-1.json \
+                     results/musique8-base-shard-2.json results/musique8-base-shard-3.json \
+            --tasks /dev/null --source-report /dev/null \
+            --output musique8-base-closedloop-final.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qwen9b-musique8-base-autonomous-final
+          path: musique8-base-closedloop-final.json
+          if-no-files-found: error
+          retention-days: 30
