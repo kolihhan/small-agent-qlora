@@ -1,0 +1,53 @@
+name: PRO verify Colab notebook source and pinned training contract (CPU only)
+on:
+  push:
+    branches: [experiment/nextsearch-gold-grounded-search-traces-20261115]
+    paths: [.github/workflows/nextsearch-colab-notebook-verify.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate-notebook:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - name: Parse source notebook and each non-shell Python cell without starting a runtime
+        run: |
+          python - <<'PY'
+          import ast,json
+          from pathlib import Path
+          p=Path("notebooks/NextSearch_Real_State_Qwen9B_QLoRA_v0_Colab.ipynb")
+          j=json.loads(p.read_text())
+          if j.get("nbformat")!=4 or len(j.get("cells",[]))!=8:
+              raise ValueError("Colab artifact structure drift")
+          python_cells=[]
+          for i,cell in enumerate(j["cells"]):
+              if cell["cell_type"]!="code":
+                  continue
+              text="".join(cell["source"])
+              clean="\n".join(line for line in text.splitlines() if not line.startswith("!"))
+              ast.parse(clean,filename=f"{p}:cell{i}")
+              python_cells.append((i,text))
+          source="\n".join(x[1] for x in python_cells)
+          for required in (
+              "5420cfdb6111806a23b4bf6cb9cf04c77c75b5f0cf4af6c0b63727f312f40432",
+              "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+              "max_length=4096",
+              "resume_from_checkpoint=resume",
+              "require_full_prompt=True",
+              "max_steps=8",
+          ):
+              if required not in source:
+                  raise ValueError("notebook training contract missing: "+required)
+          print("NEXTSEARCH_COLAB_STATIC_VERIFIED",json.dumps({
+              "python_cells_parsed":len(python_cells),
+              "pinned_source_and_model":True,
+              "full_prompt_required":True,
+              "gpu_steps_executed":0,
+              "trained_adapter_available":False,
+          },sort_keys=True),flush=True)
+          PY
