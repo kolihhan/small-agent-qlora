@@ -1,0 +1,59 @@
+name: PRO aggregate completed Qwen9B 2Wiki paired CPU shards (no model)
+on:
+  push:
+    branches: [experiment/qwen-linked-read-val8-20261115]
+    paths: [.github/workflows/qwen9b-2wiki-linked-aggregate-replay.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  aggregate-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e .
+      - name: Recover exact original 4 completed paired inference shard ZIP artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43712873154
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: 2wiki-linked-0
+          path: shards
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43712873154
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: 2wiki-linked-1
+          path: shards
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43712873154
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: 2wiki-linked-2
+          path: shards
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43712873154
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: 2wiki-linked-3
+          path: shards
+      - name: Recheck all native vs source-links paired predictions and strict scoring
+        run: |
+          python -m scripts.eval_2wiki_linked_read \
+            --inputs shards/2wiki-linked-0.json shards/2wiki-linked-1.json \
+                     shards/2wiki-linked-2.json shards/2wiki-linked-3.json \
+            --output 2wiki-qwen9b-linked-source-final.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qwen9b-2wiki-linked-true-final-no-new-model
+          path: 2wiki-qwen9b-linked-source-final.json
+          if-no-files-found: error
