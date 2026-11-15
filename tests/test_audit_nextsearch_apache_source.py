@@ -85,3 +85,15 @@ def test_malformed_tool_arguments_or_call_order_rejected():
     row2=task()
     row2["target"][1]["tool_call_id"]="not_existing"
     assert not inspect(row2)["all_actual_calls_observed"]
+
+
+
+def test_missing_original_source_answer_is_explicitly_unscorable_not_gold_success():
+    r=task()
+    r["gold"]={"answer":None}
+    value=inspect(r)
+    assert not value["strict_gold_answer_exact"]
+    assert not value["source_reference_present"]
+    assert not value["long_search_fetch_candidate"]
+    result=audit([r],"source-revision")
+    assert result["stats"]["source_reference_missing"]==1
