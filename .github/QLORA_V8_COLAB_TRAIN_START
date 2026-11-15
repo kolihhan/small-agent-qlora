@@ -46,3 +46,16 @@ nonquantized weights in fp16 on T4 and checks no unsupported BF16 tensors;
 Ubuntu and Windows CI 43659234505 passed, 259 tests. Same 304/798 source,
 3200 context, 100 optimizer steps, Qwen base weights and 35 holdout.
 Trigger exactly once for measured new failure; no automatic retries.
+
+Attempt 9 (user explicit 'go', 2026-11-15 MY): prior run 43666964188
+failed at first TRL chunked-logprob BF16 addmm backward because optional
+out_dtype=float32 CUDA kernel requires SM8+; source 42722e2 also failed with
+FP16 unquantized weight preflight because the failing inputs came from
+TRL loss math. In source a45e611 the opt-in pre-SM8 compatibility path
+uses the ORIGINAL TRL native acc.addmm_(a.float(),b.float()) fallback instead;
+source f775716 adds a tiny *real CUDA T4* BF16 and FP16 _addmm_fp32
+preflight before model loading. Both OS tests green in CI 43671140563.
+One controlled Colab T4 run; fail closed on source/active-slot/preflight,
+no automatic retry, original Qwen/Qwen3.5-9B + 304 parents/798 actions,
+3200 untruncated tokens, 100 optimizer steps, 35 independent holdouts,
+NO GAIA training. Do not report adapter unless weights/checksum verified.
