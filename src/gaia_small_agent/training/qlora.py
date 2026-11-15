@@ -349,6 +349,22 @@ def _normalize_lora_target_modules(value: str | list[str]) -> str | list[str]:
     return modules
 
 
+def _configure_trl_legacy_addmm(kernel_module, *, capability: tuple[int, int]) -> bool:
+    """Use TRL's existing fp32 matmul fallback when CUDA lacks SM8 mixed out_dtype.
+
+    TRL's chunked-logprob backward optionally uses torch.addmm(...,
+    out_dtype=float32) for half/bfloat16 GEMM; that CUDA instruction requires
+    SM>=8. Disable only this optional fast path on older NVIDIA GPUs, retaining
+    TRL's own float32 accumulation fallback. No objective or model change.
+    """
+    if capability >= (8, 0):
+        return False
+    if not hasattr(kernel_module, "_MM_OUT_DTYPE"):
+        raise RuntimeError("TRL mixed-precision fallback contract changed")
+    kernel_module._MM_OUT_DTYPE = False
+    return True
+
+
 def _low_vram_load_kwargs(preserve_large_half_parameters: bool, compute_dtype):
     """Avoid loading BF16 unquantized Qwen tensors on T4 (SM 7.5).
 
@@ -578,6 +594,14 @@ def train_qlora(
     else:
         config_kwargs["save_strategy"] = "epoch"
     config = SFTConfig(**config_kwargs)
+
+    if preserve_large_half_parameters and cuda_available:
+        from trl.kernels import chunked_logprob
+        if _configure_trl_legacy_addmm(
+            chunked_logprob,
+            capability=torch.cuda.get_device_capability(0),
+        ):
+            print("QLORA_T4_TRL_NATIVE_FP32_GEMM_FALLBACK_ENABLED", flush=True)
 
     trainer_cls = SFTTrainer
     if not cuda_available:
