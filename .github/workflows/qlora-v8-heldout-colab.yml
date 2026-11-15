@@ -50,7 +50,7 @@ jobs:
           github-token: ${{ github.token }}
           name: qlora-v8-colab-l4-from-base-verified-if-trained
           path: inputs/adapter
-      - name: Fail closed before any GPU: verify exact checkpoint and holdout source
+      - name: "Fail closed before any GPU: verify exact checkpoint and holdout source"
         run: |
           set -euo pipefail
           python -m py_compile scripts/colab_v8_holdout_remote.py
