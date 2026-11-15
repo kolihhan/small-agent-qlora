@@ -1,6 +1,6 @@
 import pytest
 import scripts.freeze_nextsearch_balanced_4k as selector
-from tests.test_build_nextsearch_causal_windows import parent_task
+from test_build_nextsearch_causal_windows import parent_task
 from scripts.build_nextsearch_causal_windows import state_windows
 
 
