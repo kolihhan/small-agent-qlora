@@ -349,6 +349,29 @@ def _normalize_lora_target_modules(value: str | list[str]) -> str | list[str]:
     return modules
 
 
+def _prepare_kbit_model_memory_safe(model, torch, *, gradient_checkpointing: bool):
+    """Keep frozen Qwen embeddings in half precision on limited-VRAM GPUs.
+
+    PEFT's generic k-bit preparation upcasts every unquantized half tensor,
+    including huge frozen embeddings/lm_head. Only small norm weights need
+    the fp32 stability path; non-reentrant checkpointing does not require
+    gradients through frozen embeddings.
+    """
+    for param in model.parameters():
+        param.requires_grad_(False)
+    for module in model.modules():
+        if "norm" not in type(module).__name__.lower():
+            continue
+        for param in module.parameters(recurse=False):
+            if param.dtype in (torch.float16, torch.bfloat16):
+                param.data = param.data.to(torch.float32)
+    if gradient_checkpointing:
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
+    return model
+
+
 def train_qlora(
     data_path: str | Path,
     output_dir: str | Path,
@@ -369,6 +392,7 @@ def train_qlora(
     exposure_seed: str = "qlora-v3a-exposure",
     exposure_profile: str = "v3a-balanced",
     require_full_prompt: bool = False,
+    preserve_large_half_parameters: bool = False,
 ) -> None:
     rows = load_verified_rows(data_path, protected_questions_path=protected_questions_path)
     try:
@@ -400,10 +424,16 @@ def train_qlora(
         device_map="auto",
         trust_remote_code=True,
     )
-    language_model = prepare_model_for_kbit_training(
-        language_model,
-        use_gradient_checkpointing=runtime_defaults["use_gradient_checkpointing"],
-    )
+    if preserve_large_half_parameters:
+        language_model = _prepare_kbit_model_memory_safe(
+            language_model, torch,
+            gradient_checkpointing=runtime_defaults["use_gradient_checkpointing"],
+        )
+    else:
+        language_model = prepare_model_for_kbit_training(
+            language_model,
+            use_gradient_checkpointing=runtime_defaults["use_gradient_checkpointing"],
+        )
     target_modules = _normalize_lora_target_modules(lora_target_modules)
     peft_cfg = LoraConfig(
         r=lora_r,
@@ -493,6 +523,7 @@ def train_qlora(
         "scope": "text-only causal language model",
         "trainer_loss_path": runtime_defaults["trainer_loss_path"],
         "gradient_checkpointing": runtime_defaults["use_gradient_checkpointing"],
+        "preserve_large_half_parameters": preserve_large_half_parameters,
     }
     (output_dir / "run_config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
 
