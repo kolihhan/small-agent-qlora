@@ -25,7 +25,7 @@ def test_read_paths_show_observed_evidence_and_no_ground_truth_hints():
 
 def test_next_eight_cannot_reuse_prior_cases(monkeypatch):
     def fake_freeze(rows,report):
-        return [x for hop in (3,4) for x in rows if x["hop_count"]==hop][:8]
+        return [x for hop in (3,4) for x in [r for r in rows if r["hop_count"]==hop][:4]]
     monkeypatch.setattr(experiment,"freeze_previous",fake_freeze)
     rows=[{"hop_count":hop,"task_id":f"{hop}-task-{i}"} for hop in (3,4) for i in range(12)]
     selected=experiment.freeze_other(rows,{})
