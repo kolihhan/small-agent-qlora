@@ -20,7 +20,8 @@ from gaia_small_agent.benchmark.scoring import gaia_score
 REPO = "NextTokenAI/NextSearch-1-Trajectories"
 CONFIG = "sft-trajectories"
 PROTOCOL = "nextsearch-apache-original-web-agent-trajectory-readiness-v1"
-MAX_SOURCE_ROWS = 1500
+MAX_SOURCE_ROWS = 3270
+FROZEN_REVISION = "d32183c6289d32c5d51b6247e68d53a58dddd495"
 MIN_OBSERVED = 7
 
 
@@ -229,6 +230,8 @@ def main():
     from datasets import load_dataset
     from huggingface_hub import HfApi
     revision=HfApi().dataset_info(REPO).sha
+    if revision != FROZEN_REVISION:
+        raise ValueError("original source revision changed after prospective source audit")
     rows=list(islice(load_dataset(REPO, CONFIG,split="train",revision=revision,streaming=True),a.limit))
     if len(rows)!=a.limit:
         raise ValueError("original source was truncated")
