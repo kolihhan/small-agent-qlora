@@ -28,7 +28,8 @@ jobs:
         if: always()
         with:
           name: 2wiki-source-grounded-action-candidates
-          path: 2wiki-evidence-training-readiness.json
-          2wiki-evidence-candidate-trajectories.jsonl
+          path: |
+            2wiki-evidence-training-readiness.json
+            2wiki-evidence-candidate-trajectories.jsonl
           retention-days: 30
           if-no-files-found: warn
