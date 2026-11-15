@@ -2,7 +2,7 @@ name: PRO NextSearch Apache real search-fetched source trajectory gate
 on:
   push:
     branches: [experiment/nextsearch-gold-grounded-search-traces-20261115]
-    paths: [.github/workflows/nextsearch-apache-source-trace-audit.yml]
+    paths: [.github/workflows/nextsearch-apache-source-trace-audit.yml, scripts/audit_nextsearch_apache_source.py, tests/test_audit_nextsearch_apache_source.py]
   workflow_dispatch:
 permissions:
   contents: read
