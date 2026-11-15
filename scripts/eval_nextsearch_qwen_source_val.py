@@ -210,6 +210,18 @@ def main():
               [r["source"] for r in result["cases"]],flush=True)
     args.output.parent.mkdir(parents=True,exist_ok=True)
     args.output.write_text(json.dumps(result,ensure_ascii=False,indent=2)+"\n")
+    # Only for source-freeze mode: HF's async streaming downloader can crash
+    # at interpreter teardown after the valid cohort is fully written. Skip
+    # teardown only after a successfully fsynced cohort+console report.
+    import os
+    if (not args.cohort and not args.inputs
+        and os.environ.get("HF_STREAM_SAFE_EXIT")=="1"):
+        import sys
+        with args.output.open("rb") as fp:
+            os.fsync(fp.fileno())
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 
 if __name__=="__main__":
