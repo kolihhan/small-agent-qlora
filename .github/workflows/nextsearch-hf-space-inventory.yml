@@ -1,0 +1,46 @@
+name: PRO read-only inventory existing HF Spaces for ZeroGPU no-billing training
+on:
+  push:
+    branches: [experiment/nextsearch-gold-grounded-search-traces-20261115]
+    paths: [.github/workflows/nextsearch-hf-space-inventory.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - run: |
+          test -n "$HF_TOKEN" || exit 2
+          python -m pip install -q 'huggingface_hub>=1.0'
+          python - <<'PY'
+          from huggingface_hub import HfApi
+          import os,json
+          api=HfApi(token=os.environ["HF_TOKEN"])
+          spaces=[]
+          for s in api.list_spaces(author="kolihhan",full=True,limit=40):
+              spaces.append({
+                  "id":s.id,"private":s.private,
+                  "sdk":getattr(s,"sdk",None),
+                  "last_modified":s.last_modified.isoformat()
+                    if getattr(s,"last_modified",None) else None,
+              })
+          detail=[]
+          for repo in ("kolihhan/small-agent-qlora-v2-train",
+                       "kolihhan/small-agent-qlora-nextsearch-v0"):
+              try:
+                  i=api.space_info(repo)
+                  detail.append({"id":repo,"exists":True,
+                                 "private":i.private,
+                                 "sdk":i.sdk})
+              except Exception as e:
+                  detail.append({"id":repo,"exists":False,
+                                 "error_type":type(e).__name__})
+          print("NEXTSEARCH_HF_EXISTING_SPACES_READONLY",json.dumps({
+              "spaces":spaces,"specific":detail,
+              "modifications":0,"charged_jobs":0
+          },sort_keys=True),flush=True)
+          PY
