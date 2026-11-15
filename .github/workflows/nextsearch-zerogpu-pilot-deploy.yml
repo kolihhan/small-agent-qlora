@@ -1,0 +1,117 @@
+name: PRO deploy isolated private ZeroGPU 9B 4K 8-step pilot (NO GPU yet)
+on:
+  push:
+    branches: [experiment/nextsearch-gold-grounded-search-traces-20261115]
+    paths: [.github/workflows/nextsearch-zerogpu-pilot-deploy.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      SPACE_ID: kolihhan/small-agent-qlora-nextsearch-v0
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - name: Recover exact source-approved 48-state artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43726123262
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: nextsearch-full-context-balanced-source-4k-sft-v0
+          path: inputs
+      - name: Fail closed on no HF access/quota; never silently start a billable GPU
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN_NOT_CONFIGURED"; exit 3; }
+          python -m pip install -q 'huggingface_hub>=1.0'
+          python - <<'PY'
+          import json,os
+          from huggingface_hub import HfApi
+          api=HfApi(token=os.environ["HF_TOKEN"])
+          who=api.whoami()
+          if who.get("name")!="kolihhan":
+              raise RuntimeError("authenticated HF account is not owner")
+          quota=api.get_zero_gpu_quota()
+          if quota.remaining<195:
+              raise RuntimeError(f"free ZeroGPU reservation insufficient: {quota.remaining}")
+          print("NEXTSEARCH_FREE_GPU_DEPLOY_PREFLIGHT",json.dumps({
+              "account":who["name"],"free_quota_seconds":quota.remaining,
+              "gpu_started":False,"billable_job_requested":False
+          }),flush=True)
+          PY
+      - name: Create a dedicated private Space containing only the pinned source training pilot
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/nextsearch-space
+          cp scripts/nextsearch_zero_gpu_9b_pilot_app.py /tmp/nextsearch-space/app.py
+          cp -r src/gaia_small_agent /tmp/nextsearch-space/gaia_small_agent
+          cp inputs/nextsearch-balanced-source-states-4k.jsonl /tmp/nextsearch-space/
+          cat > /tmp/nextsearch-space/requirements.txt <<'REQ'
+          transformers>=5.15,<6
+          peft>=0.20,<1
+          trl>=1.10,<2
+          bitsandbytes>=0.50.1,<1
+          accelerate>=1.10,<2
+          datasets>=4
+          huggingface_hub>=1.0
+          gradio>=6,<7
+          jinja2>=3.1
+          requests>=2.32
+          jsonschema>=4.20
+          REQ
+          cat > /tmp/nextsearch-space/README.md <<'EOF'
+          ---
+          title: NextSearch Real Evidence-State Qwen9B QLoRA Pilot
+          emoji: 🔬
+          colorFrom: gray
+          colorTo: blue
+          sdk: gradio
+          sdk_version: 6.0.1
+          app_file: app.py
+          private: true
+          hardware: zero-a10g
+          ---
+          Private, source-pinned, 8-step QLoRA compatibility research pilot. Not a promoted adapter, benchmark or released dataset.
+          EOF
+          python - <<'PY'
+          from hashlib import sha256
+          import os
+          from pathlib import Path
+          from huggingface_hub import HfApi
+          root=Path("/tmp/nextsearch-space")
+          fp=root/"nextsearch-balanced-source-states-4k.jsonl"
+          expected="5420cfdb6111806a23b4bf6cb9cf04c77c75b5f0cf4af6c0b63727f312f40432"
+          if sha256(fp.read_bytes()).hexdigest()!=expected:
+              raise RuntimeError("immutable training source digest mismatch")
+          api=HfApi(token=os.environ["HF_TOKEN"])
+          repo=os.environ["SPACE_ID"]
+          try:
+              info=api.space_info(repo)
+              if not info.private:
+                  raise RuntimeError("existing public Space would expose original web source content")
+          except Exception as exc:
+              if type(exc).__name__ not in ("RepositoryNotFoundError","HfHubHTTPError"):
+                  raise
+              from huggingface_hub.utils import RepositoryNotFoundError
+              if not isinstance(exc,RepositoryNotFoundError):
+                  raise
+              api.create_repo(repo_id=repo,repo_type="space",private=True,
+                              space_sdk="gradio",exist_ok=True)
+          info=api.space_info(repo)
+          if not info.private:
+              raise RuntimeError("private Space requirement not met")
+          commit=api.upload_folder(
+              repo_id=repo,repo_type="space",folder_path=str(root),
+              commit_message="Source-pinned private real-tool evidence-state QLoRA pilot",
+          )
+          print("NEXTSEARCH_PRIVATE_ZEROGPU_SPACE_DEPLOYED",repo,str(commit),
+                "source_sha256",expected,flush=True)
+          PY
