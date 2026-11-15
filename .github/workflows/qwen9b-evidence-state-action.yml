@@ -1,0 +1,78 @@
+name: Qwen9B paired evidence states and typed next actions
+
+on:
+  push:
+    branches: [experiment/qwen9b-evidence-state-action-20261115]
+    paths: [.github/workflows/qwen9b-evidence-state-action.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  paired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 38
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      OLLAMA_HOST: 127.0.0.1:11434
+      OLLAMA_CONTEXT_LENGTH: "8192"
+      OLLAMA_NUM_PARALLEL: "1"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - name: Restore disjoint published MultiHop-RAG and verify source hashes
+        run: |
+          python -m pip install -e .
+          source=https://huggingface.co/datasets/yixuantt/MultiHopRAG/resolve/71ac0d0bd1f951d2d6b70311f7d2ae404e1ffa82
+          curl -fsSL --retry 3 "$source/MultiHopRAG.json" -o questions.json
+          curl -fsSL --retry 3 "$source/corpus.json" -o corpus.json
+          echo '03cfb4926461f868684903aadc8024447bdda5bb3f6804741424cce338515bff  questions.json' | sha256sum -c -
+          echo '20b61b5ab84de84a927420c5d265b7ec8d859ae49980699958a787ade9e4d28f  corpus.json' | sha256sum -c -
+          python -m scripts.eval_evidence_state_action --questions questions.json --corpus corpus.json --output unused.json
+      - name: Restore CPU Ollama and pinned Qwen
+        run: |
+          curl -fsSL --retry 3 'https://ollama.com/download/ollama-linux-amd64.tar.zst' | sudo tar --zstd -x -C /usr
+          ollama serve > "$RUNNER_TEMP/ollama-state.log" 2>&1 &
+          for i in {1..60}; do
+            curl -fsS http://127.0.0.1:11434/api/tags > /dev/null 2>&1 && break
+            sleep 1
+          done
+          ollama pull qwen3.5:9b-q4_K_M
+      - name: Execute matched missing and complete read states on two tasks
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          python -m scripts.eval_evidence_state_action --questions questions.json --corpus corpus.json --shard "$SHARD" --output "state-$SHARD.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: evidence-state-${{ matrix.shard }}
+          path: state-*.json
+          if-no-files-found: error
+
+  aggregate:
+    needs: paired
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: evidence-state-*
+          path: shards
+          merge-multiple: true
+      - run: python -m scripts.eval_evidence_state_action --inputs shards/state-*.json --output qwen-evidence-state-final.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qwen-evidence-state-final
+          path: qwen-evidence-state-final.json
+          if-no-files-found: error
