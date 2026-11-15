@@ -13,7 +13,10 @@ def fixture(n=8, success=True):
         })
         messages.append({"role":"tool","tool_call_id":f"call_{i}",
                          "name":"execute_bash","content":f"Real stdout file_{i}.py"})
-    messages.append({"role":"assistant","content":"Finished patch"})
+    messages.append({"role":"assistant","content":"", "tool_calls":[{
+        "id":"final_submit", "type":"function",
+        "function":{"name":"finish","arguments":'{}'}
+    }]})
     return {
         "trajectory_id":"id-one", "instance_id":"org__repo-12", "repo":"org/repo",
         "resolved":int(success),"exit_status":"submit","model_patch":"diff --git a/a b/a\n",
@@ -27,6 +30,8 @@ def test_source_success_requires_7_real_calls_and_all_observations():
     assert r["tool_calls"]==8 and r["paired_tool_observations"]==8
     assert r["assistant_tool_turns"]==8
     assert r["all_calls_observed"]
+    assert r["terminal_finish_without_response"]==1
+    assert r["terminal_finish_valid"]
     assert not r["training_ready_for_native_gaia_policy"]
 
 
@@ -63,3 +68,29 @@ def test_aggregated_metadata_has_no_raw_agent_text_and_no_model_claim():
     assert r["source_example_id_hashes_only"][0]["tool_calls"]==8
     assert "Real stdout" not in str(r)
     assert "Fix issue" not in str(r)
+
+
+
+def test_finish_not_terminal_is_never_accepted():
+    x=fixture()
+    x["trajectory"].insert(2, x["trajectory"].pop())
+    result=examine(x)
+    assert not result["all_calls_observed"]
+    assert not result["long_executed_success_candidate"]
+
+
+def test_missing_finish_is_not_valid_complete_episode():
+    x=fixture()
+    x["trajectory"].pop()
+    result=examine(x)
+    assert not result["terminal_finish_valid"]
+    assert not result["long_executed_success_candidate"]
+
+
+def test_missing_normal_action_result_still_rejected_with_finish_present():
+    x=fixture()
+    x["trajectory"]=[
+        r for r in x["trajectory"]
+        if r.get("tool_call_id")!="call_3"
+    ]
+    assert not examine(x)["all_calls_observed"]
