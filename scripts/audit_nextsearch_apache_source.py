@@ -112,7 +112,15 @@ def inspect(row):
         and bool(last["content"].strip())
     )
     gold=row.get("gold")
-    reference=str(gold.get("answer","")).strip() if isinstance(gold,dict) else ""
+    raw_reference = gold.get("answer") if isinstance(gold,dict) else None
+    if raw_reference is None:
+        reference=""
+    elif isinstance(raw_reference,(str,int,float)):
+        reference=str(raw_reference).strip()
+    else:
+        # Ambiguous list/dict answer contracts are source-unscorable, never
+        # silently converted into a Python repr as the 'correct' answer.
+        reference=""
     source_reference_present=bool(reference)
     final=str(last.get("content","")).strip() if isinstance(last,dict) else ""
     exact=bool(source_reference_present and last_is_final and gaia_score(final,reference))
