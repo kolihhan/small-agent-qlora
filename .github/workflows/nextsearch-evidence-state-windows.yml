@@ -1,0 +1,43 @@
+name: PRO true-source evidence-state continuation/final SFT window builder (CPU)
+on:
+  push:
+    branches: [experiment/nextsearch-gold-grounded-search-traces-20261115]
+    paths: [.github/workflows/nextsearch-evidence-state-windows.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  state-windows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e '.[dev]'
+      - name: Prove no invented actions, no gold-aware continuation and no over-search teacher examples
+        run: python -m pytest -q tests/test_build_nextsearch_causal_windows.py
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43723143610
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: nextsearch-source-bounded-sft-pilot-candidates
+          path: inputs
+      - name: Extract original causal source state windows with strict missing/present evidence
+        run: |
+          python -m scripts.build_nextsearch_causal_windows \
+            --source inputs/nextsearch-source-bounded-sft-parents.jsonl \
+            --output nextsearch-source-causal-windows.jsonl \
+            --report nextsearch-source-causal-windows-report.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: nextsearch-source-evidence-state-causal-pilot
+          path: |
+            nextsearch-source-causal-windows.jsonl
+            nextsearch-source-causal-windows-report.json
+          retention-days: 30
+          if-no-files-found: warn
