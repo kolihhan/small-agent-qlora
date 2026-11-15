@@ -19,7 +19,7 @@ import time
 from gaia_small_agent.training.v8_holdout import paired_v8_actions, select_v8_targets
 
 MODEL = "Qwen/Qwen3.5-9B"
-MAX_NEW_TOKENS = 256
+MAX_NEW_TOKENS = 512
 
 
 def validate_inputs(holdout: Path, audit: Path, adapter: Path) -> dict:
@@ -77,6 +77,7 @@ def evaluate(holdout: Path, audit: Path, adapter: Path) -> dict:
         model = TransformersQwenModel(
             model_name=MODEL, quantize_4bit=True, adapter=adapter_path,
             enable_thinking=False, max_new_tokens=MAX_NEW_TOKENS,
+            load_compute_dtype=True,
         )
         # IMPORTANT: the factory returns the existing model, not a fresh
         # nine-billion-parameter load for every one of the 70 target actions.
