@@ -1,0 +1,608 @@
+{
+  "arms": {
+    "flat": {
+      "annotated_spans": 29,
+      "completed": 8,
+      "delivered_spans": 27,
+      "exact": 0,
+      "full_support": 6,
+      "seconds": 1053.5,
+      "tool_calls": 34,
+      "tool_errors": 0,
+      "wrong_with_full_support": 6
+    },
+    "linked": {
+      "annotated_spans": 29,
+      "completed": 8,
+      "delivered_spans": 27,
+      "exact": 0,
+      "full_support": 7,
+      "seconds": 1042.9,
+      "tool_calls": 33,
+      "tool_errors": 0,
+      "wrong_with_full_support": 7
+    }
+  },
+  "cases": [
+    {
+      "id": "q_10893",
+      "page": "p_4766",
+      "support_doc_count": 3,
+      "flat": {
+        "annotated_docs": 3,
+        "annotated_spans": 3,
+        "completed": true,
+        "delivered_docs": [
+          "main.txt",
+          "pages/p08.txt",
+          "pages/p09.txt"
+        ],
+        "delivered_spans": 3,
+        "exact": false,
+        "full_support": true,
+        "seconds": 181.8,
+        "stop": "final",
+        "tool_calls": 5,
+        "tool_errors": 0
+      },
+      "linked": {
+        "annotated_docs": 3,
+        "annotated_spans": 3,
+        "completed": true,
+        "delivered_docs": [
+          "main.txt",
+          "pages/p08.txt",
+          "pages/p09.txt"
+        ],
+        "delivered_spans": 3,
+        "exact": false,
+        "full_support": true,
+        "seconds": 148.7,
+        "stop": "final",
+        "tool_calls": 4,
+        "tool_errors": 0
+      }
+    },
+    {
+      "id": "q_11268",
+      "page": "p_4870",
+      "support_doc_count": 4,
+      "flat": {
+        "annotated_docs": 4,
+        "annotated_spans": 4,
+        "completed": true,
+        "delivered_docs": [
+          "main.txt",
+          "pages/p00.txt",
+          "pages/p01.txt",
+          "pages/p02.txt"
+        ],
+        "delivered_spans": 4,
+        "exact": false,
+        "full_support": true,
+        "seconds": 212.9,
+        "stop": "final",
+        "tool_calls": 5,
+        "tool_errors": 0
+      },
+      "linked": {
+        "annotated_docs": 4,
+        "annotated_spans": 4,
+        "completed": true,
+        "delivered_docs": [
+          "main.txt",
+          "pages/p00.txt",
+          "pages/p01.txt",
+          "pages/p02.txt"
+        ],
+        "delivered_spans": 4,
+        "exact": false,
+        "full_support": true,
+        "seconds": 258.4,
+        "stop": "final",
+        "tool_calls": 5,
+        "tool_errors": 0
+      }
+    },
+    {
+      "id": "q_11383",
+      "page": "p_4911",
+      "support_doc_count": 3,
+      "flat": {
+        "annotated_docs": 3,
+        "annotated_spans": 4,
+        "completed": true,
+        "delivered_docs": [
+          "main.txt",
+          "pages/p03.txt",
+          "pages/p06.txt"
+        ],
+        "delivered_spans": 4,
+        "exact": false,
+        "full_support": true,
+        "seconds": 199.3,
+        "stop": "final",
+        "tool_calls": 4,
+        "tool_errors": 0
+      },
+      "linked": {
+        "annotated_docs": 3,
+        "annotated_spans": 4,
+        "completed": true,
+        "delivered_docs": [
+          "main.txt",
+          "pages/p03.txt",
+          "pages/p06.txt"
+        ],
+        "delivered_spans": 4,
+        "exact": false,
+        "full_support": true,
+        "seconds": 163.2,
+        "stop": "final",
+        "tool_calls": 4,
+        "tool_errors": 0
+      }
+    },
+    {
+      "id": "q_11543",
+      "page": "p_4976",
+      "support_doc_count": 4,
+      "flat": {
+        "annotated_docs": 4,
+        "annotated_spans": 5,
+        "completed": true,
+        "delivered_docs": [
+          "main.txt",
+          "pages/p01.txt",
+          "pages/p02.txt",
+          "pages/p04.txt"
+        ],
+        "delivered_spans": 5,
+        "exact": false,
+        "full_support": true,
+        "seconds": 122,
+        "stop": "final",
+        "tool_calls": 5,
+        "tool_errors": 0
+      },
+      "linked": {
+        "annotated_docs": 4,
+        "annotated_spans": 5,
+        "completed": true,
+        "delivered_docs": [
+          "main.txt",
+          "pages/p01.txt",
+          "pages/p02.txt",
+          "pages/p04.txt"
+        ],
+        "delivered_spans": 5,
+        "exact": false,
+        "full_support": true,
+        "seconds": 92.9,
+        "stop": "final",
+        "tool_calls": 5,
+        "tool_errors": 0
+      }
+    },
+    {
+      "id": "q_11664",
+      "page": "p_5014",
+      "support_doc_count": 3,
+      "flat": {
+        "annotated_docs": 3,
+        "annotated_spans": 4,
+        "completed": true,
+        "delivered_docs": [
+          "main.txt",
+          "pages/p01.txt",
+          "pages/p03.txt"
+        ],
+        "delivered_spans": 4,
+        "exact": false,
+        "full_support": true,
+        "seconds": 128.1,
+        "stop": "final",
+        "tool_calls": 4,
+        "tool_errors": 0
+      },
+      "linked": {
+        "annotated_docs": 3,
+        "annotated_spans": 4,
+        "completed": true,
+        "delivered_docs": [
+          "main.txt",
+          "pages/p01.txt",
+          "pages/p03.txt"
+        ],
+        "delivered_spans": 4,
+        "exact": false,
+        "full_support": true,
+        "seconds": 114.2,
+        "stop": "final",
+        "tool_calls": 4,
+        "tool_errors": 0
+      }
+    },
+    {
+      "id": "q_11671",
+      "page": "p_5018",
+      "support_doc_count": 3,
+      "flat": {
+        "annotated_docs": 3,
+        "annotated_spans": 3,
+        "completed": true,
+        "delivered_docs": [
+          "main.txt",
+          "pages/p03.txt"
+        ],
+        "delivered_spans": 2,
+        "exact": false,
+        "full_support": false,
+        "seconds": 71.1,
+        "stop": "final",
+        "tool_calls": 4,
+        "tool_errors": 0
+      },
+      "linked": {
+        "annotated_docs": 3,
+        "annotated_spans": 3,
+        "completed": true,
+        "delivered_docs": [
+          "main.txt",
+          "pages/p01.txt",
+          "pages/p03.txt"
+        ],
+        "delivered_spans": 3,
+        "exact": false,
+        "full_support": true,
+        "seconds": 145.5,
+        "stop": "final",
+        "tool_calls": 5,
+        "tool_errors": 0
+      }
+    },
+    {
+      "id": "q_11727",
+      "page": "p_5039",
+      "support_doc_count": 3,
+      "flat": {
+        "annotated_docs": 3,
+        "annotated_spans": 3,
+        "completed": true,
+        "delivered_docs": [
+          "main.txt",
+          "pages/p04.txt"
+        ],
+        "delivered_spans": 2,
+        "exact": false,
+        "full_support": false,
+        "seconds": 45.8,
+        "stop": "final",
+        "tool_calls": 3,
+        "tool_errors": 0
+      },
+      "linked": {
+        "annotated_docs": 3,
+        "annotated_spans": 3,
+        "completed": true,
+        "delivered_docs": [
+          "main.txt"
+        ],
+        "delivered_spans": 1,
+        "exact": false,
+        "full_support": false,
+        "seconds": 47.1,
+        "stop": "final",
+        "tool_calls": 2,
+        "tool_errors": 0
+      }
+    },
+    {
+      "id": "q_12134",
+      "page": "p_5179",
+      "support_doc_count": 3,
+      "flat": {
+        "annotated_docs": 3,
+        "annotated_spans": 3,
+        "completed": true,
+        "delivered_docs": [
+          "main.txt",
+          "pages/p01.txt",
+          "pages/p03.txt"
+        ],
+        "delivered_spans": 3,
+        "exact": false,
+        "full_support": true,
+        "seconds": 92.5,
+        "stop": "final",
+        "tool_calls": 4,
+        "tool_errors": 0
+      },
+      "linked": {
+        "annotated_docs": 3,
+        "annotated_spans": 3,
+        "completed": true,
+        "delivered_docs": [
+          "main.txt",
+          "pages/p01.txt",
+          "pages/p03.txt"
+        ],
+        "delivered_spans": 3,
+        "exact": false,
+        "full_support": true,
+        "seconds": 72.9,
+        "stop": "final",
+        "tool_calls": 4,
+        "tool_errors": 0
+      }
+    }
+  ],
+  "cohort_sha": "255e0578f4824f8ea46434449223b8bc3666dd1adb77d4719c8edd184c9b04e5",
+  "digest": "56671c2ab9385f9cfcb404638e32cd62d88e3501d44822208363c010179a3c90",
+  "model": "qwen3.5:9b-q4_K_M",
+  "positive_screen": false,
+  "promotion_allowed": false,
+  "protocol": "iirc-dev-source-links-8-v1",
+  "regressions": [],
+  "rescues": [],
+  "tasks": 8,
+  "training_first_page": {
+    "protocol": "iirc-train-grounded-action-feasibility-v1",
+    "train_pages_examined": 128,
+    "train_parents_passing": 7,
+    "physically_verified_candidate_read_actions": 14,
+    "eligible_final_states": 7,
+    "max_observations_per_linked_page": 1,
+    "physically_verified_continuation_actions": 0,
+    "eligible_seven_or_eight_decision_parents": 0,
+    "exclusions": {
+      "questions_considered": 357,
+      "answer_literal_in_initial_state": 23,
+      "linked_support_not_visible": 26,
+      "no_literal_in_linked_support": 31,
+      "missing_visible_annotated_anchor": 7,
+      "main_support_not_visible": 2,
+      "excluded_title_overlap": 4
+    },
+    "frozen_dev_cohort_sha": "255e0578f4824f8ea46434449223b8bc3666dd1adb77d4719c8edd184c9b04e5",
+    "labels_exported_for_training": 0
+  },
+  "training_up_to_three_pages": {
+    "protocol": "iirc-train-grounded-action-feasibility-v1",
+    "train_pages_examined": 128,
+    "train_parents_passing": 7,
+    "physically_verified_candidate_read_actions": 14,
+    "eligible_final_states": 7,
+    "max_observations_per_linked_page": 3,
+    "physically_verified_continuation_actions": 0,
+    "eligible_seven_or_eight_decision_parents": 0,
+    "exclusions": {
+      "questions_considered": 357,
+      "answer_literal_in_initial_state": 28,
+      "linked_support_not_visible": 15,
+      "no_literal_in_linked_support": 37,
+      "missing_visible_annotated_anchor": 7,
+      "main_support_not_visible": 2,
+      "excluded_title_overlap": 4
+    },
+    "frozen_dev_cohort_sha": "255e0578f4824f8ea46434449223b8bc3666dd1adb77d4719c8edd184c9b04e5",
+    "labels_exported_for_training": 0
+  },
+  "musique_last8_support_path_replay": {
+    "arms": {
+      "baseline": {
+        "all_paths": 4,
+        "retained_paths": 21,
+        "total_paths": 28,
+        "wrong_and_missing_paths": 4
+      },
+      "final_only": {
+        "all_paths": 2,
+        "retained_paths": 20,
+        "total_paths": 28,
+        "wrong_and_missing_paths": 6
+      }
+    },
+    "cases": [
+      {
+        "task_id": "3hop2__10879_758288_161133",
+        "annotated_paths": [
+          1,
+          7,
+          12
+        ],
+        "baseline": {
+          "visited_support": [
+            7,
+            12
+          ],
+          "all_support_files_under_1800": true
+        },
+        "final_only": {
+          "visited_support": [
+            7,
+            12
+          ],
+          "all_support_files_under_1800": true
+        }
+      },
+      {
+        "task_id": "3hop2__30654_147221_89329",
+        "annotated_paths": [
+          6,
+          7,
+          19
+        ],
+        "baseline": {
+          "visited_support": [
+            6,
+            19
+          ],
+          "all_support_files_under_1800": true
+        },
+        "final_only": {
+          "visited_support": [
+            6,
+            7,
+            19
+          ],
+          "all_support_files_under_1800": true
+        }
+      },
+      {
+        "task_id": "3hop2__210463_69760_609883",
+        "annotated_paths": [
+          4,
+          7,
+          19
+        ],
+        "baseline": {
+          "visited_support": [
+            4,
+            7,
+            19
+          ],
+          "all_support_files_under_1800": true
+        },
+        "final_only": {
+          "visited_support": [
+            4,
+            7,
+            19
+          ],
+          "all_support_files_under_1800": true
+        }
+      },
+      {
+        "task_id": "3hop2__764770_611987_54023",
+        "annotated_paths": [
+          1,
+          2,
+          7
+        ],
+        "baseline": {
+          "visited_support": [
+            1,
+            2,
+            7
+          ],
+          "all_support_files_under_1800": true
+        },
+        "final_only": {
+          "visited_support": [
+            1,
+            7
+          ],
+          "all_support_files_under_1800": true
+        }
+      },
+      {
+        "task_id": "4hop3__659370_691163_306302_65370",
+        "annotated_paths": [
+          3,
+          4,
+          10,
+          16
+        ],
+        "baseline": {
+          "visited_support": [
+            3,
+            4,
+            10,
+            16
+          ],
+          "all_support_files_under_1800": true
+        },
+        "final_only": {
+          "visited_support": [
+            4,
+            10,
+            16
+          ],
+          "all_support_files_under_1800": true
+        }
+      },
+      {
+        "task_id": "4hop3__493923_300471_726741_62462",
+        "annotated_paths": [
+          2,
+          9,
+          12,
+          18
+        ],
+        "baseline": {
+          "visited_support": [
+            9
+          ],
+          "all_support_files_under_1800": true
+        },
+        "final_only": {
+          "visited_support": [
+            9,
+            18
+          ],
+          "all_support_files_under_1800": true
+        }
+      },
+      {
+        "task_id": "4hop3__31642_754527_470666_20507",
+        "annotated_paths": [
+          0,
+          11,
+          13,
+          19
+        ],
+        "baseline": {
+          "visited_support": [
+            0,
+            19
+          ],
+          "all_support_files_under_1800": true
+        },
+        "final_only": {
+          "visited_support": [
+            0,
+            13,
+            19
+          ],
+          "all_support_files_under_1800": true
+        }
+      },
+      {
+        "task_id": "4hop3__182665_38788_25582_21116",
+        "annotated_paths": [
+          0,
+          5,
+          9,
+          10
+        ],
+        "baseline": {
+          "visited_support": [
+            0,
+            5,
+            9,
+            10
+          ],
+          "all_support_files_under_1800": true
+        },
+        "final_only": {
+          "visited_support": [
+            5,
+            10
+          ],
+          "all_support_files_under_1800": true
+        }
+      }
+    ],
+    "source_sha": "83a75b1e11e4e9bb8f8308e72ac40ca617ae4431b3a0d955b61cab259248490a",
+    "support_path_upper_bound": true
+  },
+  "iirc_archive_sha256": {
+    "questions": "adfc34c8180337467105b2f534410c34e4fe43a82e6da03922440387802ca441",
+    "articles": "d239390a27ed3f4aa868afe126187e6d108990a7bcc2a3efb6cae5de917264c7"
+  },
+  "iirc_run_id": 43700029046,
+  "iirc_artifact_id": 14156237462,
+  "inline_links_decision": "REJECT",
+  "new_training_decision": "BLOCKED"
+}

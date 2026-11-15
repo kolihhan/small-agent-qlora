@@ -81,3 +81,51 @@ pagination; it does not estimate whole-IIRC accuracy or GAIA transfer. This
 local read task is narrower than the full GAIA tool surface.
 A positive result can motivate a separate TRAIN-only label feasibility audit
 and longer real closed-loop evidence, but cannot qualify a QLoRA adapter.
+
+**Result — REJECT inline source hyperlinks as the standalone intervention.**
+All four paired shards completed on CPU. Strict success was **0/8 → 0/8**,
+with zero rescues and zero regressions. Both arms recorded 8/8 runtime finals.
+Actual tool observations contained **27/29 annotated spans in both arms**.
+Full annotated text arrived in **6/8 → 7/8** episodes, below the two-task
+evidence gate. Calls were **34 → 33**, and summed runtime was 1053.5s → 1042.9s.
+[Run 43700029046](https://github.com/kolihhan/small-agent-qlora/actions/runs/43700029046) ·
+[Raw paired artifact](https://github.com/kolihhan/small-agent-qlora/actions/runs/43700029046/artifacts/14156237462).
+
+**Failure attribution.** PR #40 was independently rechecked against the exact
+original MuSiQue paragraph bytes and published support labels. The original
+arm visited all annotated paths in **4/8** episodes (21/28 paths), versus
+**2/8** (20/28) with the short-final prompt. The old trace stores paths, so
+these counts upper-bound prior evidence delivery. The IIRC trace measures
+actually delivered annotated text. Examples `q_12134`, `q_11664`, and
+`q_11268` support the correct comparisons in both arms, with the reference
+entity expressed inside a longer answer. `q_10893` illustrates ambiguity
+between the founding of an institution and the opening of its current building.
+`q_11543` asks for a year and the public reference is a seminary name. Keep
+the full cohort and original strict scorer. These observations support a
+mixture of evidence access, answer selection, response format and reference
+quality. The IIRC cohort favors evidence that fits in an initial observation.
+The standard read tool also retains URL capability; only matching local
+observations were counted and external attempts were not separately preserved.
+
+**Training-data feasibility.** Replayed actual bounded ReadTool calls on
+128 hash-selected IIRC TRAIN primary pages (357 candidate questions). The
+audit excluded protected IIRC DEV identities and known overlapping titles
+from the frozen DEV workspaces and the previous MuSiQue24 workspaces. Seven
+parents supplied 14 physically verified linked read targets and seven
+evidence-complete final states. Each eligible next-read target has a published
+anchor in visible source text and a matching support span returned by its
+tool read. The audit allows any verified unvisited target; the source does
+not prescribe a unique reading order. Allowing up to three pages by following
+the actual emitted `next_offset_chars` reduced missing-support exclusions
+from 26 to 15, with still **7 eligible parents**, all short. There were
+**zero** eligible 7–8-decision parents. This is a feasibility screen with zero
+training labels exported. Keep the 160 ungrounded MuSiQue reads excluded.
+
+**Training decision — BLOCKED.** The independent source did not yield
+enough authentic long trajectories. Use matched under-evidenced and
+evidence-complete states to test continuation versus finalization before
+training, with genuine tool observations and separate source families.
+A real candidate requires persistent adapter, optimizer, scheduler and RNG
+state. Rechecked both historical T4 runs. The original run artifact contains
+only a runtime notebook, and the Stage35 retry produced no checkpoint artifact.
+The matched GAIA100 bar remains **18/100 with 44% completion** for v3B.
