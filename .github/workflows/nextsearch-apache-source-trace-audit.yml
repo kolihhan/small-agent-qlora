@@ -1,0 +1,33 @@
+name: PRO NextSearch Apache real search-fetched source trajectory gate
+on:
+  push:
+    branches: [experiment/nextsearch-gold-grounded-search-traces-20261115]
+    paths: [.github/workflows/nextsearch-apache-source-trace-audit.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Install source dataset parser and tests
+        run: python -m pip install -e '.[eval,dev]'
+      - name: Reject unobserved tools, unsupported answers and non-Apache source
+        run: python -m pytest -q tests/test_audit_nextsearch_apache_source.py
+      - name: Original source pinned, count matched search/fetch trajectories on 500 TRAIN tasks
+        env:
+          HF_STREAM_SAFE_EXIT: '1'
+        run: |
+          python -m scripts.audit_nextsearch_apache_source             --limit 500 --output nextsearch-apache-500-source-readiness.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: nextsearch-apache-500-actual-search-feedback-audit
+          path: nextsearch-apache-500-source-readiness.json
+          retention-days: 30
+          if-no-files-found: warn
