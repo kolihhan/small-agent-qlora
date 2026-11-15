@@ -48,7 +48,7 @@ def test_reference_answer_in_question_never_produces_teacher(tmp_path):
 
 def test_no_gold_target_forced_when_title_not_visible(tmp_path):
     row=fixture()
-    row["context"]["sentences"][0]=["A long unrelated article with no reference to another page."]
+    row["context"]["sentences"][0]=["A long unrelated article with no reference to another page. "+"padding "*45]
     candidate,reason=source_candidate(row,tmp_path)
     assert candidate is None
     assert reason=="incomplete_or_nonminimal_evidence_path"
