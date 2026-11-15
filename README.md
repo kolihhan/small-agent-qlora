@@ -2,6 +2,10 @@
 
 Post-training a Qwen3.5-9B tool agent and evaluating how its behavior changes.
 
+## Research protocol — PRO (fail fast, prove transfer)
+
+The [PRO research gates](docs/pro-research-gates.md) require verified physical QLoRA checkpoints, paired independent closed-loop task success, finalization and tool-cost analysis before any GAIA improvement claim. Synthetic/teacher-forced gains alone do not qualify.
+
 ## Results
 
 ### Controlled closed-loop evaluation
