@@ -42,3 +42,42 @@
 - Source of truth for v8 candidate and physical T4 action: [PR #34](https://github.com/kolihhan/small-agent-qlora/pull/34). Do not confuse passing unit tests with trained adapter.
 - Original v3B still has the best matched **GAIA100 18/100 with 44% completion**; v3D is stronger on the controlled200 but is not better on GAIA.
 - Physically verified **v8 checkpoint absent**; [PR #36](https://github.com/kolihhan/small-agent-qlora/pull/36) checkpoint export code exists, but T4 allocation twice failed. Unpaid GitHub CPU **Base-only real MuSiQue8 score 0/8**, not GAIA. Diagnostic read-path and source-support studies in PR #38/#39 are nonpromotional; wait for their actual artifacts before inferring cause. Avoid blindly creating more synthetic training trajectories.
+
+## Source hyperlink positions in independent IIRC evaluation
+
+The LLM Prompt Recovery fifth-place team treated evidence retrieval, candidate
+generation and scoring as distinct failure points and checked the T5
+implementation after a local gain failed to transfer. The Konwinski Prize host
+froze submissions before collecting final GitHub issues. Our application is to
+alter only a source-native evidence signal and measure delivered evidence
+separately from exact task completion. Sources:
+[Prompt Recovery](https://www.kaggle.com/competitions/llm-prompt-recovery/writeups/z-d-z-5th-place-solution)
+and [Konwinski Prize data protocol](https://www.kaggle.com/competitions/konwinski-prize/data).
+
+**P.** The PR #40 answer-only task trial scored 0/8 in both arms. PR #39
+established that the model omitted at least one annotated passage path on six
+of eight different MuSiQue episodes. A path alone cannot establish that the
+right text reached the model. Two hypotheses remain: the agent cannot connect
+a clue to the next source, or it gets the source text and fails to combine it
+or stop with the correct answer.
+
+**R.** On eight frozen [IIRC](https://aclanthology.org/2020.emnlp-main.86/)
+DEV questions from distinct primary pages, compare a flat directory against the
+same full local documents with original hyperlink destinations annotated inline
+in the primary page. Include all usable original link positions without
+consulting question-level labels at inference. Both arms run the original
+Qwen3.5-9B manifest and AgentRuntime with one local read tool, eight turns,
+the same user input and strict answer scoring. Freeze archive checksums,
+all workspace bytes and the eligible two-to-three-linked-source slice first.
+Report exact success and paired flips with model-visible annotated spans
+and completion/tool use. The preregistered positive screen requires at least
+two rescues, zero regressions, at least two more episodes receiving all
+annotated evidence and no completion decline.
+
+**O.** IIRC is a different published benchmark from MuSiQue. The selected
+primary and supporting titles exclude IIRC TRAIN primary titles. The evaluation
+conditions on evidence within an initial tool observation to control for
+pagination; it does not estimate whole-IIRC accuracy or GAIA transfer. This
+local read task is narrower than the full GAIA tool surface.
+A positive result can motivate a separate TRAIN-only label feasibility audit
+and longer real closed-loop evidence, but cannot qualify a QLoRA adapter.

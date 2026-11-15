@@ -1,0 +1,96 @@
+name: Qwen9B autonomous IIRC source hyperlink evidence
+
+on:
+  push:
+    branches: [research/qwen9b-evidence-access-20261115]
+    paths: [.github/workflows/qwen9b-iirc-links.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  freeze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e .
+      - name: Verify physical IIRC source bytes and freeze distinct dev articles
+        run: |
+          curl -fsSL --retry 3 'https://iirc-dataset.s3.us-west-2.amazonaws.com/iirc_train_dev.tgz' -o questions.tgz
+          curl -fsSL --retry 3 'https://iirc-dataset.s3.us-west-2.amazonaws.com/context_articles.tar.gz' -o articles.tgz
+          echo 'adfc34c8180337467105b2f534410c34e4fe43a82e6da03922440387802ca441  questions.tgz' | sha256sum -c -
+          echo 'd239390a27ed3f4aa868afe126187e6d108990a7bcc2a3efb6cae5de917264c7  articles.tgz' | sha256sum -c -
+          python -m scripts.eval_iirc_links --source questions.tgz --articles articles.tgz --output iirc-frozen.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: iirc-dev-source-frozen
+          path: iirc-frozen.json
+          if-no-files-found: error
+
+  paired:
+    needs: freeze
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      OLLAMA_HOST: 127.0.0.1:11434
+      OLLAMA_CONTEXT_LENGTH: "8192"
+      OLLAMA_NUM_PARALLEL: "1"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: iirc-dev-source-frozen
+      - name: Run original Qwen with CPU Ollama
+        run: |
+          curl -fsSL --retry 3 'https://ollama.com/download/ollama-linux-amd64.tar.zst' | sudo tar --zstd -x -C /usr
+          ollama serve > "$RUNNER_TEMP/iirc-ollama.log" 2>&1 &
+          for i in {1..60}; do
+            curl -fsS http://127.0.0.1:11434/api/tags > /dev/null 2>&1 && break
+            sleep 1
+          done
+          ollama pull qwen3.5:9b-q4_K_M
+      - name: Execute two paired autonomous read-tool episodes
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          python -m scripts.eval_iirc_links --cohort iirc-frozen.json --shard "$SHARD" --output "iirc-pair-$SHARD.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: iirc-pair-${{ matrix.shard }}
+          path: iirc-pair-*.json
+          if-no-files-found: error
+
+  aggregate:
+    needs: paired
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: iirc-pair-*
+          path: shards
+          merge-multiple: true
+      - run: python -m scripts.eval_iirc_links --inputs shards/iirc-pair-*.json --output iirc-qwen9b-links-final.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: iirc-qwen9b-links-final
+          path: iirc-qwen9b-links-final.json
+          if-no-files-found: error
