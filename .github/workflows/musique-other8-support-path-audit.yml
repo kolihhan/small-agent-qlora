@@ -1,0 +1,61 @@
+name: MuSiQue other8 physical annotated support-path audit (CPU no Qwen inference)
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/musique-unseen8-support-path-audit-20261115]
+    paths: [.github/MUSIQUE_OTHER8_SUPPORT_PATH_AUDIT_START]
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  source-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Check frozen read-path scoring and no oracle generator
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev]'
+          python -m pytest -q tests/test_musique_other8_readpath.py tests/test_audit_musique_other8_support_paths.py
+      - name: Fetch exact physical MuSiQue TRAIN source including is_supporting labels
+        run: |
+          set -euo pipefail
+          mkdir -p source
+          curl --fail --location --retry 4 --retry-delay 3 \
+            'https://huggingface.co/datasets/bdsaglam/musique/resolve/667064b514d22deecae00a3dccbd92bccf88869e/musique_ans_v1.0_train.jsonl?download=true' \
+            -o source/musique_ans_v1.0_train.jsonl
+          echo '83a75b1e11e4e9bb8f8308e72ac40ca617ae4431b3a0d955b61cab259248490a  source/musique_ans_v1.0_train.jsonl' | sha256sum -c -
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43683645483
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: qwen9b-v8-musique24-autonomous-source-ready-if-verified
+          path: source
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43691026466
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: qwen9b-musique-other8-path-diagnostic-final
+          path: source
+      - name: Compare actual read paths to original annotated support passages, after original model scores
+        run: |
+          set -euo pipefail
+          python -m scripts.audit_musique_other8_support_paths \
+            --source source/musique_ans_v1.0_train.jsonl \
+            --tasks source/v8-musique24-full-workspace.jsonl \
+            --source-report source/v8-musique24-source-reconstruction-report.json \
+            --model-result source/musique-other8-path-diagnostic-final.json \
+            --output musique-other8-support-path-posthoc.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qwen9b-musique-other8-original-support-recall-posthoc
+          path: musique-other8-support-path-posthoc.json
+          if-no-files-found: error
+          retention-days: 30
