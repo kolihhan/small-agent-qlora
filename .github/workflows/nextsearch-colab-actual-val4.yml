@@ -28,6 +28,7 @@ jobs:
       - name: Local strict scoring, checkpoint and source freeze tests before GPU
         run: |
           set -euo pipefail
+          python -m pip install -q pytest
           python -m pytest -q tests/test_colab_nextsearch_val4.py
           python -m py_compile scripts/colab_nextsearch_gpu8_matched_val4.py
       - name: Recover original, unmodified VAL8 manifest frozen BEFORE 8-step training
