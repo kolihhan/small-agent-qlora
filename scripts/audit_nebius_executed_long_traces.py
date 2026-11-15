@@ -227,6 +227,20 @@ def main():
     result=aggregate(rows,revision)
     print("NEBIUS_REAL_EXECUTED_LONG_TRAJECTORIES",json.dumps(result,sort_keys=True),flush=True)
     a.output.write_text(json.dumps(result,indent=2,ensure_ascii=False)+"\n")
+    # The upstream Hugging Face streaming parquet reader may leave an async
+    # HTTP retry thread alive during Python interpreter shutdown. Original
+    # 500-row audit succeeded, wrote a report and then crashed in the
+    # huggingface transport destructor (PyGILState_Release). This optional
+    # *post-success-only* exit avoids invalidating a completed, fsynced
+    # metadata-only audit. Exceptions before report creation still fail.
+    import os
+    if os.environ.get("HF_STREAM_SAFE_EXIT") == "1":
+        import sys
+        with a.output.open("rb") as recorded:
+            os.fsync(recorded.fileno())
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 
 if __name__=="__main__":
