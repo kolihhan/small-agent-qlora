@@ -66,6 +66,7 @@ class TransformersQwenModel:
         enable_thinking: bool = False,
         max_new_tokens: int = 512,
         cache_implementation: str | None = None,
+        load_compute_dtype: bool = False,
     ):
         try:
             import torch
@@ -84,6 +85,11 @@ class TransformersQwenModel:
                 bnb_4bit_use_double_quant=True,
                 bnb_4bit_compute_dtype=compute_dtype,
             )
+            # The opt-in v8 T4 path must not leave Qwen's huge nonquantized
+            # embedding/head in pretrained BF16; keep BOTH comparison arms
+            # at the same explicit GPU-supported precision. Defaults unchanged.
+            if load_compute_dtype:
+                kwargs["dtype"] = compute_dtype
         else:
             kwargs["torch_dtype"] = "auto"
         self.model = AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
