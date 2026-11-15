@@ -141,8 +141,8 @@ jobs:
           colab --auth=adc new -s "$SESSION" --gpu T4
           echo "NEXTSEARCH_ABBA_VAL4_REAL_COLAB_T4_ALLOCATED"
           colab --auth=adc upload -s "$SESSION" inputs/heldout/nextsearch-pinned-val8.json /content/nextsearch-pinned-val8.json
-          colab --auth=adc upload -s "$SESSION" inputs/adapter/adapter_model.safetensors /content/nextsearch-original-8step-adapter/adapter_model.safetensors
-          colab --auth=adc upload -s "$SESSION" inputs/adapter/adapter_config.json /content/nextsearch-original-8step-adapter/adapter_config.json
+          colab --auth=adc upload -s "$SESSION" inputs/adapter/adapter_model.safetensors /content/adapter_model.safetensors
+          colab --auth=adc upload -s "$SESSION" inputs/adapter/adapter_config.json /content/adapter_config.json
           set +e
           set -o pipefail
           colab --auth=adc exec -s "$SESSION" --timeout 4600 -f inputs/nextsearch-qwen9b-matched-val4.py 2>&1 | tee "$RUNNER_TEMP/nextsearch-abba-val4.txt"
