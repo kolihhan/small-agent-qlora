@@ -16,7 +16,7 @@ import time
 import zipfile
 
 SOURCE_SHA="__SOURCE_SHA__"
-BRANCH="experiment/qlora-multihop-oracle-supervision-20261115"
+BRANCH="experiment/qlora-v8-t4-preserve-frozen-half-20261115"
 TRAIN=Path("/content/qlora-v8-train.jsonl")
 AUDIT=Path("/content/qlora-v8-audit.json")
 OUT=Path("/content/qlora-v8-adapter")
