@@ -60,6 +60,7 @@ def inspect(row):
     obs_chars=0
     assistant_turns=0
     ordered_actions=[]
+    called_arg_fields=Counter()
     for idx,msg in enumerate(target):
         if not isinstance(msg,dict):
             broken=True
@@ -76,6 +77,13 @@ def inspect(row):
                     broken=True
                     continue
                 calls[ident]=name
+                # Exact argument **keys**, not personal/source values. Used
+                # solely to prove whether native GAIA tools can accept the
+                # original function-call contract unchanged.
+                raw_args=(call.get("function") or {}).get("arguments")
+                decoded=json.loads(raw_args) if isinstance(raw_args,str) else raw_args
+                if isinstance(decoded,dict):
+                    called_arg_fields.update(f"{name}.{key}" for key in decoded)
                 last_action_idx[ident]=idx
                 ordered_actions.append((idx,ident,name))
                 counts["called_"+name]+=1
@@ -138,6 +146,11 @@ def inspect(row):
         "band":str(row.get("band") or ""),
         "tool_names":sorted(set(calls.values())),
         "count_by_tool":dict(Counter(calls.values())),
+        "called_argument_field_counts":dict(called_arg_fields),
+        "declared_source_parameter_keys":{
+            str(t.get("name")):sorted((t.get("parameters") or {}).get("properties",{}))
+            for t in definitions if isinstance(t,dict)
+        },
         "original_declared_tools":sorted(str(t.get("name")) for t in definitions if isinstance(t,dict)),
         "assistant_action_turns":assistant_turns,
         "tool_actions":len(calls),
@@ -165,6 +178,10 @@ def audit(rows,revision):
     names=Counter()
     long_ids=[]
     bands=Counter()
+    long_sources=Counter()
+    long_bands=Counter()
+    argument_keys=Counter()
+    schema_signatures={}
     for row in rows:
         scored=inspect(row)
         ident=scored["id"]
@@ -194,6 +211,12 @@ def audit(rows,revision):
         summary["long_candidate_real_actions"]+=scored["tool_actions"] if scored["long_search_fetch_candidate"] else 0
         summary["long_candidate_observation_chars"]+=scored["observation_chars"] if scored["long_search_fetch_candidate"] else 0
         names.update(scored["count_by_tool"])
+        argument_keys.update(scored["called_argument_field_counts"])
+        if scored["long_search_fetch_candidate"]:
+            long_sources[scored["source"]]+=1
+            long_bands[scored["band"]]+=1
+        for tool,props in scored["declared_source_parameter_keys"].items():
+            schema_signatures.setdefault(tool,set()).add(tuple(props))
         by_source[scored["source"]]+=1
         bands[scored["band"]]+=1
         if scored["long_search_fetch_candidate"] and len(long_ids)<12:
@@ -214,6 +237,13 @@ def audit(rows,revision):
         "source_counts":dict(by_source),
         "band_counts":dict(bands),
         "declared_tools_seen":dict(names),
+        "called_argument_keys":dict(argument_keys),
+        "source_tool_parameter_key_sets":{
+            name:[list(keys) for keys in sorted(signatures)]
+            for name,signatures in schema_signatures.items()
+        },
+        "qualified_long_by_source":dict(long_sources),
+        "qualified_long_by_band":dict(long_bands),
         "source_id_hashes_only":long_ids,
         "source_license_checked":True,
         "task_disjoint_with_gaia_source_name":True,
