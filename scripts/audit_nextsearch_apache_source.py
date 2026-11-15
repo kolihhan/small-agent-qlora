@@ -113,10 +113,9 @@ def inspect(row):
     )
     gold=row.get("gold")
     reference=str(gold.get("answer","")).strip() if isinstance(gold,dict) else ""
-    if not reference:
-        raise ValueError("publisher reference missing")
+    source_reference_present=bool(reference)
     final=str(last.get("content","")).strip() if isinstance(last,dict) else ""
-    exact=bool(last_is_final and gaia_score(final,reference))
+    exact=bool(source_reference_present and last_is_final and gaia_score(final,reference))
     complete=bool(calls and not broken and set(calls)==seen)
     # Search/fetch may be partly batched; still count *actual* observed calls
     # rather than simulated page traversals or assistant token count.
@@ -138,6 +137,7 @@ def inspect(row):
         "observation_chars":obs_chars,
         "all_actual_calls_observed":complete,
         "strict_gold_answer_exact":exact,
+        "source_reference_present":source_reference_present,
         "last_final_answer_present":last_is_final,
         "tool_error_count":tool_error,
         "recovery_after_error_observed":recovery_after_error,
@@ -176,6 +176,7 @@ def audit(rows,revision):
         summary["all_actions_have_actual_feedback"]+=scored["all_actual_calls_observed"]
         summary["original_final_present"]+=scored["last_final_answer_present"]
         summary["source_gold_exact"]+=scored["strict_gold_answer_exact"]
+        summary["source_reference_missing"]+=int(not scored["source_reference_present"])
         summary["seven_or_more_real_tool_actions"]+=int(scored["tool_actions"]>=MIN_OBSERVED)
         summary["source_gold_exact_and_tool_feedback"]+=int(scored["strict_gold_answer_exact"] and scored["all_actual_calls_observed"])
         summary["long_search_fetch_gold_exact"]+=scored["long_search_fetch_candidate"]
