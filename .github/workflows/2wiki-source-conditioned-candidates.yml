@@ -2,7 +2,7 @@ name: PRO original 2Wiki TRAIN real-tool grounded long-trajectory candidate cons
 on:
   push:
     branches: [experiment/2wiki-source-conditioned-trajectories-20261115]
-    paths: [.github/workflows/2wiki-source-conditioned-candidates.yml]
+    paths: [.github/workflows/2wiki-source-conditioned-candidates.yml, tests/test_build_2wiki_source_decisions.py]
   workflow_dispatch:
 permissions:
   contents: read
