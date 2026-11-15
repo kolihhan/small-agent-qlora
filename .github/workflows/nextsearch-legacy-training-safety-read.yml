@@ -1,0 +1,38 @@
+name: PRO read only inspect original HF private trainer and ZeroGPU runtime
+on:
+  push:
+    branches: [experiment/nextsearch-gold-grounded-search-traces-20261115]
+    paths: [.github/workflows/nextsearch-legacy-training-safety-read.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -q 'huggingface_hub>=1.0'
+      - name: Read-only check current app and hardware
+        run: |
+          python - <<'PY'
+          import os,ast,json
+          from pathlib import Path
+          from huggingface_hub import HfApi,hf_hub_download
+          api=HfApi(token=os.environ['HF_TOKEN'])
+          for repo in ('kolihhan/small-agent-qlora-v2-train','kolihhan/small-agent-qlora-v7-batch-trainer'):
+              info=api.space_info(repo)
+              print('SPACE_RUNTIME',repo,'sha',info.sha,'private',info.private,'sdk',info.sdk,
+                    'runtime',str(getattr(info,'runtime',None))[:1500],flush=True)
+              app=Path(hf_hub_download(repo,'app.py',repo_type='space',token=os.environ['HF_TOKEN'])).read_text()
+              print('SPACE_APP_SOURCE_START',repo,flush=True)
+              for n,line in enumerate(app.splitlines(),1):
+                  if n>240: break
+                  print(f'{n:03d}: {line}',flush=True)
+              print('SPACE_APP_SOURCE_END',repo, 'lines',len(app.splitlines()),flush=True)
+          PY

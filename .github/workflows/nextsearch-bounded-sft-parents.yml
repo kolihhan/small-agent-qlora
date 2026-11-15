@@ -1,0 +1,40 @@
+name: PRO build actual bounded web search/fetch QLoRA SFT candidates (CPU)
+on:
+  push:
+    branches: [experiment/nextsearch-gold-grounded-search-traces-20261115]
+    paths: [.github/workflows/nextsearch-bounded-sft-parents.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source-curation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Install source reader and native QLoRA provenance verifier
+        run: python -m pip install -e '.[eval,dev]'
+      - name: Validate real assistant actions, proof of tool feedback, no hidden reasoning
+        run: |
+          python -m pytest -q \
+            tests/test_audit_nextsearch_apache_source.py \
+            tests/test_prepare_nextsearch_bounded_sft.py
+      - name: Curate 3270 original pinned source TRAIN records into source-verified next-turn parents
+        env:
+          HF_STREAM_SAFE_EXIT: '1'
+        run: |
+          python -m scripts.prepare_nextsearch_bounded_sft \
+            --output nextsearch-source-bounded-sft-parents.jsonl \
+            --report nextsearch-source-bounded-sft-report.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: nextsearch-source-bounded-sft-pilot-candidates
+          path: |
+            nextsearch-source-bounded-sft-parents.jsonl
+            nextsearch-source-bounded-sft-report.json
+          retention-days: 30
+          if-no-files-found: warn

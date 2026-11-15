@@ -1,0 +1,157 @@
+name: REAL Qwen9B NextSearch 48-state 8-step QLoRA via authorized Colab T4
+on:
+  push:
+    branches: [experiment/nextsearch-colab-real-gpu8-20261115]
+    paths: [.github/workflows/nextsearch-colab-remote-gpu8.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: original-nextsearch-qwen9b-t4-8step-once
+  cancel-in-progress: false
+jobs:
+  gpu8:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
+      COLAB_OAUTH_JSON: ${{ secrets.COLAB_OAUTH_JSON }}
+      COLAB_TOKEN: ${{ secrets.COLAB_TOKEN }}
+      COLAB_CREDENTIALS_JSON: ${{ secrets.COLAB_CREDENTIALS_JSON }}
+      HF_HUB_DISABLE_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Recover 48 original TRAIN actions from original artifact (not GAIA)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43726123262
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: nextsearch-full-context-balanced-source-4k-sft-v0
+          path: inputs
+      - name: Validate frozen 48 actual source actions and script before any GPU allocation
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/colab_nextsearch_real_gpu8.py
+          python - <<'PY'
+          from collections import Counter
+          from pathlib import Path
+          from hashlib import sha256
+          import json,os
+          p=Path('inputs/nextsearch-balanced-source-states-4k.jsonl')
+          expected='5420cfdb6111806a23b4bf6cb9cf04c77c75b5f0cf4af6c0b63727f312f40432'
+          assert sha256(p.read_bytes()).hexdigest()==expected
+          rows=[json.loads(l) for l in p.read_text().splitlines()]
+          assert len(rows)==48 and len({r['task_id'] for r in rows})==48
+          assert Counter(r['capability'] for r in rows)=={
+              'evidence_missing_continue':24,'evidence_present_finalize':24}
+          assert len({r['source_parent_sha256'] for r in rows})==28
+          assert all(r['source_split']=='train'
+                     and r['original_teacher_action_unchanged'] is True
+                     and r['task_success_independently_replayed'] is False
+                     for r in rows)
+          script=Path('scripts/colab_nextsearch_real_gpu8.py').read_text()
+          assert 'SOURCE_COMMIT="__SOURCE_COMMIT__"' in script
+          script=script.replace('SOURCE_COMMIT="__SOURCE_COMMIT__"',
+                                'SOURCE_COMMIT="'+os.environ['GITHUB_SHA']+'"')
+          Path('inputs/nextsearch-gpu8-remote.py').write_text(script)
+          print('NEXTSEARCH_IMMUTABLE_SOURCE48_VERIFIED_BEFORE_GPU',flush=True)
+          PY
+      - name: Authenticate user-controlled existing Colab ADC refresh credentials privately
+        run: |
+          set -euo pipefail
+          python -m pip install -q 'google-auth>=2.20' 'requests>=2.31' 'google-colab-cli==0.8.0'
+          python - <<'PY'
+          import os,json,pathlib
+          import google.auth
+          from google.auth.transport.requests import Request
+          creds=None
+          for name in ('COLAB_ADC_JSON','COLAB_OAUTH_JSON','COLAB_CREDENTIALS_JSON','COLAB_TOKEN'):
+              raw=os.environ.get(name,'').strip()
+              if not raw: continue
+              try: d=json.loads(raw)
+              except (TypeError,ValueError): continue
+              if not isinstance(d,dict): continue
+              if all(d.get(k) for k in ('client_id','client_secret','refresh_token')):
+                  creds={**d,'type':'authorized_user'}
+                  break
+              if d.get('type')=='service_account' and all(d.get(k) for k in ('private_key','client_email')):
+                  creds=d
+                  break
+          if creds is None:
+              raise RuntimeError('NO_AUTHORIZED_COLAB_ADC_REFRESH_SECRET')
+          path=pathlib.Path(os.environ['RUNNER_TEMP'])/'nextsearch-colab-adc.json'
+          path.write_text(json.dumps(creds));path.chmod(0o600)
+          try:
+              auth,_=google.auth.load_credentials_from_file(str(path))
+              auth.refresh(Request())
+              assert auth.valid
+          except Exception as e:
+              print('COLAB_ADC_AUTH_FAILURE',type(e).__name__,flush=True)
+              raise SystemExit(41)
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write('GOOGLE_APPLICATION_CREDENTIALS='+str(path)+'\n')
+          print('COLAB_NEXTSEARCH_AUTHENTICATED_WITH_EXISTING_SECRET',flush=True)
+          PY
+      - name: Refuse a duplicate live GPU assignment
+        run: |
+          set -euo pipefail
+          usage="$(timeout 90 colab --auth=adc usage)"
+          active="$(printf '%s\n' "$usage" | awk '/^Active assignments:/ {print $3}')"
+          if ! [[ "$active" =~ ^[0-9]+$ ]] || [ "$active" != "0" ]; then
+            echo "COLAB_ACTIVE_ASSIGNMENTS_BUSY_OR_UNKNOWN"
+            exit 75
+          fi
+          echo "COLAB_ONE_AVAILABLE_SLOT"
+      - name: Allocate real T4, train 8 Qwen9B optimization steps, recover checkpoint
+        run: |
+          set -euo pipefail
+          SESSION="nextsearch9b-$GITHUB_RUN_ID"
+          mkdir -p exported
+          cleanup() { colab --auth=adc stop -s "$SESSION" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          colab --auth=adc new -s "$SESSION" --gpu T4
+          echo "NEXTSEARCH_REAL_COLAB_T4_ALLOCATED"
+          colab --auth=adc upload -s "$SESSION" inputs/nextsearch-balanced-source-states-4k.jsonl /content/nextsearch-balanced-source-states-4k.jsonl
+          set +e
+          set -o pipefail
+          colab --auth=adc exec -s "$SESSION" --timeout 1800 -f inputs/nextsearch-gpu8-remote.py 2>&1 | tee "$RUNNER_TEMP/nextsearch-remote-log.txt"
+          RC=$?
+          set -e
+          colab --auth=adc download -s "$SESSION" /content/nextsearch-9b-gpu8-checkpoint.zip exported/nextsearch-9b-gpu8-checkpoint.zip || true
+          colab --auth=adc download -s "$SESSION" /content/nextsearch-9b-gpu8-report.json exported/nextsearch-9b-gpu8-report.json || true
+          colab --auth=adc log -s "$SESSION" -o exported/nextsearch-runtime.ipynb || true
+          if [ "$RC" -ne 0 ]; then
+            echo "NEXTSEARCH_COLAB_GPU_EXPERIMENT_FAILED rc=$RC; no score claim"
+            exit "$RC"
+          fi
+          python - <<'PY'
+          from pathlib import Path
+          import json,zipfile,hashlib
+          p=Path('exported/nextsearch-9b-gpu8-checkpoint.zip')
+          assert p.is_file() and p.stat().st_size>100000
+          with zipfile.ZipFile(p) as z:
+              proof=json.loads(z.read('trainer/physical-gpu8-proof.json'))
+              cfg=json.loads(z.read('trainer/run_config.json'))
+              state=json.loads(z.read('trainer/checkpoint-8/trainer_state.json'))
+              weights=z.read('trainer/adapter_model.safetensors')
+              assert proof['actual_optimizer_steps']==8 and state['global_step']==8
+              assert cfg['training_examples']==48 and cfg['max_length']==4096
+              assert cfg['require_full_prompt'] is True
+              assert hashlib.sha256(weights).hexdigest()==proof['adapter_sha256']
+              assert proof['gaia_score_updated'] is False
+          print('NEXTSEARCH_REAL_COLAB_QWEN9B_EIGHT_GPU_STEPS_PHYSICALLY_VERIFIED',
+                {'adapter_bytes':len(weights),'source_actions':48,'optimizer_steps':8},flush=True)
+          PY
+      - name: Preserve GPU source and recoverable adapter/notebook artifacts even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: original-nextsearch-qwen9b-colab-t4-gpu8-checkpoint-if-trained
+          path: exported/
+          retention-days: 30
+          if-no-files-found: warn

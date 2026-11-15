@@ -1,0 +1,36 @@
+name: PRO check free HF ZeroGPU quota before any real QLoRA training
+on:
+  push:
+    branches: [experiment/nextsearch-gold-grounded-search-traces-20261115]
+    paths: [.github/workflows/nextsearch-hf-zerogpu-preflight.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  quota-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - name: Check HF token and owner free ZeroGPU quota without starting GPUs
+        run: |
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN_MISSING; cannot train via private ZeroGPU"; exit 2; }
+          python -m pip install -q 'huggingface_hub>=1.0'
+          python - <<'PY'
+          import json,os
+          from huggingface_hub import HfApi
+          api=HfApi(token=os.environ["HF_TOKEN"])
+          who=api.whoami()
+          quota=api.get_zero_gpu_quota()
+          payload={
+            "authenticated": bool(who.get("name")),
+            "remaining_seconds": quota.remaining,
+            "base_seconds": quota.base,
+            "reset":quota.resets_at.isoformat() if quota.resets_at else None,
+            "is_compatible_with_old_v3b_195s_reservation":quota.remaining>=195,
+            "is_compatible_with_4096_9b_training": "unknown: must benchmark true token/sec, not assume 195 seconds enough",
+            "gpu_job_launched":False,"user_charged":False
+          }
+          print("NEXTSEARCH_ZEROGPU_CAPACITY",json.dumps(payload,sort_keys=True),flush=True)
+          PY
