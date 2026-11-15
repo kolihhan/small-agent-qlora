@@ -36,16 +36,19 @@ def _looks_like_textual_tool_call(content: str) -> bool:
 
 
 class AgentRuntime:
-    def __init__(self, model: Model, tools: list[Tool], max_steps: int = 12):
+    def __init__(self, model: Model, tools: list[Tool], max_steps: int = 12, *, system_prompt: str | None = None):
         self.model = model
         self.tools = {tool.name: tool for tool in tools}
         self.max_steps = max_steps
+        if system_prompt is not None and (not isinstance(system_prompt, str) or not system_prompt.strip()):
+            raise ValueError("system_prompt override must be non-empty text")
+        self.system_prompt = SYSTEM_PROMPT if system_prompt is None else system_prompt
 
     def run(self, question: str, workspace: str | Path) -> AgentResult:
         workspace = Path(workspace)
         workspace.mkdir(parents=True, exist_ok=True)
         messages: list[dict] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": question},
         ]
         trace: list[TraceEvent] = []
