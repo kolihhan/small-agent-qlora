@@ -1,0 +1,39 @@
+name: PRO frozen source-agnostic final renderer source-shift MuSiQue replay (no model)
+on:
+  push:
+    branches: [experiment/generic-final-render-iirc-replay-20261115]
+    paths: [.github/workflows/generic-final-render-musique-offline.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e '.[dev]'
+      - name: Reconfirm same frozen generic final extraction tests
+        run: python -m pytest -q tests/test_pro_generic_final_render.py
+      - name: Download original frozen Qwen9B MuSiQue other8 full native final answers
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43691026466
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: qwen9b-musique-other8-path-diagnostic-final
+          path: inputs
+      - name: Compare exact original vs generic terminal field rendering without model
+        run: |
+          python -m scripts.replay_musique_generic_final_render \
+            --source inputs/musique-other8-path-diagnostic-final.json \
+            --output musique-generic-final-render-report.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: musique-generic-final-render-retrospective-report
+          path: musique-generic-final-render-report.json
+          if-no-files-found: error
