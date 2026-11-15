@@ -32,6 +32,8 @@ def test_valid_eight_real_calls_with_credible_observations_and_gold_answer():
     assert out["strict_gold_answer_exact"]
     assert out["long_search_fetch_candidate"]
     assert out["tool_names"]==["fetch","search"]
+    assert out["called_argument_field_counts"]["search.query"]==4
+    assert out["called_argument_field_counts"]["fetch.query"]==4
     assert not out["tool_schema_native_to_our_gaia"]
 
 
@@ -62,6 +64,8 @@ def test_original_source_permission_and_task_id_disjoint_are_mandatory():
     row=task()
     summary=audit([row],"pinned-source-commit")
     assert summary["stats"]["long_search_fetch_gold_exact"]==1
+    assert summary["qualified_long_by_source"]=={"taskcraft":1}
+    assert summary["source_tool_parameter_key_sets"]=={"search":[[]],"fetch":[[]]}
     assert summary["stats"]["long_candidate_real_actions"]==8
     assert summary["ready_for_qlora"] is False
     assert summary["training_data_exported"]==0
