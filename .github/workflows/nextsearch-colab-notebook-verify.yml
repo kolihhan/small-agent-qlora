@@ -2,7 +2,7 @@ name: PRO verify Colab notebook source and pinned training contract (CPU only)
 on:
   push:
     branches: [experiment/nextsearch-gold-grounded-search-traces-20261115]
-    paths: [.github/workflows/nextsearch-colab-notebook-verify.yml]
+    paths: [.github/workflows/nextsearch-colab-notebook-verify.yml, notebooks/NextSearch_Real_State_Qwen9B_QLoRA_v0_Colab.ipynb]
   workflow_dispatch:
 permissions:
   contents: read
@@ -40,6 +40,9 @@ jobs:
               "resume_from_checkpoint=resume",
               "require_full_prompt=True",
               "max_steps=8",
+              "LORA_TARGET_MODULES = \"q_proj,v_proj\" if LOW_VRAM else \"all-linear\"",
+              "vram_gib < 14.5",
+              "qlora-nextsearch-9b-",
           ):
               if required not in source:
                   raise ValueError("notebook training contract missing: "+required)
