@@ -165,6 +165,15 @@ def main():
     props=torch.cuda.get_device_properties(0)
     if props.total_memory/2**30<14.5:
         raise RuntimeError("T4-class minimum memory not met")
+    # Official Colab upload creates files but not arbitrary parent directories.
+    # Stage the two verified original adapter files at /content before this
+    # process begins, then assemble locally without changing their bytes.
+    ADAPTER_DIR.mkdir(parents=True,exist_ok=False)
+    for filename in ("adapter_model.safetensors","adapter_config.json"):
+        staged=Path("/content")/filename
+        if not staged.is_file():
+            raise FileNotFoundError("Colab staging missing "+filename)
+        (ADAPTER_DIR/filename).write_bytes(staged.read_bytes())
     cases=frozen_contract()
     if WORK.exists() or FINAL.exists():
         raise FileExistsError("cannot overwrite any prior heldout test files")
