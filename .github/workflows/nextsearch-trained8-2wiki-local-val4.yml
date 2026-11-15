@@ -1,0 +1,180 @@
+name: PRO Colab physical Qwen9B original vs 8step adapter on real LOCAL 2Wiki VAL4
+on:
+  push:
+    branches: [experiment/nextsearch-trained8-2wiki-local-val4-20261116]
+    paths: [.github/workflows/nextsearch-trained8-2wiki-local-val4.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: qwen9b-real-colab-trained8-2wiki-valid4-once
+  cancel-in-progress: false
+jobs:
+  gpu-local-pair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 225
+    env:
+      COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
+      COLAB_OAUTH_JSON: ${{ secrets.COLAB_OAUTH_JSON }}
+      COLAB_CREDENTIALS_JSON: ${{ secrets.COLAB_CREDENTIALS_JSON }}
+      COLAB_TOKEN: ${{ secrets.COLAB_TOKEN }}
+      HF_HUB_DISABLE_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Validate syntax and source-only policy before GPU
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/colab_trained8_2wiki_local_val4.py
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('scripts/colab_trained8_2wiki_local_val4.py').read_text()
+          assert 'CODE_SHA="__CODE_SHA__"' in s
+          assert 'fded3c65e2ccc829ae0efdd8af448896320590b63bb69e0e9ff1d52eadc4fbb7' in s
+          assert '69deffc3ca0548778cf451332b76ee19073780d0490baba22193a36ed19c3508' in s
+          assert 'disable_adapter()' in s
+          assert 'source_preflight' in s
+          assert 'no_network_web_search' in s
+          assert 'MAX_STEPS=10' in s
+          print('NEXTSEARCH_2WIKI_SOURCE_LOCAL_CODE_STATIC_VALIDATED')
+          PY
+      - name: Recover original frozen 2Wiki VALIDATION source documents
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43712873154
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: 2wiki-original-source-cohort-frozen
+          path: inputs
+      - name: Recover exact physically trained Qwen9B 8-step original adapter
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43732429711
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: original-nextsearch-qwen9b-colab-t4-gpu8-checkpoint-if-trained
+          path: inputs
+      - name: Audit source hash, source documents, adapter weight SHA, original 8 optimizer steps
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from hashlib import sha256
+          import zipfile,json,os
+          manifest_path=Path('inputs/2wiki-linked-frozen.json')
+          manifest=json.loads(manifest_path.read_text())
+          expected='fded3c65e2ccc829ae0efdd8af448896320590b63bb69e0e9ff1d52eadc4fbb7'
+          assert manifest['split']=='validation' and manifest['cases_sha']==expected
+          assert sha256(json.dumps(manifest['cases'],sort_keys=True).encode()).hexdigest()==expected
+          assert len(manifest['cases'])==8
+          assert all(len(c['files'])>=6 and len(c['support'])==4
+                     for c in manifest['cases'][:4])
+          wraps=list(Path('inputs').rglob('nextsearch-9b-gpu8-checkpoint.zip'))
+          assert len(wraps)==1,wraps
+          with zipfile.ZipFile(wraps[0]) as z:
+              weights=z.read('trainer/adapter_model.safetensors')
+              config=z.read('trainer/adapter_config.json')
+              state=json.loads(z.read('trainer/checkpoint-8/trainer_state.json'))
+              proof=json.loads(z.read('trainer/physical-gpu8-proof.json'))
+              assert int(state['global_step'])==8 and proof['actual_optimizer_steps']==8
+              assert sha256(weights).hexdigest()=='69deffc3ca0548778cf451332b76ee19073780d0490baba22193a36ed19c3508'
+              assert len(weights)==2232480
+              assert set(json.loads(config)['target_modules'])=={'q_proj','v_proj'}
+          out=Path('inputs/PEFT')
+          out.mkdir(exist_ok=False)
+          (out/'adapter_model.safetensors').write_bytes(weights)
+          (out/'adapter_config.json').write_bytes(config)
+          script=Path('scripts/colab_trained8_2wiki_local_val4.py').read_text()
+          script=script.replace('CODE_SHA="__CODE_SHA__"',
+                                'CODE_SHA="'+os.environ['GITHUB_SHA']+'"')
+          Path('inputs/2wiki-local-pair-gpu.py').write_text(script)
+          print('NEXTSEARCH_SOURCE_DOCS_ORIGINAL_GPU8_ADAPTER_VERIFIED',
+                {'source_val4':4,'local_docs_each':6,
+                 'original_training_steps':8,'gpu_allocated':False},flush=True)
+          PY
+      - name: Authenticate authorized user Colab ADC privately
+        run: |
+          set -euo pipefail
+          python -m pip install -q 'google-auth>=2.20' 'requests>=2.31' 'google-colab-cli==0.8.0'
+          python - <<'PY'
+          import os,json,pathlib
+          import google.auth
+          from google.auth.transport.requests import Request
+          credentials=None
+          for name in ('COLAB_ADC_JSON','COLAB_OAUTH_JSON','COLAB_CREDENTIALS_JSON','COLAB_TOKEN'):
+              raw=os.environ.get(name,'').strip()
+              if not raw:continue
+              try:d=json.loads(raw)
+              except (TypeError,ValueError):continue
+              if not isinstance(d,dict):continue
+              if all(d.get(k) for k in ('client_id','client_secret','refresh_token')):
+                  credentials={**d,'type':'authorized_user'};break
+              if d.get('type')=='service_account' and all(d.get(k) for k in ('private_key','client_email')):
+                  credentials=d;break
+          if credentials is None:raise RuntimeError('COLAB_OWNER_AUTH_MISSING')
+          path=pathlib.Path(os.environ['RUNNER_TEMP'])/'2wiki-colab-adc.json'
+          path.write_text(json.dumps(credentials));path.chmod(0o600)
+          auth,_=google.auth.load_credentials_from_file(str(path))
+          auth.refresh(Request())
+          if not auth.valid:raise RuntimeError('COLAB_TOKEN_EXPIRED')
+          with open(os.environ['GITHUB_ENV'],'a') as env:
+              env.write('GOOGLE_APPLICATION_CREDENTIALS='+str(path)+'\n')
+          print('NEXTSEARCH_OWNER_COLAB_GPU_2WIKI_AUTH_CONFIRMED',flush=True)
+          PY
+      - name: Avoid taking active Colab user GPU
+        run: |
+          set -euo pipefail
+          usage="$(timeout 100 colab --auth=adc usage)"
+          active="$(printf '%s\n' "$usage" | awk '/^Active assignments:/ {print $3}')"
+          if ! [[ "$active" =~ ^[0-9]+$ ]] || [ "$active" != 0 ]; then
+            echo "COLAB_BUSY_CANNOT_RUN_LOCAL_DOCS_GPU"
+            exit 75
+          fi
+      - name: T4 matched original vs adapter with LOCAL fully working search/read
+        run: |
+          set -euo pipefail
+          SESSION="qwen9b-2wikival4-$GITHUB_RUN_ID"
+          mkdir -p exported
+          cleanup() { colab --auth=adc stop -s "$SESSION" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          colab --auth=adc new -s "$SESSION" --gpu T4
+          echo "QWEN9B_LOCAL_2WIKI_GPU_T4_ALLOCATED"
+          colab --auth=adc upload -s "$SESSION" inputs/2wiki-linked-frozen.json /content/2wiki-original-val8-source.json
+          colab --auth=adc upload -s "$SESSION" inputs/PEFT/adapter_model.safetensors /content/adapter_model.safetensors
+          colab --auth=adc upload -s "$SESSION" inputs/PEFT/adapter_config.json /content/adapter_config.json
+          set +e
+          set -o pipefail
+          colab --auth=adc exec -s "$SESSION" --timeout 6000 -f inputs/2wiki-local-pair-gpu.py 2>&1 | tee "$RUNNER_TEMP/qwen9b-2wiki-val4.log"
+          RC=$?
+          set -e
+          colab --auth=adc download -s "$SESSION" /content/qwen9b-original8-2wiki-local-val4-pair.json exported/qwen9b-original8-2wiki-local-val4-pair.json || true
+          colab --auth=adc download -s "$SESSION" /content/qwen9b-2wiki-local-pair-work/interim.json exported/qwen9b-2wiki-interim.json || true
+          colab --auth=adc log -s "$SESSION" -o exported/qwen9b-2wiki-gpu-runtime.ipynb || true
+          if [ "$RC" -ne 0 ]; then
+            echo "QWEN9B_LOCAL_VAL4_FAILED; no score claim"
+            exit "$RC"
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          file=Path('exported/qwen9b-original8-2wiki-local-val4-pair.json')
+          if not file.is_file():raise RuntimeError('paired GPU local test artifact absent')
+          d=json.loads(file.read_text())
+          assert d['scorable']==4 and len(d['rows'])==4
+          assert d['cohort_sha']=='fded3c65e2ccc829ae0efdd8af448896320590b63bb69e0e9ff1d52eadc4fbb7'
+          assert d['adapter_sha']=='69deffc3ca0548778cf451332b76ee19073780d0490baba22193a36ed19c3508'
+          assert d['gaia100_new_score_claim'] is False and d['promotion_allowed'] is False
+          print('NEXTSEARCH_REAL_LOCAL_2WIKI_QWEN9B_PAIR_PHYSICAL_PROOF',
+                {k:v for k,v in d.items() if k!='rows'},flush=True)
+          PY
+      - name: Save paired closed loop physical artifacts even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qwen9b-real-trained8-local-2wiki-val4-paired-evidence
+          path: exported/
+          if-no-files-found: warn
+          retention-days: 30
