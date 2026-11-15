@@ -129,3 +129,55 @@ A real candidate requires persistent adapter, optimizer, scheduler and RNG
 state. Rechecked both historical T4 runs. The original run artifact contains
 only a runtime notebook, and the Stage35 retry produced no checkpoint artifact.
 The matched GAIA100 bar remains **18/100 with 44% completion** for v3B.
+
+## Matched complete and incomplete evidence states
+
+The IIRC closed-loop study observed correct conclusions in verbose finals and
+incomplete or wrong conclusions even after source delivery. This motivates
+separating a decision to continue reading from a decision to submit a
+task-shaped answer. Use frozen public [MultiHop-RAG](https://github.com/yixuantt/MultiHop-RAG)
+news sources, independent of the previous Wikipedia evaluation. Verify the
+provided support spans in original source articles. Freeze four 3-document
+and four 4-document cases with disjoint supporting articles and a decisive span whose
+answer literal is absent from the question and other visible passages.
+The task slice conditions on this literal distinction.
+
+Give each case identical candidate article paths, publishers, and dates, with
+headlines omitted to keep the answer out of the inventory. Use two physically replayed
+starting observations with the same number of files. In the incomplete arm,
+substitute one same-category distracting passage for the decisive passage.
+Compare the original read or free-text AgentRuntime with a Qwen grammar-
+constrained read or submit action. Both have the same source files, Qwen
+manifest, three subsequent model turns and token limit. Read only frozen
+local files. Measure first useful reads, premature submissions, exact
+task completion supported by all required files, ordinary exact match,
+tool calls, and elapsed time. Use the same scorer. The typed-arm screen
+requires at least three net evidence-supported exact gains, at most one
+regression, rescues in both states, no completion regression in either
+state, and no worse first useful reads or premature submits when incomplete.
+These are paired seeded recoveries. A positive result merits cold-start
+confirmation and source-shift tests before agent integration or QLoRA.
+
+**Result — REJECT the joint typed read/submit policy.** With complete
+evidence, native and typed evidence-supported exact success were **0/8 →
+6/8**. With missing evidence, supported success stayed **0/8 → 0/8**.
+The native policy read the withheld source first in **7/8 → 0/8** across
+arms. Premature submissions were **1/8 → 8/8**. The typed arm made zero
+additional reads in either state. Both arms finished all episodes.
+All six typed exact answers in the complete state also scored exact on
+the same six tasks without the decisive submitted evidence. The task
+identities and strict outcomes are preserved. This rules out attributing
+the exact-score gain to successfully identifying missing evidence. It
+does not distinguish prior knowledge from clues in the remaining text.
+The run recorded scores and read/stop outcomes and did not store final
+answer text. Both states begin from controlled reads, rather than cold
+search. [CPU run](https://github.com/kolihhan/small-agent-qlora/actions/runs/43703160088) ·
+[Final artifact](https://github.com/kolihhan/small-agent-qlora/actions/runs/43703160088/artifacts/14158056217).
+
+Keep the original native tool policy as the control. A later test can
+bind the final rendering boundary after a native stop and independently
+check groundedness with pairs where changing delivered evidence changes
+the correct answer. The current result does not establish a long-horizon
+training signal or an adapter result. New QLoRA remains blocked on verified
+decision supervision and checkpoint evidence; the matched GAIA100 bar is
+18/100.
