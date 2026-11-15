@@ -1,0 +1,177 @@
+name: PRO physical Colab T4 matched original Qwen9B vs validated 8-step QLoRA on frozen VAL4
+on:
+  push:
+    branches: [experiment/nextsearch-gpu8-heldout-abba-val4-20261116]
+    paths: [.github/workflows/nextsearch-colab-actual-val4.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: nextsearch-qwen9b-frozen-source-val4-colab-once
+  cancel-in-progress: false
+jobs:
+  paired-source-val4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 220
+    env:
+      COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
+      COLAB_OAUTH_JSON: ${{ secrets.COLAB_OAUTH_JSON }}
+      COLAB_CREDENTIALS_JSON: ${{ secrets.COLAB_CREDENTIALS_JSON }}
+      COLAB_TOKEN: ${{ secrets.COLAB_TOKEN }}
+      HF_HUB_DISABLE_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Local strict scoring, checkpoint and source freeze tests before GPU
+        run: |
+          set -euo pipefail
+          python -m pytest -q tests/test_colab_nextsearch_val4.py
+          python -m py_compile scripts/colab_nextsearch_gpu8_matched_val4.py
+      - name: Recover original, unmodified VAL8 manifest frozen BEFORE 8-step training
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43722732105
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: nextsearch-pinned-independent-val-cohort
+          path: inputs/heldout
+      - name: Recover only physical Colab-trained 8-step adapter weights
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43732429711
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: original-nextsearch-qwen9b-colab-t4-gpu8-checkpoint-if-trained
+          path: inputs/checkpoint
+      - name: Validate original immutable source VAL8 and adapter SHA, extract original PEFT files
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from hashlib import sha256
+          from collections import Counter
+          import json,zipfile,os
+          paths=list(Path('inputs/heldout').rglob('nextsearch-qwen9b-heldout-val-frozen.json'))
+          assert len(paths)==1,paths
+          manifest=json.loads(paths[0].read_text())
+          expected='4cf774e6bf76210ff33cf9c41ea3374728aadf12d2d20510224b56fc116a73cd'
+          assert manifest['cases_sha']==expected
+          assert sha256(json.dumps(manifest['cases'],sort_keys=True).encode()).hexdigest()==expected
+          assert manifest['heldout_by_task_id'] and manifest['split']=='validation'
+          assert len(manifest['cases'])==8
+          assert Counter(row['source'] for row in manifest['cases'][:4])=={'asearcher':2,'taskcraft':2}
+          wraps=list(Path('inputs/checkpoint').rglob('nextsearch-9b-gpu8-checkpoint.zip'))
+          assert len(wraps)==1,wraps
+          out=Path('inputs/adapter')
+          out.mkdir(parents=True)
+          with zipfile.ZipFile(wraps[0]) as archive:
+              conf=archive.read('trainer/adapter_config.json')
+              weights=archive.read('trainer/adapter_model.safetensors')
+              proof=json.loads(archive.read('trainer/physical-gpu8-proof.json'))
+              state=json.loads(archive.read('trainer/checkpoint-8/trainer_state.json'))
+              assert proof['actual_optimizer_steps']==state['global_step']==8
+              assert sha256(weights).hexdigest()==proof['adapter_sha256']=='69deffc3ca0548778cf451332b76ee19073780d0490baba22193a36ed19c3508'
+              assert len(weights)==2232480
+              assert set(json.loads(conf)['target_modules'])=={'q_proj','v_proj'}
+              (out/'adapter_model.safetensors').write_bytes(weights)
+              (out/'adapter_config.json').write_bytes(conf)
+          script=Path('scripts/colab_nextsearch_gpu8_matched_val4.py').read_text()
+          assert 'CODE_SHA="__CODE_SHA__"' in script
+          script=script.replace('CODE_SHA="__CODE_SHA__"',
+                                'CODE_SHA="'+os.environ['GITHUB_SHA']+'"')
+          Path('inputs/nextsearch-qwen9b-matched-val4.py').write_text(script)
+          Path('inputs/heldout/nextsearch-pinned-val8.json').write_bytes(paths[0].read_bytes())
+          print('NEXTSEARCH_ORIGINAL_VAL4_AND_TRAINED_ADAPTER_SHA_PHYSICALLY_FROZEN',
+                {'val_cases':4,'sources':2,'trainer_steps':8,
+                 'trained_adapter_bytes':len(weights),
+                 'base_and_adapter_gpu_inference_started':False},flush=True)
+          PY
+      - name: Authenticate existing user-authorized Colab ADC (no secret output)
+        run: |
+          set -euo pipefail
+          python -m pip install -q 'google-auth>=2.20' 'requests>=2.31' 'google-colab-cli==0.8.0'
+          python - <<'PY'
+          import os,json,pathlib
+          import google.auth
+          from google.auth.transport.requests import Request
+          chosen=None
+          for name in ('COLAB_ADC_JSON','COLAB_OAUTH_JSON','COLAB_CREDENTIALS_JSON','COLAB_TOKEN'):
+              raw=os.environ.get(name,'').strip()
+              if not raw: continue
+              try: d=json.loads(raw)
+              except (TypeError,ValueError): continue
+              if not isinstance(d,dict): continue
+              if all(d.get(k) for k in ('client_id','client_secret','refresh_token')):
+                  chosen={**d,'type':'authorized_user'}
+                  break
+              if d.get('type')=='service_account' and all(d.get(k) for k in ('private_key','client_email')):
+                  chosen=d
+                  break
+          if chosen is None:
+              raise RuntimeError('AUTHORIZED_COLAB_ADC_MISSING')
+          p=pathlib.Path(os.environ['RUNNER_TEMP'])/'source-val4-colab-adc.json'
+          p.write_text(json.dumps(chosen));p.chmod(0o600)
+          auth,_=google.auth.load_credentials_from_file(str(p))
+          auth.refresh(Request())
+          if not auth.valid: raise RuntimeError('COLAB_ADC_EXPIRED')
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write('GOOGLE_APPLICATION_CREDENTIALS='+str(p)+'\n')
+          print('NEXTSEARCH_COLAB_GPU_EVAL_OWNER_AUTHENTICATED',flush=True)
+          PY
+      - name: Respect any active authorized Colab session and avoid race
+        run: |
+          set -euo pipefail
+          usage="$(timeout 100 colab --auth=adc usage)"
+          active="$(printf '%s\n' "$usage" | awk '/^Active assignments:/ {print $3}')"
+          if ! [[ "$active" =~ ^[0-9]+$ ]] || [ "$active" != "0" ]; then
+            echo "NEXTSEARCH_GPU_EVAL_SLOT_NOT_AVAILABLE; no GPU billed/allocated"
+            exit 75
+          fi
+      - name: Run same Qwen3.5-9B 4-bit base and trained adapter in one Colab T4, real web tools
+        run: |
+          set -euo pipefail
+          SESSION="nextsearch-abba-$GITHUB_RUN_ID"
+          mkdir -p exported
+          cleanup() { colab --auth=adc stop -s "$SESSION" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          colab --auth=adc new -s "$SESSION" --gpu T4
+          echo "NEXTSEARCH_ABBA_VAL4_REAL_COLAB_T4_ALLOCATED"
+          colab --auth=adc upload -s "$SESSION" inputs/heldout/nextsearch-pinned-val8.json /content/nextsearch-pinned-val8.json
+          colab --auth=adc upload -s "$SESSION" inputs/adapter/adapter_model.safetensors /content/nextsearch-original-8step-adapter/adapter_model.safetensors
+          colab --auth=adc upload -s "$SESSION" inputs/adapter/adapter_config.json /content/nextsearch-original-8step-adapter/adapter_config.json
+          set +e
+          set -o pipefail
+          colab --auth=adc exec -s "$SESSION" --timeout 4600 -f inputs/nextsearch-qwen9b-matched-val4.py 2>&1 | tee "$RUNNER_TEMP/nextsearch-abba-val4.txt"
+          RC=$?
+          set -e
+          colab --auth=adc download -s "$SESSION" /content/nextsearch-qwen9b-adapter-vs-base-val4.json exported/nextsearch-qwen9b-adapter-vs-base-val4.json || true
+          colab --auth=adc download -s "$SESSION" /content/nextsearch-abba-real-8step-val4/interim.json exported/nextsearch-interim-val4.json || true
+          colab --auth=adc log -s "$SESSION" -o exported/nextsearch-colab-val4-runtime.ipynb || true
+          if [ "$RC" -ne 0 ]; then
+            echo "NEXTSEARCH_ABBA_HARD_FAILURE rc=$RC; no generalization claim"
+            exit "$RC"
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          file=Path('exported/nextsearch-qwen9b-adapter-vs-base-val4.json')
+          if not file.is_file(): raise RuntimeError('paired real GPU artifact absent')
+          x=json.loads(file.read_text())
+          assert x['cases']==4 and x['source_count']==2
+          assert x['adapter_sha']=='69deffc3ca0548778cf451332b76ee19073780d0490baba22193a36ed19c3508'
+          assert len(x['rows'])==4
+          assert x['gaia100_tested'] is False and x['promoted'] is False
+          print('NEXTSEARCH_VAL4_BASE_VS_TRAINED8_PHYSICALLY_VERIFIED',
+                {k:v for k,v in x.items() if k!='rows'},flush=True)
+          PY
+      - name: Retain real GPU score, interim evidence, and Colab logs even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: nextsearch-original8-real-gpu-heldout-val4-base-vs-adapter
+          path: exported/
+          if-no-files-found: warn
+          retention-days: 30
