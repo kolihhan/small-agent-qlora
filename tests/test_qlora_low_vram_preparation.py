@@ -68,3 +68,26 @@ def test_t4_preparation_skips_checkpointing_when_disabled():
     model = FakeModel()
     _prepare_kbit_model_memory_safe(model, FakeTorch, gradient_checkpointing=False)
     assert model.checkpoint_kwargs is None
+
+
+def test_t4_load_explicitly_converts_bf16_source_weights_to_fp16():
+    from gaia_small_agent.training.qlora import _low_vram_load_kwargs
+
+    assert _low_vram_load_kwargs(True, "fp16") == {"dtype": "fp16"}
+    assert _low_vram_load_kwargs(False, "fp16") == {}
+
+
+def test_t4_preflight_rejects_unquantized_bf16_before_backward():
+    from gaia_small_agent.training.qlora import _assert_cuda_precision_compatible
+
+    class NamedModel(FakeModel):
+        def named_parameters(self):
+            return [("embed_tokens.weight", self.embeddings), ("norm.weight", self.norm.weight)]
+
+    model = NamedModel()
+    model.embeddings = FakeParameter("bf16")
+    import pytest
+    with pytest.raises(RuntimeError, match="unsupported BF16"):
+        _assert_cuda_precision_compatible(model, FakeTorch, cuda_bf16_supported=False)
+    model.embeddings = FakeParameter("fp16")
+    _assert_cuda_precision_compatible(model, FakeTorch, cuda_bf16_supported=False)
