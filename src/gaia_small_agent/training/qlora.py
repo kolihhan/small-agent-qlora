@@ -349,6 +349,25 @@ def _normalize_lora_target_modules(value: str | list[str]) -> str | list[str]:
     return modules
 
 
+def _low_vram_load_kwargs(preserve_large_half_parameters: bool, compute_dtype):
+    """Avoid loading BF16 unquantized Qwen tensors on T4 (SM 7.5).
+
+    The old default remains untouched; the v8-only low-VRAM path explicitly
+    loads model embeddings/head in its selected fp16/bf16 compute precision.
+    """
+    return {"dtype": compute_dtype} if preserve_large_half_parameters else {}
+
+
+def _assert_cuda_precision_compatible(model, torch, *, cuda_bf16_supported: bool):
+    """Fail before an optimizer step if T4 would reach unsupported BF16 matmul."""
+    if cuda_bf16_supported:
+        return
+    for name, param in model.named_parameters():
+        if (param.dtype == torch.bfloat16
+                and param.__class__.__name__ != "Params4bit"):
+            raise RuntimeError(f"unsupported BF16 unquantized tensor on T4: {name}")
+
+
 def _prepare_kbit_model_memory_safe(model, torch, *, gradient_checkpointing: bool):
     """Keep frozen Qwen embeddings in half precision on limited-VRAM GPUs.
 
@@ -423,6 +442,7 @@ def train_qlora(
         quantization_config=bnb,
         device_map="auto",
         trust_remote_code=True,
+        **_low_vram_load_kwargs(preserve_large_half_parameters, compute_dtype),
     )
     if preserve_large_half_parameters:
         language_model = _prepare_kbit_model_memory_safe(
@@ -433,6 +453,10 @@ def train_qlora(
         language_model = prepare_model_for_kbit_training(
             language_model,
             use_gradient_checkpointing=runtime_defaults["use_gradient_checkpointing"],
+        )
+    if preserve_large_half_parameters and cuda_available:
+        _assert_cuda_precision_compatible(
+            language_model, torch, cuda_bf16_supported=cuda_bf16_supported,
         )
     target_modules = _normalize_lora_target_modules(lora_target_modules)
     peft_cfg = LoraConfig(
@@ -524,6 +548,7 @@ def train_qlora(
         "trainer_loss_path": runtime_defaults["trainer_loss_path"],
         "gradient_checkpointing": runtime_defaults["use_gradient_checkpointing"],
         "preserve_large_half_parameters": preserve_large_half_parameters,
+        "load_dtype": str(compute_dtype) if preserve_large_half_parameters else "pretrained_default",
     }
     (output_dir / "run_config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
 
