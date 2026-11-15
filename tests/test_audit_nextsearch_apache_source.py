@@ -72,8 +72,10 @@ def test_original_source_permission_and_task_id_disjoint_are_mandatory():
     with pytest.raises(ValueError,match="nonpermissive"):
         audit([bad],"sha")
     dup=task()
-    with pytest.raises(ValueError,match="duplicate"):
-        audit([row,dup],"sha")
+    paired=audit([row,dup],"sha")
+    assert paired["stats"]["duplicate_task_id_rows"]==1
+    assert paired["unique_task_ids"]==1
+    assert paired["unique_long_gold_exact_task_ids"]==1
 
 
 def test_malformed_tool_arguments_or_call_order_rejected():
