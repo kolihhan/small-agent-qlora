@@ -76,7 +76,8 @@ def main():
     required=("data_path","output_dir","model_name","max_length",
               "epochs","learning_rate","lora_r","lora_alpha",
               "lora_dropout","max_steps","save_steps","gradient_accumulation_steps",
-              "lora_target_modules","exposure_count","require_full_prompt")
+              "lora_target_modules","exposure_count","require_full_prompt",
+              "preserve_large_half_parameters")
     missing=sorted(set(required)-set(inspect.signature(train_qlora).parameters))
     if missing:
         raise RuntimeError("QLORA_V8_TRAIN_SIGNATURE_DRIFT:"+",".join(missing))
@@ -89,13 +90,14 @@ def main():
         lora_r=16,lora_alpha=32,lora_dropout=0.05,
         max_steps=MAX_STEPS,save_steps=50,gradient_accumulation_steps=8,
         lora_target_modules="all-linear",exposure_count=None,
-        require_full_prompt=True,
+        require_full_prompt=True,preserve_large_half_parameters=True,
     )
     weights=OUT/"adapter_model.safetensors"
     if not weights.is_file() or weights.stat().st_size<=1_000_000:
         raise RuntimeError("physical Qwen9B v8 LoRA checkpoint absent")
     cfg=json.loads((OUT/"run_config.json").read_text())
-    if cfg["training_examples"]!=798 or cfg["max_steps"]!=MAX_STEPS:
+    if (cfg["training_examples"]!=798 or cfg["max_steps"]!=MAX_STEPS
+        or cfg.get("preserve_large_half_parameters") is not True):
         raise ValueError("SFT training exposure/step mismatch")
     digest=sha256(weights.read_bytes()).hexdigest()
     final={
@@ -107,6 +109,7 @@ def main():
         "holdout_parents_unseen":35,
         "max_context":MAX_CONTEXT,"optimizer_steps":MAX_STEPS,
         "learning_rate":2e-5,"adapter_initialized":"from-base-not-v7",
+        "frozen_large_weights":"half_precision_no_fp32_upcast",
         "duration_s":round(time.monotonic()-start),
         "gaia_evaluated":False,"external_generalization":"NOT_EVALUATED",
     }
