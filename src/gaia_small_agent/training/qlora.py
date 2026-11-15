@@ -407,6 +407,24 @@ def _prepare_kbit_model_memory_safe(model, torch, *, gradient_checkpointing: boo
     return model
 
 
+def _validate_checkpoint_stop(pause_at_step: int | None, max_steps: int | None) -> int | None:
+    """Opt-in staged T4 job: stop early but retain the ORIGINAL full-run schedule."""
+    if pause_at_step is None:
+        return None
+    if (type(pause_at_step) is not int or type(max_steps) is not int
+            or not 1 <= pause_at_step < max_steps):
+        raise ValueError("stage checkpoint must be an integer strictly before full max_steps")
+    return pause_at_step
+
+
+def _checkpoint_stop_control(step: int, pause_at_step: int, control):
+    """Trainer must save optimizer, scheduler and RNG at the early pause step."""
+    if step >= pause_at_step:
+        control.should_save = True
+        control.should_training_stop = True
+    return control
+
+
 def train_qlora(
     data_path: str | Path,
     output_dir: str | Path,
@@ -428,7 +446,9 @@ def train_qlora(
     exposure_profile: str = "v3a-balanced",
     require_full_prompt: bool = False,
     preserve_large_half_parameters: bool = False,
+    pause_at_step: int | None = None,
 ) -> None:
+    pause_at_step = _validate_checkpoint_stop(pause_at_step, max_steps)
     rows = load_verified_rows(data_path, protected_questions_path=protected_questions_path)
     try:
         import torch
@@ -564,6 +584,7 @@ def train_qlora(
         "trainer_loss_path": runtime_defaults["trainer_loss_path"],
         "gradient_checkpointing": runtime_defaults["use_gradient_checkpointing"],
         "preserve_large_half_parameters": preserve_large_half_parameters,
+        "pause_at_step": pause_at_step,
         "load_dtype": str(compute_dtype) if preserve_large_half_parameters else "pretrained_default",
     }
     (output_dir / "run_config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
@@ -611,12 +632,39 @@ def train_qlora(
 
         trainer_cls = CpuSafeSFTTrainer
 
+    callbacks = []
+    if pause_at_step is not None:
+        from transformers import TrainerCallback
+
+        class SaveAndPauseCallback(TrainerCallback):
+            def on_step_end(self, args, state, control, **kwargs):
+                return _checkpoint_stop_control(state.global_step, pause_at_step, control)
+
+        callbacks.append(SaveAndPauseCallback())
+
     trainer = trainer_cls(
         model=language_model,
         args=config,
         train_dataset=dataset,
         processing_class=tokenizer,
+        callbacks=callbacks,
     )
     trainer.train(resume_from_checkpoint=str(resume_path) if resume_path else None)
+    if pause_at_step is not None:
+        if trainer.state.global_step != pause_at_step:
+            raise RuntimeError(
+                f"staged optimizer-step count drift: {trainer.state.global_step} != {pause_at_step}"
+            )
+        step_dir = output_dir / f"checkpoint-{pause_at_step}"
+        state_file = step_dir / "trainer_state.json"
+        if not state_file.is_file():
+            raise RuntimeError("staged trainer checkpoint absent")
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        if int(state.get("global_step", -1)) != pause_at_step:
+            raise RuntimeError("staged checkpoint optimizer-step report mismatch")
+        for filename in ("optimizer.pt", "scheduler.pt", "rng_state.pth"):
+            if not (step_dir / filename).is_file():
+                raise RuntimeError(f"staged checkpoint lacks {filename}")
+        print(f"QLORA_STAGE_DURABLE_READY step={pause_at_step} full_schedule={max_steps}",flush=True)
     trainer.save_model(str(output_dir))
     tokenizer.save_pretrained(str(output_dir))
