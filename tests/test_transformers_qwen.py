@@ -208,3 +208,34 @@ def test_complete_translates_marked_accelerator_error_only():
     unrelated.torch.AcceleratorError = AcceleratorError
     with pytest.raises(AcceleratorError, match="unrelated failure"):
         unrelated.complete([], [])
+
+
+def test_explicit_inference_t4_half_dtype_load_is_opt_in(monkeypatch):
+    # Same frozen Qwen dtype for both base and v8; default runtime remains unchanged.
+    import sys, types
+    seen = []
+    fake_torch = types.ModuleType("torch")
+    fake_torch.float16 = "fp16"
+    fake_torch.bfloat16 = "bf16"
+    fake_torch.cuda = types.SimpleNamespace(
+        is_available=lambda: True, is_bf16_supported=lambda: False
+    )
+    fake_transformers = types.ModuleType("transformers")
+    fake_transformers.AutoTokenizer = types.SimpleNamespace(
+        from_pretrained=lambda *a, **k: object()
+    )
+    class MockModel:
+        def eval(self):
+            return self
+    def loader(*a, **kwargs):
+        seen.append(kwargs)
+        return MockModel()
+    fake_transformers.AutoModelForCausalLM = types.SimpleNamespace(from_pretrained=loader)
+    fake_transformers.BitsAndBytesConfig = lambda **kwargs: kwargs
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+    TransformersQwenModel(quantize_4bit=True, load_compute_dtype=True)
+    TransformersQwenModel(quantize_4bit=True)
+    assert seen[0]["dtype"] == "fp16"
+    assert "dtype" not in seen[1]
+    assert seen[0]["quantization_config"]["bnb_4bit_compute_dtype"] == "fp16"

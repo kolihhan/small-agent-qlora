@@ -1,0 +1,181 @@
+name: Qwen3.5-9B verified v8 base-versus-adapter heldout GPU
+# Explicit one-shot marker only, no background GAIA or training.
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/qlora-v8-t4-preserve-frozen-half-20261115]
+    paths: [.github/QLORA_V8_HOLDOUT_EVAL_START]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: qlora-v8-colab-gpu-once-20261115
+  cancel-in-progress: false
+
+jobs:
+  paired-holdout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
+      COLAB_OAUTH_JSON: ${{ secrets.COLAB_OAUTH_JSON }}
+      COLAB_AUTH_JSON: ${{ secrets.COLAB_AUTH_JSON }}
+      COLAB_CREDENTIALS_JSON: ${{ secrets.COLAB_CREDENTIALS_JSON }}
+      GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+      GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+      GOOGLE_COLAB_CREDENTIALS: ${{ secrets.GOOGLE_COLAB_CREDENTIALS }}
+      COLAB_TOKEN: ${{ secrets.COLAB_TOKEN }}
+      COLAB_CLI_TOKEN: ${{ secrets.COLAB_CLI_TOKEN }}
+      GOOGLE_COLAB_TOKEN: ${{ secrets.GOOGLE_COLAB_TOKEN }}
+      COLAB_ACCESS_TOKEN: ${{ secrets.COLAB_ACCESS_TOKEN }}
+      HF_HUB_DISABLE_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Download frozen independently selected source + holdout, not GAIA
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43619541894
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: qlora-v8-protected-source-balanced-token-checked
+          path: inputs
+      - name: Download ONLY the successful Qwen9B v8 training adapter artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43671254880
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: qlora-v8-colab-l4-from-base-verified-if-trained
+          path: inputs/adapter
+      - name: "Fail closed before any GPU: verify exact checkpoint and holdout source"
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/colab_v8_holdout_remote.py
+          python - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+          import json, zipfile, os
+          from scripts.qlora_v8_holdout_paired import validate_inputs
+          audit=Path("inputs/qlora-v8-audit.json")
+          holdout=Path("inputs/qlora-v8-holdout.jsonl")
+          archive=Path("inputs/adapter/qlora-v8-adapter.zip")
+          assert archive.is_file() and archive.stat().st_size>1_000_000, "NO_VERIFIED_V8_ADAPTER"
+          with zipfile.ZipFile(archive) as z:
+              required={"adapter_model.safetensors","adapter_config.json","v8-verified-report.json","run_config.json"}
+              assert required.issubset(set(z.namelist()))
+              report=json.loads(z.read("v8-verified-report.json"))
+              assert report["source_sha"]=="6bf0b4f548781df1927ce063b7b701d2a2310719"
+              assert report["optimizer_steps"]==100
+              assert sha256(z.read("adapter_model.safetensors")).hexdigest()==report["checkpoint_sha256"]
+              from tempfile import TemporaryDirectory
+              with TemporaryDirectory() as td:
+                  for name in required:
+                      (Path(td)/name).write_bytes(z.read(name))
+                  proof=validate_inputs(holdout,audit,Path(td))
+                  assert len(proof["selected"])==70
+          src=Path("scripts/colab_v8_holdout_remote.py").read_text(encoding="utf-8")
+          assert 'SOURCE_SHA = "__SOURCE_SHA__"' in src
+          sha=os.environ["GITHUB_SHA"]
+          assert len(sha)==40
+          src=src.replace('SOURCE_SHA = "__SOURCE_SHA__"',f'SOURCE_SHA = "{sha}"')
+          Path("inputs/v8-holdout-gpu.py").write_text(src,encoding="utf-8")
+          print("QLORA_V8_EVAL_CHECKPOINT_AND_HOLDOUT_VERIFIED_NO_GPU",report["checkpoint_sha256"])
+          PY
+      - name: Authenticate existing Colab ADC credentials without logging secrets
+        run: |
+          set -euo pipefail
+          python -m pip install -q 'google-auth>=2.20' 'requests>=2.31' 'google-colab-cli==0.8.0'
+          python - <<'PY'
+          import json,os,pathlib
+          import google.auth
+          from google.auth.transport.requests import Request
+          names=("COLAB_ADC_JSON","COLAB_OAUTH_JSON","COLAB_AUTH_JSON",
+                 "COLAB_CREDENTIALS_JSON","GOOGLE_APPLICATION_CREDENTIALS_JSON",
+                 "GOOGLE_CREDENTIALS_JSON","GOOGLE_COLAB_CREDENTIALS",
+                 "COLAB_TOKEN","COLAB_CLI_TOKEN","GOOGLE_COLAB_TOKEN","COLAB_ACCESS_TOKEN")
+          creds=None
+          for name in names:
+              raw=os.environ.get(name,"").strip()
+              if not raw: continue
+              try: d=json.loads(raw)
+              except (ValueError,TypeError): continue
+              if not isinstance(d,dict): continue
+              if all(d.get(k) for k in ("client_id","client_secret","refresh_token")):
+                  creds={**d,"type":"authorized_user"}
+                  break
+              if d.get("type")=="service_account" and all(d.get(k) for k in ("private_key","client_email")):
+                  creds=d
+                  break
+          if creds is None:
+              raise RuntimeError("COLAB_AUTH_MISSING_ADC_COMPATIBLE_SECRET")
+          target=pathlib.Path(os.environ["RUNNER_TEMP"])/"colab-v8-adc.json"
+          target.write_text(json.dumps(creds))
+          target.chmod(0o600)
+          # Never add requested scopes to a refreshable user ADC:
+          # previously this caused invalid_scope. Read-only Colab sessions
+          # auth succeeded under the original consented grant (run 43622650283).
+          try:
+              auth,_=google.auth.load_credentials_from_file(str(target))
+              auth.refresh(Request())
+              assert auth.valid
+          except Exception as exc:
+              print("COLAB_V8_AUTH_FAILED",type(exc).__name__)
+              raise SystemExit(41)
+          with open(os.environ["GITHUB_ENV"],"a") as f:
+              f.write("GOOGLE_APPLICATION_CREDENTIALS="+str(target)+"\n")
+          print("COLAB_V8_AUTH_VALIDATED_NO_GPU")
+          PY
+      - name: Check only one Colab active assignment before attempting T4
+        run: |
+          set -euo pipefail
+          usage="$(timeout 90 colab --auth=adc usage)"
+          active="$(printf '%s\n' "$usage" | awk '/^Active assignments:/ {print $3}')"
+          if ! [[ "$active" =~ ^[0-9]+$ ]] || [ "$active" != "0" ]; then
+            echo "COLAB_V8_SLOT_BUSY_OR_UNVERIFIED; no GPU requested"
+            exit 75
+          fi
+          echo "COLAB_V8_ONE_GPU_SLOT_AVAILABLE"
+      - name: Compare same-Qwen BASE vs verified v8 QLoRA on frozen heldout
+        run: |
+          set -euo pipefail
+          session="qlora-v8-eval-${GITHUB_RUN_ID}"
+          mkdir -p exported
+          cleanup() { colab --auth=adc stop -s "$session" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          colab --auth=adc new -s "$session" --gpu T4
+          colab --auth=adc upload -s "$session" inputs/qlora-v8-holdout.jsonl /content/qlora-v8-holdout.jsonl
+          colab --auth=adc upload -s "$session" inputs/qlora-v8-audit.json /content/qlora-v8-audit.json
+          colab --auth=adc upload -s "$session" inputs/adapter/qlora-v8-adapter.zip /content/qlora-v8-adapter.zip
+          set +e
+          colab --auth=adc exec -s "$session" --timeout 1800 -f inputs/v8-holdout-gpu.py 2>&1 | tee "$RUNNER_TEMP/qlora-v8-holdout-colab.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          colab --auth=adc download -s "$session" /content/qlora-v8-heldout-paired.json exported/qlora-v8-heldout-paired.json || true
+          colab --auth=adc log -s "$session" -o exported/qlora-v8-heldout-runtime-notebook.ipynb || true
+          if [ "$rc" -ne 0 ]; then
+            echo "QLORA_V8_EVAL_FAILED rc=$rc; no transfer accuracy claims"
+            exit "$rc"
+          fi
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          p=Path("exported/qlora-v8-heldout-paired.json")
+          report=json.loads(p.read_text(encoding="utf-8"))
+          assert report["training_run_id"]==43671254880
+          assert report["model"]=="Qwen/Qwen3.5-9B"
+          assert report["score"]["total"]==70
+          assert report["score"]["promotion_allowed"] is False
+          assert report["score"]["rescues"]-report["score"]["regressions"]==report["score"]["adapter_correct"]-report["score"]["base_correct"]
+          print("QLORA_V8_REAL_MATCHED_NEXT_ACTION",report["score"]["base_correct"],report["score"]["adapter_correct"])
+          PY
+      - name: Always preserve proof and error evidence, never auto-promote
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qlora-v8-35parent-70action-matched-if-evaluated
+          path: exported/
+          if-no-files-found: warn
+          retention-days: 30

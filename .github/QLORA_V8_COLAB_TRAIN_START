@@ -27,3 +27,35 @@ run 43623352758. Colab CLI interrupted the silent model load after its
 30-second default idle deadline. This attempt uses the documented
 --timeout 1800 option; identical frozen data, Qwen9B, LR and optimizer steps.
 No further automatic retries.
+
+Attempt 7 (isolated root-cause OOM repair, one T4 run): prior run 43623680575
+actually OOMed before first optimizer step inside PEFT's half-to-fp32
+conversion of large frozen Qwen weights (3.79 GiB allocation). New draft PR #34
+keeps frozen embeddings/head at half precision, casts small norms to fp32,
+uses non-reentrant gradient checkpointing, preserves all 304/798 Qwen9B data,
+3200 full context, 100 optimizer steps, and previous QA holdout gates.
+CPU TDD red + green, Ubuntu/Windows CI success 43658297083.
+ONE GPU attempt authorized by user's request to continue improving original
+QLoRA. No repeat retry on failure. No checkpoint claim until SHA verified.
+
+Attempt 8 (explicit 2026-11-15 user GO): run 43658530171 overcame the 3.79-GiB
+upcast OOM and entered the real first backward pass, then failed with
+TRL BF16 addmm on T4 SM7.5 (requires SM8+). Current isolated code at
+42722e2a6820aedc781bee691e033c61c0e0c778 now loads Qwen9B's
+nonquantized weights in fp16 on T4 and checks no unsupported BF16 tensors;
+Ubuntu and Windows CI 43659234505 passed, 259 tests. Same 304/798 source,
+3200 context, 100 optimizer steps, Qwen base weights and 35 holdout.
+Trigger exactly once for measured new failure; no automatic retries.
+
+Attempt 9 (user explicit 'go', 2026-11-15 MY): prior run 43666964188
+failed at first TRL chunked-logprob BF16 addmm backward because optional
+out_dtype=float32 CUDA kernel requires SM8+; source 42722e2 also failed with
+FP16 unquantized weight preflight because the failing inputs came from
+TRL loss math. In source a45e611 the opt-in pre-SM8 compatibility path
+uses the ORIGINAL TRL native acc.addmm_(a.float(),b.float()) fallback instead;
+source f775716 adds a tiny *real CUDA T4* BF16 and FP16 _addmm_fp32
+preflight before model loading. Both OS tests green in CI 43671140563.
+One controlled Colab T4 run; fail closed on source/active-slot/preflight,
+no automatic retry, original Qwen/Qwen3.5-9B + 304 parents/798 actions,
+3200 untruncated tokens, 100 optimizer steps, 35 independent holdouts,
+NO GAIA training. Do not report adapter unless weights/checksum verified.

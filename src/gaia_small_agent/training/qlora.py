@@ -349,6 +349,64 @@ def _normalize_lora_target_modules(value: str | list[str]) -> str | list[str]:
     return modules
 
 
+def _configure_trl_legacy_addmm(kernel_module, *, capability: tuple[int, int]) -> bool:
+    """Use TRL's existing fp32 matmul fallback when CUDA lacks SM8 mixed out_dtype.
+
+    TRL's chunked-logprob backward optionally uses torch.addmm(...,
+    out_dtype=float32) for half/bfloat16 GEMM; that CUDA instruction requires
+    SM>=8. Disable only this optional fast path on older NVIDIA GPUs, retaining
+    TRL's own float32 accumulation fallback. No objective or model change.
+    """
+    if capability >= (8, 0):
+        return False
+    if not hasattr(kernel_module, "_MM_OUT_DTYPE"):
+        raise RuntimeError("TRL mixed-precision fallback contract changed")
+    kernel_module._MM_OUT_DTYPE = False
+    return True
+
+
+def _low_vram_load_kwargs(preserve_large_half_parameters: bool, compute_dtype):
+    """Avoid loading BF16 unquantized Qwen tensors on T4 (SM 7.5).
+
+    The old default remains untouched; the v8-only low-VRAM path explicitly
+    loads model embeddings/head in its selected fp16/bf16 compute precision.
+    """
+    return {"dtype": compute_dtype} if preserve_large_half_parameters else {}
+
+
+def _assert_cuda_precision_compatible(model, torch, *, cuda_bf16_supported: bool):
+    """Fail before an optimizer step if T4 would reach unsupported BF16 matmul."""
+    if cuda_bf16_supported:
+        return
+    for name, param in model.named_parameters():
+        if (param.dtype == torch.bfloat16
+                and param.__class__.__name__ != "Params4bit"):
+            raise RuntimeError(f"unsupported BF16 unquantized tensor on T4: {name}")
+
+
+def _prepare_kbit_model_memory_safe(model, torch, *, gradient_checkpointing: bool):
+    """Keep frozen Qwen embeddings in half precision on limited-VRAM GPUs.
+
+    PEFT's generic k-bit preparation upcasts every unquantized half tensor,
+    including huge frozen embeddings/lm_head. Only small norm weights need
+    the fp32 stability path; non-reentrant checkpointing does not require
+    gradients through frozen embeddings.
+    """
+    for param in model.parameters():
+        param.requires_grad_(False)
+    for module in model.modules():
+        if "norm" not in type(module).__name__.lower():
+            continue
+        for param in module.parameters(recurse=False):
+            if param.dtype in (torch.float16, torch.bfloat16):
+                param.data = param.data.to(torch.float32)
+    if gradient_checkpointing:
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
+    return model
+
+
 def train_qlora(
     data_path: str | Path,
     output_dir: str | Path,
@@ -369,6 +427,7 @@ def train_qlora(
     exposure_seed: str = "qlora-v3a-exposure",
     exposure_profile: str = "v3a-balanced",
     require_full_prompt: bool = False,
+    preserve_large_half_parameters: bool = False,
 ) -> None:
     rows = load_verified_rows(data_path, protected_questions_path=protected_questions_path)
     try:
@@ -399,11 +458,22 @@ def train_qlora(
         quantization_config=bnb,
         device_map="auto",
         trust_remote_code=True,
+        **_low_vram_load_kwargs(preserve_large_half_parameters, compute_dtype),
     )
-    language_model = prepare_model_for_kbit_training(
-        language_model,
-        use_gradient_checkpointing=runtime_defaults["use_gradient_checkpointing"],
-    )
+    if preserve_large_half_parameters:
+        language_model = _prepare_kbit_model_memory_safe(
+            language_model, torch,
+            gradient_checkpointing=runtime_defaults["use_gradient_checkpointing"],
+        )
+    else:
+        language_model = prepare_model_for_kbit_training(
+            language_model,
+            use_gradient_checkpointing=runtime_defaults["use_gradient_checkpointing"],
+        )
+    if preserve_large_half_parameters and cuda_available:
+        _assert_cuda_precision_compatible(
+            language_model, torch, cuda_bf16_supported=cuda_bf16_supported,
+        )
     target_modules = _normalize_lora_target_modules(lora_target_modules)
     peft_cfg = LoraConfig(
         r=lora_r,
@@ -493,6 +563,8 @@ def train_qlora(
         "scope": "text-only causal language model",
         "trainer_loss_path": runtime_defaults["trainer_loss_path"],
         "gradient_checkpointing": runtime_defaults["use_gradient_checkpointing"],
+        "preserve_large_half_parameters": preserve_large_half_parameters,
+        "load_dtype": str(compute_dtype) if preserve_large_half_parameters else "pretrained_default",
     }
     (output_dir / "run_config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
 
@@ -522,6 +594,14 @@ def train_qlora(
     else:
         config_kwargs["save_strategy"] = "epoch"
     config = SFTConfig(**config_kwargs)
+
+    if preserve_large_half_parameters and cuda_available:
+        from trl.kernels import chunked_logprob
+        if _configure_trl_legacy_addmm(
+            chunked_logprob,
+            capability=torch.cuda.get_device_capability(0),
+        ):
+            print("QLORA_T4_TRL_NATIVE_FP32_GEMM_FALLBACK_ENABLED", flush=True)
 
     trainer_cls = SFTTrainer
     if not cuda_available:
