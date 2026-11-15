@@ -27,3 +27,13 @@ run 43623352758. Colab CLI interrupted the silent model load after its
 30-second default idle deadline. This attempt uses the documented
 --timeout 1800 option; identical frozen data, Qwen9B, LR and optimizer steps.
 No further automatic retries.
+
+Attempt 7 (isolated root-cause OOM repair, one T4 run): prior run 43623680575
+actually OOMed before first optimizer step inside PEFT's half-to-fp32
+conversion of large frozen Qwen weights (3.79 GiB allocation). New draft PR #34
+keeps frozen embeddings/head at half precision, casts small norms to fp32,
+uses non-reentrant gradient checkpointing, preserves all 304/798 Qwen9B data,
+3200 full context, 100 optimizer steps, and previous QA holdout gates.
+CPU TDD red + green, Ubuntu/Windows CI success 43658297083.
+ONE GPU attempt authorized by user's request to continue improving original
+QLoRA. No repeat retry on failure. No checkpoint claim until SHA verified.
