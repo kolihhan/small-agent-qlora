@@ -47,6 +47,27 @@ def shapes(rows):
                         result["content_list_item_keys:"+",".join(sorted(v.keys()))]+=1
             keyset=",".join(sorted(msg))
             result["message_keys:"+keyset]+=1
+        # Tool calls missing feedback by original function name; distinguish
+        # intentional terminal submit from a broken intermediate observation.
+        calls={}
+        feedback=set()
+        for m in seq:
+            if not isinstance(m,dict):
+                continue
+            if m.get("role")=="assistant":
+                for c in m.get("tool_calls") or []:
+                    if isinstance(c,dict) and isinstance(c.get("id"),str):
+                        fn=c.get("function") or {}
+                        calls[c["id"]]=str(fn.get("name"))
+            elif m.get("role")=="tool":
+                if m.get("tool_call_id") is not None:
+                    feedback.add(str(m["tool_call_id"]))
+        for cid, name in calls.items():
+            result["call_function:"+name]+=1
+            if cid not in feedback:
+                result["missing_feedback_function:"+name]+=1
+        result["calls_missing_feedback_num:"+str(len(set(calls)-feedback))]+=1
+        result["final_role:"+str(seq[-1].get("role") if isinstance(seq[-1],dict) else type(seq[-1]).__name__)]+=1
         if len(examples)<3:
             examples.append({
                 "row_keys":sorted(row),
