@@ -90,8 +90,12 @@ class ConstrainedTerminalModel(OpenAICompatModel):
             "max_tokens":self.max_new_tokens,"temperature":0,
             "response_format":FINAL_SCHEMA,
         }
-        # No tools supplied, no tool_choice:auto, no augmented prompt,
-        # same preceding assistant/tool transcript as baseline.
+        # Exactly match the original OpenAICompatModel.complete_final payload
+        # apart from adding response_format. Original final uses
+        # tool_choice="none" WITH the original tools definitions present.
+        if tools:
+            payload["tools"]=tools
+            payload["tool_choice"]="none"
         try:
             response=requests.post(f"{self.base_url}/v1/chat/completions",
                                    json=payload,timeout=self.timeout_s)
