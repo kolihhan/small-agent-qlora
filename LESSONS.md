@@ -9,4 +9,6 @@
 7. [Unresolved] Current script is a local approximation to official GAIA normalization, repeated-seed score variance and objective taxonomy-label agreement are unmeasured.
 8. [Policy] No stronger model at inference. Only the pinned Qwen3.5-9B base plus controlled prompt/scaffold/tool/decoder/adapter changes; stronger teacher data require owner consent and disclosure.
 
+9. [Verified: Actions `43836875211`] An actual official scorer revision and local implementation agreed on all 123 synthetic numeric/string/list/None cases (0 mismatches, no GAIA data). Scorer agreement is separate from model accuracy; it does not make a reused GAIA validation subset a held-out test.
+
 Five-round decision audit: reopen any prior all-or-nothing verdict based on n smaller than the owner-approved gate as **insufficient evidence**; preserve negative evidence for the exact tested mechanism.
