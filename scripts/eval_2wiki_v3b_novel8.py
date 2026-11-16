@@ -24,7 +24,7 @@ ARMS = ("base", "v3b")
 def freeze_new(rows: list[dict]) -> dict:
     # Reproduce prior frozen source8 exactly, THEN screen them out along with
     # the originally exposed 2Wiki8 and all sixteen sets' support paths.
-    previous = linked.freeze(rows)
+    previous = linked.freeze(rows[:1500])
     prev_ids = {c["id"] for c in previous["cases"]}
     previous_paths = {
         path.split("/")[-1][:-4]
