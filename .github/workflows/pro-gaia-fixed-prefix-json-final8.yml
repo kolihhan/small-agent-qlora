@@ -5,7 +5,9 @@ on:
     branches: [experiment/gaia8-fixed-prefix-json-final-20261117]
     paths:
       - scripts/gaia_json_schema_prefix_replay8.py
+      - scripts/gaia_json_schema_terminal8.py
       - tests/test_gaia_json_schema_prefix_replay8.py
+      - tests/test_gaia_json_schema_terminal8.py
       - .github/workflows/pro-gaia-fixed-prefix-json-final8.yml
   workflow_dispatch:
 
@@ -37,6 +39,9 @@ jobs:
       - name: Verify protocol static tests without any model
         run: |
           set -euo pipefail
+          git log -1 --format=%H
+          grep -q 'payload["tool_choice"]="none"' scripts/gaia_json_schema_terminal8.py
+          grep -q 'python -m scripts.gaia_json_schema_prefix_replay8' .github/workflows/pro-gaia-fixed-prefix-json-final8.yml
           python -m pip install -e '.[dev,eval,search,files]'
           python -m pytest -q tests/test_gaia_json_schema_terminal8.py tests/test_gaia_json_schema_prefix_replay8.py
           python -m compileall -q scripts/gaia_json_schema_prefix_replay8.py
