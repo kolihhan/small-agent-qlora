@@ -1,0 +1,142 @@
+name: PRO Qwen9B v7 constrained terminal JSON GAIA8 diagnostic
+
+on:
+  push:
+    branches: [experiment/qwen9b-constrained-final-gaia8-smoke-20261117]
+    paths:
+      - scripts/gaia_json_schema_terminal8.py
+      - tests/test_gaia_json_schema_terminal8.py
+      - .github/workflows/pro-gaia-json-terminal8.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_SHA: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  V7_SHA: 475f5fb59a553390a0dde9425d36b42ff85a0345bdd31b8465c22fd4d2bc02e2
+
+jobs:
+  mechanism-paired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Verify protocol static tests without any model
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev,eval,search,files]'
+          python -m pytest -q tests/test_gaia_json_schema_terminal8.py
+          python -m compileall -q scripts/gaia_json_schema_terminal8.py
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43434228699
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: qlora-v7-converted-f16-gguf
+          path: adapters
+      - name: Verify immutable Qwen3.5-9B, v7 adapter, and llama.cpp
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 "$MODEL_URL" -o base.gguf
+          curl -fsSL --retry 5 "$LLAMA_URL" -o llama.tar.gz
+          echo "$MODEL_SHA  base.gguf" | sha256sum -c -
+          echo "$LLAMA_SHA  llama.tar.gz" | sha256sum -c -
+          echo "$V7_SHA  adapters/qlora-v7-adapter-f16.gguf" | sha256sum -c -
+          mkdir -p llama
+          tar -xzf llama.tar.gz -C llama
+          server=$(find "$PWD/llama" -type f -name llama-server -print -quit)
+          test -x "$server"
+          echo "LLAMA_SERVER=$server" >> "$GITHUB_ENV"
+      - name: Launch exact physical Qwen3.5-9B with same v7 LoRA
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$LLAMA_SERVER" -m base.gguf --lora adapters/qlora-v7-adapter-f16.gguf \
+            --alias qwen3.5-9b --host 127.0.0.1 --port 8080 \
+            --ctx-size 16384 --threads 4 --parallel 1 --jinja \
+            --reasoning-budget 0 --temperature 0 \
+            > "$RUNNER_TEMP/qwen9b-json-final-server.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..180}; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+      - name: Minimal real backend JSON-schema support smoke with ZERO GAIA task data
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,requests
+          from scripts.gaia_json_schema_terminal8 import FINAL_SCHEMA
+          payload={"model":"qwen3.5-9b","temperature":0,"max_tokens":64,
+                   "messages":[{"role":"user","content":"Return only the answer value: the capital of Finland is Helsinki."}],
+                   "response_format":FINAL_SCHEMA}
+          r=requests.post("http://127.0.0.1:8080/v1/chat/completions",json=payload,timeout=300)
+          r.raise_for_status()
+          value=r.json()["choices"][0]["message"]["content"]
+          o=json.loads(value)
+          assert set(o)=={"answer"} and isinstance(o["answer"],str) and o["answer"].strip()
+          print("CONSTRAINED_JSON_SCHEMA_ACTUAL_LLAMA_SERVER_SMOKE_SUCCESS")
+          PY
+      - name: Run genuine tool AgentRuntime for frozen two tasks x both terminal arms
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          SHARD: ${{ matrix.shard }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          python -m scripts.gaia_json_schema_terminal8 --shard "$SHARD" \
+            --output "gaia-json-terminal8-shard-$SHARD.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: gaia-json-terminal8-shard-${{ matrix.shard }}
+          path: gaia-json-terminal8-shard-${{ matrix.shard }}.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    if: always()
+    needs: mechanism-paired
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: gaia-json-terminal8-shard-*
+          path: original-shards
+          merge-multiple: true
+      - name: Require all eight identical case hashes / paired original and constrained result
+        run: |
+          set -euo pipefail
+          python -m scripts.gaia_json_schema_terminal8 \
+            --inputs original-shards/gaia-json-terminal8-shard-*.json \
+            --output gaia-json-terminal8-full.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: gaia-json-terminal8-complete-only
+          path: gaia-json-terminal8-full.json
+          if-no-files-found: warn
+          retention-days: 30
