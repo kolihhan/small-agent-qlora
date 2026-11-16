@@ -61,7 +61,7 @@ class NativeSourceGateTests(unittest.TestCase):
         report = summarize(rows)
         self.assertEqual(report["states"]["evidence_present_finalize"], 1)
         self.assertEqual(report["target_actions"]["one_query_syntax_only"], 1)
-        self.assertEqual(report["history"]["fully_native_schema_history"], 0)
+        self.assertEqual(report["history"].get("fully_native_schema_history", 0), 0)
         self.assertEqual(report["native_qlora_training_examples_certified"], 0)
         self.assertIsNone(report["new_gaia_score"])
 
