@@ -92,3 +92,20 @@ Matched paired success discordance: **8 original-only, 8 reminder-only**; no net
 ## GAIA100 original paired stop/finalization taxonomy (verified 2026-11-16)
 
 [CPU replay of 20 original physical shards, complete 100/100](https://github.com/kolihhan/small-agent-qlora/actions/runs/43906372492): original v7 26 correct, format reminder v7 26 correct; shared 18 correct; 8 original-only; 8 reminder-only; **66 both wrong**. On **those 66 jointly missed tasks**, original stop reasons were final-but-incorrect **9**, invalid_final **51**, model_error **5**, timeout **1**. Reminder: final-but-incorrect **14**, invalid_final **39**, model_error **5**, timeout **8**. The broader full100 original 39 finals/13 wrong finals/61 nonfinal; reminder 44 finals/18 wrong finals/56 nonfinal. A +5 final-count proxy was exactly a +5 wrong-final-count, with no net correct-answer gain. **Conclusion:** terminal-output reliability is an important failure bucket but generic format prompting did not improve correctness. Need trace-level tool/evidence/finalization annotation on source-independent data to distinguish insufficient facts from incorrect reasoning, output serialization and tool-budget failures. No new weights, hidden holdout score or causal explanation claimed; stop reasons are runtime categories only.
+
+
+## Causal terminal-only JSON Schema GAIA8: protocol improves, accuracy gate fails (2026-11-17)
+
+[Successful real pinned model / fixed-prefix run](https://github.com/kolihhan/small-agent-qlora/actions/runs/43918680792): **8/8 exact frozen previously seen GAIA DEV cases, 4/4 shards, aggregate SUCCESS.** Original pinned Qwen3.5-9B plus identical v7 adapter; same original tool transcript, tool-choice setting and system prompt. Experimental arm replays **only captured step12 final messages** with llama.cpp schema-constrained `{"answer":string}` decoding, then original unchanged GAIA scorer. Nonterminal cases are **not treated**. No new training, hidden test, or model swap.
+
+| Matched observed result | Original | JSON Schema terminal-only |
+| --- | ---: | ---: |
+| Strict correct on full exposed 8 | **5/8** | **6/8** |
+| Actually reached forced step 12 | 3 | same 3 |
+| Finalized among those 3 | **0/3** | **3/3** |
+| Correct among those 3 | **0/3** | **1/3** |
+| Invalid final among all 8 | 3 | 0 |
+| Previously correct early-stopping cases (untreated) | 4 | same 4 |
+| Extra model timeouts | 0 | 0 |
+
+**Scientifically relevant distinction:** format/protocol compliance **3/3** after forced decoding, but task success only **1/3**. Predeclared promotion-to-replication screen required >=2 true wrong→right rescues and no regressions; **FAILED**. Furthermore 4 prior-correct controls completed before step12, so absence of regression is not an actual negative-control test on previously correct terminal answers. One prior invalid case also stopped early on rerun and was untreated; the test is conditional on actual forced-terminal opportunity. Source selection was dependent on previously exposed outcomes, not an unbiased test. **Decision: no production/default change; PR #64 closed unmerged.** Earlier PR #63 reran entire agent arms separately and suffered tool-history differences, so it cannot isolate terminal decoding causally and was closed. Do not compare this +1/8 to historical GAIA100 v7 26/100 or 2Wiki LastLine 7→8/8; these differ in population/protocol.
