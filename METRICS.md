@@ -1,0 +1,56 @@
+# QLoRA Small Agent metric contract — 2026-11-16
+
+## Objective, model and scorer
+
+- Target: better **GAIA 2023 validation DEV** exact correctness with fixed **Qwen3.5-9B** base and independently verified tool-agent behavior. The historical Qwen3.5-4B early TinyAgent experiment is not the current base. No stronger inference-time model. Stronger teacher data require prior explicit consent and disclosure.
+- Scoring code: `src/gaia_small_agent/benchmark/scoring.py::gaia_score` mirrors official GAIA quasi-exact-match branch order: numeric answer comparison, comma/semicolon-delimited aligned list comparison, or normalized lowercase, no-whitespace, no-punctuation string comparison. This is a **locally implemented approximation**; an upstream scorer parity test is still required for an official-equivalence claim. No LLM judge.
+- Official score numerator: correct final answers; denominator: frozen distinct task IDs. Never use completion as a replacement. Log Level 1/2/3 denominators, accuracies, per-run and pooled statistics, answer formatting failures, and tool/cost metrics.
+- Existing frozen Evaluation100 (within GAIA validation) uses Level quotas **32/52/16**, revision `682dd723ee1e1697e00360edccf2366dc8418dd9` and selector in `src/gaia_small_agent/benchmark/gaia100.py`. Existing "evaluation" and "shadow" names in code are **all GAIA validation/dev**; they are NOT an independent out-of-sample test set and no repeated use can make them a holdout.
+
+## What has actually been measured
+
+| Cohort | Base | v3B | v3D | Provenance |
+| --- | --- | --- | --- | --- |
+| GAIA validation frozen 100, one matched deterministic run | 9/100, 45/100 final | 18/100, 44/100 final | 18/100, 25/100 final | Actions `38911211243`, `docs/gaia-v3d-results.md` |
+| Controlled deterministic 200, synthetic | 69/200 | 105/200 | 124/200 | Actions `38752732871`, `docs/v3d-results.md` |
+
+- [Verified: `docs/gaia-v3d-results.md`] v3B vs v3D: both right 13, v3B-only 5, v3D-only 5, both wrong 77; **no new GAIA correct answers in aggregate**. Final→nonfinal 20 vs nonfinal→final 1, exact paired McNemar p≈2.1e-5 for **finalization only**, NOT correctness. Tool calls v3B 784→v3D 876; duplicate blocks 66→127.
+- Level-level correctness for that 3-arm historical run is **not present in the checked-in aggregate note**. Do not invent; fetch task-level artifact before asserting by-level percentages.
+- [Verified: `results/final-gaia-v2-summary.json`] An **older and different** matched protocol recorded Base 12/100 and QLoRA 8/100. Do not pool/mix with v3B/v3D above.
+- [Verified: `docs/pro-research-gates.md`] Historical v8 training had no exported checkpoint after 50/100 steps. **Separate NextSearch 8-step T4 adapter** was physically completed (Actions `43732429711`, SHA `69deffc3ca0548778cf451332b76ee19073780d0490baba22193a36ed19c3508`), yet source-disjoint healthy 2Wiki VAL4 strict exact stayed **0/4→0/4** (Actions `43744326618`). No GAIA score exists for this new adapter; no generalization claim.
+
+## Statistical and repeatability gates
+
+- [Not yet met] Frozen identical runtime/scaffold/tools, budget (steps=12, max_new_tokens=512, timeout/context fixed), immutable model/adapter digests, temperature, data revision, and task IDs for **≥3 independent seeds/config repetitions**. Run no higher-stakes evaluation until precise manifest/cost approval; store complete trajectories per repetition.
+- Report by Level: each run exact successes / n, mean and sample SD across runs, exact pair discordance, paired bootstrap (task-ID clusters, 10,000 resamples) 95% CI and McNemar exact p for matched configurations. For repeated seeds, also bootstrap paired **task ID** across runs and report run-to-run variability separately; do not treat 3 repeats of the same task as n=3 independent tasks.
+- **Proposed gate (owner confirmation pending):** at least **200 distinct matched tasks** for a decisive large-cohort directional comparison; at least **30 discordant pairs** and bootstrap 95% CI excluding 0; independent task-family replication before production promotion. For GAIA only use the available validation data as exploratory DEV. If n/pairs are below the gate: **INSUFFICIENT EVIDENCE**, not universal rejection.
+- **A/A variance:** with exact same serialized model/input/runtime, run at least 3 separate seeds; capture exact final answer, individual score and frequency of format/stop changes. Fixed temperature=0 does NOT guarantee zero variance across server environments. Score variance currently **not quantified**.
+- Non-LLM grading, so human agreement is N/A for exact-answer scoring; qualitative failure-label inter-annotator agreement is NOT measured and must be separately estimated.
+
+## Failure taxonomy and diagnostics
+
+Primary mutually exclusive label with additional overlapping evidence flags: malformed tool call; wrong tool/arguments; search/read/transport failure; attachment/capability gap; reasoning/evidence selection error; incorrect final-answer format; step limit/duplicate looping; long-context overflow. Existing `benchmark/runner.py::classify_failure_label` is a **rule-based proxy**, not validated causal assignment. Report primary counts and % of failed cases, unresolved cases, and double-review agreement before treating taxonomy as fact.
+
+Known actionable *hypothesis* from historical trace: long searches with missed support paths and missing finalization. MuSiQue 8-task audit from PRO notes found 2/8 complete support-path visits in a diagnostic cohort; reference contained in passage is not proof the model used it. One prior generic short-final intervention on different 8 tasks produced 0/8→0/8 and must not be repeated on exposed questions.
+
+## Isolation / contamination / training
+
+- All GAIA public validation/diagnostic/shadow/evaluation partitions are **development**, ever-seen task IDs must have an exposure counter. Preserve distinct study cohorts; do not adjust selection until a score looks good.
+- QLoRA training source: verified non-GAIA tasks with distinct source families; exclude all GAIA question text, answers, attachments, near duplicates, and BIRD DEV questions/SQL. Audit exact hashes + normalized approximate similarity against complete reference corpora and inspect flagged pairs manually; **without full reference corpora, decontamination is UNVERIFIED**.
+- Four factorial arms, fixed frozen tasks: 00 base scaffold + base model; 10 prompt-only; 01 adapter-only; 11 prompt+adapter. Log base SHA, adapter SHA, train source SHA, prompt SHA, decoding params, tool schema, tool budget, seed, training cost. Require tool-JSON validity, general task and format regression suite after training.
+- Dataset split frozen in manifest, holdout never used to tune; GAIA validation cannot be described as untouched independent final holdout. No inference-time stronger model, no teacher without explicit prior permission.
+
+## Exposure ledger
+
+| Source | Known exposure | Status |
+| --- | --- | --- |
+| GAIA 2023 validation Evaluation100 | historical Base/v3B/v3D matched run + prior experiments | Seen DEV, true cumulative count not reconstructed |
+| GAIA Diagnostic25 and Shadow25 | prior development workflows/forensic use | Seen DEV; count requires artifact-ledger reconstruction |
+| MuSiQue source train-derived cohorts | ≥3 separate 8-task experiments plus audits; known 24 prior holdout questions exposed | No further tuning on these tasks |
+| New independent task-family test | Not frozen | BLOCKED until auditable source and labels exist |
+
+For every new run append task IDs hash, unique exposure number per cohort, artifacts, seeds, model/adapter/config hashes, and whether outputs/references were inspected.
+
+## Cost boundary
+
+Before experiments estimate `tasks × seeds × max_steps × max_new_tokens` upper-token bound, expected tool calls/latency, GPU-hours, and available budget. No automatic Colab retries or paid GPU runs. No GPU allocated in this documentation-only round.
