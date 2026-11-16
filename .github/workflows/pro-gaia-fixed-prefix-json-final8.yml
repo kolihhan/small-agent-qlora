@@ -100,8 +100,19 @@ jobs:
           assert set(o)=={"answer"} and isinstance(o["answer"],str) and o["answer"].strip()
           print("CONSTRAINED_JSON_SCHEMA_ACTUAL_LLAMA_SERVER_SMOKE_SUCCESS")
           PY
-          python -m scripts.gaia_json_schema_terminal8 --shard "$SHARD" \
+          python -m scripts.gaia_json_schema_prefix_replay8 --shard "$SHARD" \
             --output "gaia-fixed-prefix8-shard-$SHARD.json"
+          python - <<'PY'
+          import json,os,pathlib
+          p=pathlib.Path(f"gaia-fixed-prefix8-shard-{os.environ['SHARD']}.json")
+          r=json.loads(p.read_text())
+          assert r.get('protocol')=="GAIA8-QWEN35-V7-FIXED-PREFIX-JSON-TERMINAL-V1"
+          assert r.get('n')==2 and len(r.get('cases',[]))==2
+          for case in r['cases']:
+              assert case.get('terminal_reached') in (True,False)
+              assert "original" in case and "json_schema_final" in case
+          print("EXACT_PREFIX_REPLAY_OUTPUT_PROTOCOL_CHECKED")
+          PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -128,7 +139,7 @@ jobs:
       - name: Require eight identities and EXACT identical tool history before constrained replay
         run: |
           set -euo pipefail
-          python -m scripts.gaia_json_schema_terminal8 \
+          python -m scripts.gaia_json_schema_prefix_replay8 \
             --inputs original-shards/gaia-fixed-prefix8-shard-*.json \
             --output gaia-fixed-prefix8-full.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
