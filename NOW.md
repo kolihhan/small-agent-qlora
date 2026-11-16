@@ -12,4 +12,6 @@ Status: **METRIC / SOURCE-ISOLATION GATE**; model **Qwen3.5-9B** fixed.
 - [Verified: repo tree] GAIA scorer is project-local quasi-exact replica; no recorded official parity test, full ≥3-seed matched baseline, or comprehensive source-decontamination report. Failure labels are heuristic proxies.
 - [Blocked] Prior artifacts for per-Level v3B/v3D rates not available in current checked-in summary. No new 3-seed physical runs or adapter promotions claimed.
 
+- [Verified: Actions `43836875211`; `evidence/gaia-official-scorer-parity-synthetic.json`] Local GAIA scorer matched the pinned official leaderboard scorer at revision `1349a17` for **123/123 synthetic cases**, **0 mismatches**, and **0 GAIA question/answer exposures**. This checks scorer implementation only, not GAIA model accuracy or end-to-end scorer parity on every possible input.
+
 **One selected next experiment:** M0 (CPU-only audit of official-scorer parity, exposure/source hashes and error taxonomy without opening new answer labels); then owner-confirmed sample gate before any model calls. See `IDEAS.md`.

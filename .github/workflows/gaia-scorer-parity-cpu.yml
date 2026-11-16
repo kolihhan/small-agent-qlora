@@ -1,0 +1,65 @@
+name: GAIA scorer parity against pinned official reference (CPU)
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/gaia-scorer-parity-cpu.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  scorer-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install only scorer reference dependency
+        run: python -m pip install "numpy>=1.24,<3"
+      - name: Download exact-revision GAIA official leaderboard scorer
+        run: |
+          set -euo pipefail
+          mkdir -p .tmp-gaia-parity
+          curl -fL --retry 3 \
+            "https://huggingface.co/spaces/gaia-benchmark/leaderboard/resolve/1349a17/scorer.py" \
+            -o .tmp-gaia-parity/official_scorer.py
+          sha256sum .tmp-gaia-parity/official_scorer.py
+          grep -q "def question_scorer" .tmp-gaia-parity/official_scorer.py
+      - name: Compare local implementation to actual official scorer on synthetic cases
+        run: |
+          set -euo pipefail
+          python scripts/check_gaia_scorer_parity.py \
+            --official-scorer-file .tmp-gaia-parity/official_scorer.py \
+            --output .tmp-gaia-parity/parity.json
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          p=Path(".tmp-gaia-parity/parity.json")
+          x=json.loads(p.read_text())
+          assert x["status"]=="PASS" and x["mismatch_count"]==0
+          assert x["gaia_task_ids_exposed"]==x["gaia_gold_answers_exposed"]==0
+          x["official_reference"]="gaia-benchmark/leaderboard scorer.py at 1349a17"
+          x["official_scorer_sha256"]=hashlib.sha256(Path(".tmp-gaia-parity/official_scorer.py").read_bytes()).hexdigest()
+          p.write_text(json.dumps(x,sort_keys=True,indent=2)+"\n")
+          PY
+      - name: Upload synthetic-only parity report
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaia-official-scorer-parity-synthetic
+          path: .tmp-gaia-parity/parity.json
+          if-no-files-found: error
+      - name: Persist passed provenance on research branch only
+        if: github.ref_name == 'research/gaia-scorer-parity-20261116'
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          cp .tmp-gaia-parity/parity.json evidence/gaia-official-scorer-parity-synthetic.json
+          git add evidence/gaia-official-scorer-parity-synthetic.json
+          if git diff --cached --quiet; then
+            echo "Unchanged scorer evidence"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "evidence: official GAIA scorer parity on synthetic inputs"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi
