@@ -42,7 +42,8 @@ def test_only_final_request_has_json_schema_and_no_tools(monkeypatch):
     assert turn.content=="Helsinki" and not turn.tool_calls
     url,body,timeout=sent[0]
     assert body["response_format"]==FINAL_SCHEMA
-    assert "tools" not in body and "tool_choice" not in body
+    assert body["tools"]==[{"type":"function","function":{"name":"search"}}]
+    assert body["tool_choice"]=="none"
     assert body["temperature"]==0 and body["model"]=="qwen3.5-9b"
     assert len(body["messages"])==2
     assert url.endswith("/v1/chat/completions")
