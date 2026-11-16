@@ -11,4 +11,6 @@
 
 9. [Verified: Actions `43836875211`] An actual official scorer revision and local implementation agreed on all 123 synthetic numeric/string/list/None cases (0 mismatches, no GAIA data). Scorer agreement is separate from model accuracy; it does not make a reused GAIA validation subset a held-out test.
 
+10. [Verified: Actions `43844291341`] Pinned-source contamination audits can run without model calls, GAIA answer exposure or GPUs. The NextSearch48 source windows passed both 28-parent question exact/near text checking (2,000 reference questions) and 146-message complete-reference substring checking (GAIA466 questions + BIRD DEV1534 questions and 1534 SQLs), **0 flags**. This is necessary but not sufficient for a trustworthy trajectory adapter: paraphrases, attached files and independent verification of correct end-task outcomes remain open.
+
 Five-round decision audit: reopen any prior all-or-nothing verdict based on n smaller than the owner-approved gate as **insufficient evidence**; preserve negative evidence for the exact tested mechanism.

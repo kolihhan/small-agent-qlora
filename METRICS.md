@@ -41,6 +41,10 @@ Known actionable *hypothesis* from historical trace: long searches with missed s
 - Four factorial arms, fixed frozen tasks: 00 base scaffold + base model; 10 prompt-only; 01 adapter-only; 11 prompt+adapter. Log base SHA, adapter SHA, train source SHA, prompt SHA, decoding params, tool schema, tool budget, seed, training cost. Require tool-JSON validity, general task and format regression suite after training.
 - Dataset split frozen in manifest, holdout never used to tune; GAIA validation cannot be described as untouched independent final holdout. No inference-time stronger model, no teacher without explicit prior permission.
 
+## NextSearch TRAIN48 exact/near contamination evidence (2026-11-16)
+
+[Verified: GitHub Actions `43844291341`; `evidence/nextsearch48-cross-benchmark-screen-20261116.json`]: pinned training source `5420cfdb6111806a23b4bf6cb9cf04c77c75b5f0cf4af6c0b63727f312f40432` contains **48 source action windows / 28 parent questions**. Against SHA-pinned original GAIA validation165 + test301 question metadata at revision `682dd723ee1e1697e00360edccf2366dc8418dd9` and all BIRD DEV1534 questions: **0 exact/strong-lexical-near parent-question matches**. Second pass scanned **146 unique complete training user/assistant/tool/system message/answer texts**, finding **0 embedded exact full-reference GAIA questions or BIRD DEV questions/SQL**. Both are lexical screens, not semantic paraphrase, attachment, or independent answer-success validation. Training labels remain sourced from publisher rather than re-executed successful agent episodes. This is **NO GAIA gain / NO ADAPTER PROMOTION**.
+
 ## Exposure ledger
 
 | Source | Known exposure | Status |
