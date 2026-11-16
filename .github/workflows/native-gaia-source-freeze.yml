@@ -68,7 +68,7 @@ jobs:
           PY
       - name: Retain frozen native TRAIN-only source and exact report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4086f43607fa02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: native-qwen9b-train40-full-original-observations
           path: |
