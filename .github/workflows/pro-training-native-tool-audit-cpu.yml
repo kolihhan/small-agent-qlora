@@ -1,0 +1,56 @@
+name: PRO train supervision vs native tool contract (CPU)
+
+on:
+  push:
+    branches:
+      - research/pro-target-tool-schema-audit-20261116
+    paths:
+      - scripts/audit_supervision_tool_contract.py
+      - tests/test_audit_supervision_tool_contract.py
+      - .github/workflows/pro-training-native-tool-audit-cpu.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  real-source-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[dev]"
+      - name: Source-free regression tests
+        run: python -m pytest -q tests/test_audit_supervision_tool_contract.py
+      - name: Download immutable NextSearch original 48 windows
+        uses: actions/download-artifact@v4
+        with:
+          name: nextsearch-full-context-balanced-source-4k-sft-v0
+          run-id: 43726123262
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          path: /tmp/source-nextsearch
+      - name: Download immutable original native HotpotQA + 2Wiki 40 windows
+        uses: actions/download-artifact@v4
+        with:
+          name: native-qwen9b-train40-full-original-observations
+          run-id: 43805393197
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          path: /tmp/source-native
+      - name: Audit actual selected assistant/tool actions against GAIA default_tools()
+        run: |
+          python -m scripts.audit_supervision_tool_contract \
+            --nextsearch /tmp/source-nextsearch/nextsearch-balanced-source-states-4k.jsonl \
+            --native /tmp/source-native/native-qwen9b-train40.jsonl \
+            --output evidence/pro-native-tool-supervision-audit-20261116.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pro-native-tool-supervision-evidence
+          path: evidence/pro-native-tool-supervision-audit-20261116.json
+          if-no-files-found: warn
