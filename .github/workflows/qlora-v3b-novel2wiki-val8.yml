@@ -1,0 +1,72 @@
+name: Qwen9B Base vs v3B 2Wiki new VALIDATION8
+on:
+  push:
+    branches: [experiment/qlora-v3b-novel2wiki-val8-20261116]
+    paths: [scripts/eval_2wiki_v3b_novel8.py, scripts/run_v3b_2wiki_pair.sh, .github/workflows/qlora-v3b-novel2wiki-val8.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  freeze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e '.[eval,dev]'
+      - run: python -m scripts.eval_2wiki_v3b_novel8 --freeze --output frozen.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source-2wiki-v3b8
+          path: frozen.json
+  paired:
+    needs: freeze
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e .
+      - uses: actions/download-artifact@v4
+        with:
+          name: source-2wiki-v3b8
+      - uses: actions/download-artifact@v4
+        with:
+          name: qwen35-9b-qlora-v3b-gguf
+          path: adapter
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 38156235327
+      - run: bash scripts/run_v3b_2wiki_pair.sh ${{ matrix.shard }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: source-2wiki-v3b-pair-${{ matrix.shard }}
+          path: results/case-*.json
+          if-no-files-found: warn
+  aggregate:
+    needs: paired
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: source-2wiki-v3b-pair-*
+          path: results
+          merge-multiple: true
+      - run: python -m scripts.eval_2wiki_v3b_novel8 --inputs results/case-*.json --output v3b-prospective8.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: source-2wiki-v3b8-summary
+          path: v3b-prospective8.json
+          if-no-files-found: warn
