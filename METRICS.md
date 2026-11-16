@@ -67,3 +67,24 @@ Before experiments estimate `tasks × seeds × max_steps × max_new_tokens` uppe
 - [Physically matched closed-loop 2Wiki VAL8](https://github.com/kolihhan/small-agent-qlora/actions/runs/43892091237): 8/8 original frozen public source cases, Base **1/8** strict exact, native40 adapter **2/8**, paired 1 rescue/0 regressions. Both arms 58 successful local search/read calls, 0 errors, six tasks with all 4 annotated support docs observed. Public source already exposed in related prior evaluations; not hidden and **not GAIA**. Native40 has no validated GAIA score.
 - [CPU-only immutable after-the-fact rendering audit](https://github.com/kolihhan/small-agent-qlora/actions/runs/43901267208): original raw replies and reference answers independently loaded by the scorer; extraction function reads **only the last nonempty assistant output line** and removes an explicit Answer prefix and paired Markdown, never gold/question/support. Same 8 previously scored replies: **Base 1/8 raw → 7/8 post-hoc**, **Native40 2/8 raw → 8/8 post-hoc**; **6 format-only rescues per arm**, 0 rendering regressions. Source/original answer hashes, original scores and both paired arms validated, 10 CPU tests passed. Last-line results are diagnostics and must NEVER replace stored original GAIA/2Wiki scores. Non-standard output extraction may corrupt numeric/list or explanation-ending questions, and is not shown generalized here.
 - **Research decision:** do not extend LoRA steps or call +1/8 a reasoning breakthrough. First freeze a genuinely source-independent task family and evaluate the same unmodified answer contract under unchanged base/adapter inference, score raw and extracted side-by-side; preserve per-case evidence acquisition, finalization, reasoning-vs-format errors. A broader independent source is required before any GAIA claim.
+
+
+## Completed physical v7 generic-format GAIA100 matched replication (2026-11-16)
+
+[Verified successful 20/20 inference shards and strict aggregate](https://github.com/kolihhan/small-agent-qlora/actions/runs/43865621132): pinned Qwen3.5-9B GGUF and same v7 adapter in both arms. Frozen previously exposed GAIA validation Evaluation100; exactly **100/100 paired** results on original vs generic format reminder, not hidden and not new adapter weight training.
+
+| Metric | Original v7 | Same v7 + format reminder |
+| --- | ---: | ---: |
+| Strict task success | **26/100** | **26/100** |
+| Level1 (32) | 11 | 9 |
+| Level2 (52) | 13 | 15 |
+| Level3 (16) | 2 | 2 |
+| Finalized | 39 | 44 |
+| Model timeouts | 2 | 10 |
+| Invalid final | 54 | 40 |
+| Tool calls | 790 | 737 |
+| Tool errors | 51 | 58 |
+| Duplicate blocks | 91 | 60 |
+| Mean case latency (s) | 431.07 | 424.54 |
+
+Matched paired success discordance: **8 original-only, 8 reminder-only**; no net success gain. Completion improved by 5 but correctness did not, tool errors and model timeouts increased. **Decision: NO PROMOTION.** Better proxy metrics cannot substitute for GAIA correct answers. Do not compare 26/100 v7 against historical v3B18/100 as causal improvement because runtime, model adapters and protocol differ between experiments. The earlier 2Wiki VAL8 post-hoc final-line extraction effect is a different, narrow public-task diagnosis, not a demonstrated GAIA fix.
