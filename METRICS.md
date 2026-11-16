@@ -17,7 +17,7 @@
 - [Verified: `docs/gaia-v3d-results.md`] v3B vs v3D: both right 13, v3B-only 5, v3D-only 5, both wrong 77; **no new GAIA correct answers in aggregate**. Final→nonfinal 20 vs nonfinal→final 1, exact paired McNemar p≈2.1e-5 for **finalization only**, NOT correctness. Tool calls v3B 784→v3D 876; duplicate blocks 66→127.
 - Level-level correctness for that 3-arm historical run is **not present in the checked-in aggregate note**. Do not invent; fetch task-level artifact before asserting by-level percentages.
 - [Verified: `results/final-gaia-v2-summary.json`] An **older and different** matched protocol recorded Base 12/100 and QLoRA 8/100. Do not pool/mix with v3B/v3D above.
-- [Verified: `docs/pro-research-gates.md`] v8 training had no physical exported checkpoint after 50/100 steps; no v8 GAIA score.
+- [Verified: `docs/pro-research-gates.md`] Historical v8 training had no exported checkpoint after 50/100 steps. **Separate NextSearch 8-step T4 adapter** was physically completed (Actions `43732429711`, SHA `69deffc3ca0548778cf451332b76ee19073780d0490baba22193a36ed19c3508`), yet source-disjoint healthy 2Wiki VAL4 strict exact stayed **0/4→0/4** (Actions `43744326618`). No GAIA score exists for this new adapter; no generalization claim.
 
 ## Statistical and repeatability gates
 
