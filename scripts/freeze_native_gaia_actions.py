@@ -107,7 +107,7 @@ def eligible_actions(rows):
     return candidates
 
 
-def freeze(rows, *, per_kind=24):
+def freeze(rows, *, per_kind=20):
     choices = eligible_actions(rows)
     chosen, used = [], set()
     # Allocate the scarcer original action class first, maximizing parent-disjoint coverage.
