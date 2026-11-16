@@ -1,0 +1,11 @@
+{
+  "gaia_gold_answers_exposed": 0,
+  "gaia_task_ids_exposed": 0,
+  "mismatch_count": 0,
+  "mismatches": [],
+  "n_synthetic": 123,
+  "note": "Parity on these synthetic cases only; not proof across every possible official input.",
+  "official_reference": "gaia-benchmark/leaderboard scorer.py at 1349a17",
+  "official_scorer_sha256": "0d44c07f3046eec521697c22e3eaca8719cc81e422a8eaf32695c5f22bdac6e2",
+  "status": "PASS"
+}
