@@ -1,0 +1,54 @@
+name: FinQA TRAIN candidate evidence gate (no GPU)
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/v7-finqa-numeric20-20261114]
+    paths: [.github/workflows/qlora-finqa-train-source-gate.yml]
+permissions:
+  contents: read
+
+jobs:
+  frozen-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Verify selection and source exclusion logic
+        run: |
+          python -m pip install -e '.[dev]'
+          python -m pytest -q tests/test_prepare_finqa_teacher_train.py tests/test_finqa_numeric_v7_transfer20.py
+      - name: Download and verify official immutable FinQA TRAIN and DEV bytes
+        run: |
+          set -euo pipefail
+          mkdir -p runs
+          curl -fsSL --retry 5 'https://raw.githubusercontent.com/czyssrs/FinQA/0f16e2867befa6840783e58be38c9efb9229d742/dataset/train.json' -o runs/finqa-train.json
+          curl -fsSL --retry 5 'https://raw.githubusercontent.com/czyssrs/FinQA/0f16e2867befa6840783e58be38c9efb9229d742/dataset/dev.json' -o runs/finqa-dev.json
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          expected = {'train':'a6c2c5a60f9abe3fba5a793cc4d9e1dee2e09209',
+                      'dev':'970f239f591c782b17df420c0d343b780737f3da'}
+          for split, sha in expected.items():
+              data=Path(f'runs/finqa-{split}.json').read_bytes()
+              actual=hashlib.sha1(f'blob {len(data)}\0'.encode()+data).hexdigest()
+              if actual != sha:
+                  raise ValueError(f'{split} Git blob checksum drift')
+              print('FINQA_PINNED_SOURCE',split,len(data),actual)
+          PY
+      - name: Select independent 16-parent verified-numeric training candidates
+        run: |
+          python -m scripts.prepare_finqa_teacher_train \
+            --train runs/finqa-train.json --dev runs/finqa-dev.json \
+            --limit 16 --output runs/finqa-train-candidate16.jsonl \
+            --report runs/finqa-candidate16-audit.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: finqa-train-candidate16-source-only
+          path: |
+            runs/finqa-train-candidate16.jsonl
+            runs/finqa-candidate16-audit.json
+          if-no-files-found: error
+          retention-days: 30
