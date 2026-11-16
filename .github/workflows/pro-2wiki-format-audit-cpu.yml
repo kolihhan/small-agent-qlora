@@ -1,0 +1,55 @@
+name: PRO CPU-only answer-format confound screen on immutable 2Wiki outputs
+
+on:
+  push:
+    branches: [research/gaia-answer-format-confound-audit-20261116]
+    paths:
+      - scripts/audit_2wiki_answer_format_confound.py
+      - tests/test_audit_2wiki_answer_format_confound.py
+      - .github/workflows/pro-2wiki-format-audit-cpu.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  physical-source-formatter-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install -e '.[dev]'
+          python -m pytest -q tests/test_audit_2wiki_answer_format_confound.py
+      - name: Recover SHA-frozen original 2Wiki VALIDATION8 source
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 43712873154
+          github-token: ${{ github.token }}
+          name: 2wiki-original-source-cohort-frozen
+          path: original-source
+      - name: Recover physically generated Qwen original/native40 8-case paired answers
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 43892091237
+          github-token: ${{ github.token }}
+          name: qwen9b-native40-local-2wiki-val8-base-vs-adapter
+          path: original-pair
+      - name: Score unchanged raw answers vs gold-blind last-line rendering on existing 8 cases
+        run: |
+          python -m scripts.audit_2wiki_answer_format_confound \
+            --paired original-pair/qwen9b-native40-2wiki-local-val8-pair.json \
+            --source original-source/2wiki-linked-frozen.json \
+            --out evidence/2wiki-native40-answer-format-diagnostic.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pro-native40-2wiki-answer-format-confound
+          path: evidence/2wiki-native40-answer-format-diagnostic.json
+          if-no-files-found: error
+          retention-days: 30
