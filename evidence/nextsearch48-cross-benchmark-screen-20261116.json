@@ -1,0 +1,60 @@
+{
+  "schema_version": "nextsearch48-cross-benchmark-source-screen/v1",
+  "status": "PASS_TWO_LEXICAL_SCREENS_ONLY",
+  "evidence_level": "VERIFIED_PHYSICAL_CPU_RUN",
+  "run_id": 43844291341,
+  "artifact_id": 14214796398,
+  "run_url": "https://github.com/kolihhan/small-agent-qlora/actions/runs/43844291341",
+  "train": {
+    "source": "NextTokenAI/NextSearch-1-Trajectories",
+    "source_revision": "d32183c6289d32c5d51b6247e68d53a58dddd495",
+    "source_split": "train",
+    "rows": 48,
+    "distinct_parent_tasks": 28,
+    "artifact_sha256": "5420cfdb6111806a23b4bf6cb9cf04c77c75b5f0cf4af6c0b63727f312f40432",
+    "training_labels_independently_replayed": false
+  },
+  "reference_sources": {
+    "gaia_validation": {
+      "rows": 165,
+      "dataset_revision": "682dd723ee1e1697e00360edccf2366dc8418dd9",
+      "parquet_sha256": "d9141bad0081af438d1ee36d188c5197035dc22a01f64e3f2ee17e45469518e9"
+    },
+    "gaia_test": {
+      "rows": 301,
+      "dataset_revision": "682dd723ee1e1697e00360edccf2366dc8418dd9",
+      "parquet_sha256": "6fab73b48acadd363b4082d283d542702356177c76a0fc8ea84568978d4181d7"
+    },
+    "bird_dev": {
+      "rows": 1534,
+      "source_sha256": "ffd8018378ddb1a8794753e0a31cfc81862ff7318a5184c22f3dc4ce03a03feb"
+    }
+  },
+  "screens": {
+    "parent_question_exact_and_lexical_near": {
+      "train_distinct_parent_tasks": 28,
+      "reference_questions": 2000,
+      "flag_count": 0,
+      "status": "PASS_LEXICAL_SCREEN_ONLY"
+    },
+    "all_training_message_exact_reference_subspans": {
+      "unique_messages": 146,
+      "reference_gaia_questions": 466,
+      "bird_dev_questions_and_sql": 3068,
+      "flag_count": 0,
+      "status": "PASS_EXACT_SPAN_SCREEN_ONLY"
+    }
+  },
+  "gpu_hours": 0,
+  "model_calls": 0,
+  "new_gaia_benchmark_evaluations": 0,
+  "training_started": false,
+  "adapter_promoted": false,
+  "limits": [
+    "No semantic-paraphrase contamination proof; only exact/near parent questions and exact full-reference message spans.",
+    "Does not inspect attachments or validate train trajectories against independent task reexecution.",
+    "Training verified=True refers to publisher reference and source trace, not independently proven end-task correctness.",
+    "No inference-time base switch or teacher use; no new GAIA gain from this audit."
+  ],
+  "next_gate": "Independent validation of training trajectory outcomes on source-disjoint tasks before any new QLoRA training/promotion."
+}
