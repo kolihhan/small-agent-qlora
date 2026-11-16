@@ -68,11 +68,24 @@ jobs:
             --gaia-test .tmp-cross-audit/gaia/test.jsonl \
             --output .tmp-cross-audit/nextsearch-vs-gaia-bird-report.json || true
           test -s .tmp-cross-audit/nextsearch-vs-gaia-bird-report.json
+      - name: Full training transcript exact-subspan screen (BIRD SQL included)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/audit_nextsearch_span_overlap.py \
+            --train .tmp-cross-audit/train/nextsearch-balanced-source-states-4k.jsonl \
+            --bird .tmp-cross-audit/bird_dev.json \
+            --gaia-validation .tmp-cross-audit/gaia/validation.jsonl \
+            --gaia-test .tmp-cross-audit/gaia/test.jsonl \
+            --output .tmp-cross-audit/nextsearch-all-messages-span-report.json || true
+          test -s .tmp-cross-audit/nextsearch-all-messages-span-report.json
       - name: Upload ONLY sanitized hash/count evidence
         uses: actions/upload-artifact@v4
         with:
           name: nextsearch-source48-cross-contamination-hashed-report
-          path: .tmp-cross-audit/nextsearch-vs-gaia-bird-report.json
+          path: |
+            .tmp-cross-audit/nextsearch-vs-gaia-bird-report.json
+            .tmp-cross-audit/nextsearch-all-messages-span-report.json
           if-no-files-found: error
       - name: Require no near or exact flags; never silently pass
         shell: bash
@@ -82,6 +95,8 @@ jobs:
           from pathlib import Path
           row=json.loads(Path(".tmp-cross-audit/nextsearch-vs-gaia-bird-report.json").read_text())
           print("CROSS_CORPUS_AUDIT_STATUS",row["status"],"FLAGGED",row.get("total_flag_count","BLOCKED"))
-          if row["status"]!="PASS_LEXICAL_SCREEN_ONLY":
+          span=json.loads(Path(".tmp-cross-audit/nextsearch-all-messages-span-report.json").read_text())
+          print("FULL_TRANSCRIPT_SPAN_STATUS",span["status"],"FLAGGED",span.get("flag_total","BLOCKED"))
+          if row["status"]!="PASS_LEXICAL_SCREEN_ONLY" or span["status"]!="PASS_EXACT_SPAN_SCREEN_ONLY":
               raise SystemExit("Fail-closed; training source requires manual review")
           PY
