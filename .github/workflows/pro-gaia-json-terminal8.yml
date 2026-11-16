@@ -61,26 +61,32 @@ jobs:
           server=$(find "$PWD/llama" -type f -name llama-server -print -quit)
           test -x "$server"
           echo "LLAMA_SERVER=$server" >> "$GITHUB_ENV"
-      - name: Launch exact physical Qwen3.5-9B with same v7 LoRA
+      - name: Launch pinned server, smoke constrained backend, and physically run frozen GAIA pairs
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          SHARD: ${{ matrix.shard }}
         shell: bash
         run: |
           set -euo pipefail
+          test -n "$HF_TOKEN"
           "$LLAMA_SERVER" -m base.gguf --lora adapters/qlora-v7-adapter-f16.gguf \
             --alias qwen3.5-9b --host 127.0.0.1 --port 8080 \
             --ctx-size 16384 --threads 4 --parallel 1 --jinja \
             --reasoning-budget 0 --temperature 0 \
             > "$RUNNER_TEMP/qwen9b-json-final-server.log" 2>&1 &
           pid=$!
-          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          cleanup() { kill "$pid" 2>/dev/null || true; }
+          trap cleanup EXIT
           for i in {1..180}; do
             if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then break; fi
+            if ! kill -0 "$pid" >/dev/null 2>&1; then
+              echo "LLAMA_SERVER_CRASHED"
+              tail -100 "$RUNNER_TEMP/qwen9b-json-final-server.log" || true
+              exit 1
+            fi
             sleep 2
           done
           curl -fsS http://127.0.0.1:8080/health >/dev/null
-      - name: Minimal real backend JSON-schema support smoke with ZERO GAIA task data
-        shell: bash
-        run: |
-          set -euo pipefail
           python - <<'PY'
           import json,requests
           from scripts.gaia_json_schema_terminal8 import FINAL_SCHEMA
@@ -94,14 +100,6 @@ jobs:
           assert set(o)=={"answer"} and isinstance(o["answer"],str) and o["answer"].strip()
           print("CONSTRAINED_JSON_SCHEMA_ACTUAL_LLAMA_SERVER_SMOKE_SUCCESS")
           PY
-      - name: Run genuine tool AgentRuntime for frozen two tasks x both terminal arms
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          SHARD: ${{ matrix.shard }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "$HF_TOKEN"
           python -m scripts.gaia_json_schema_terminal8 --shard "$SHARD" \
             --output "gaia-json-terminal8-shard-$SHARD.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
