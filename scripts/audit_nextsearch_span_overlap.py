@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 import sys
 
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from scripts.audit_nextsearch_vs_gaia_bird import (
     TRAIN_SHA, BIRD_SHA, norm, read_json, read_jsonl, extract_train,
     extract_reference, MIN_GAIA_TEST, MIN_GAIA_VALIDATION, sha
