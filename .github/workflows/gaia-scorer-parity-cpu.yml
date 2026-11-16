@@ -21,7 +21,7 @@ jobs:
           set -euo pipefail
           mkdir -p .tmp-gaia-parity
           curl -fL --retry 3 \
-            "https://huggingface.co/spaces/gaia-benchmark/leaderboard/resolve/5e9f7f7c67c844123b3dd035973d5738ae513282/scorer.py" \
+            "https://huggingface.co/spaces/gaia-benchmark/leaderboard/resolve/1349a17/scorer.py" \
             -o .tmp-gaia-parity/official_scorer.py
           sha256sum .tmp-gaia-parity/official_scorer.py
           grep -q "def question_scorer" .tmp-gaia-parity/official_scorer.py
@@ -38,7 +38,7 @@ jobs:
           x=json.loads(p.read_text())
           assert x["status"]=="PASS" and x["mismatch_count"]==0
           assert x["gaia_task_ids_exposed"]==x["gaia_gold_answers_exposed"]==0
-          x["official_reference"]="gaia-benchmark/leaderboard scorer.py at 5e9f7f7c67c844123b3dd035973d5738ae513282"
+          x["official_reference"]="gaia-benchmark/leaderboard scorer.py at 1349a17"
           x["official_scorer_sha256"]=hashlib.sha256(Path(".tmp-gaia-parity/official_scorer.py").read_bytes()).hexdigest()
           p.write_text(json.dumps(x,sort_keys=True,indent=2)+"\n")
           PY
