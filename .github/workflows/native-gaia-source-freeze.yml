@@ -1,0 +1,78 @@
+name: PRO original Qwen9B native read/search SFT source freeze (CPU, no training)
+on:
+  push:
+    branches: [experiment/qwen9b-native-multisource-train-freeze-20261116]
+    paths:
+      - scripts/freeze_native_gaia_actions.py
+      - tests/test_freeze_native_gaia_actions.py
+      - .github/workflows/native-gaia-source-freeze.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  source-freeze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Verify native action safeguards (no inference)
+        run: |
+          python -m pip install -e '.[dev,files]'
+          python -m pytest -q tests/test_freeze_native_gaia_actions.py
+      - name: Restore original verified v7 native tool trajectories (not GAIA)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43396613861
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: qlora-v7-unique-balanced-train-validation
+          path: inputs/v7
+      - name: Freeze 24 actual native next-tool and 24 evidence-to-final actions
+        run: |
+          python -m scripts.freeze_native_gaia_actions \
+            --input inputs/v7/qlora-v7-train.jsonl \
+            --output native-qwen9b-train48.jsonl \
+            --report native-qwen9b-audit.json
+      - name: Verify original Qwen9B tool messages, FULL prompt context, no label truncation
+        run: |
+          python -m pip install 'transformers>=5.15,<6' 'jinja2>=3.1' 'sentencepiece>=0.2'
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from transformers import AutoTokenizer
+          from gaia_small_agent.training.qlora import (
+              load_verified_rows, _render_turn_examples, _tokenize_completion_examples
+          )
+          report=json.loads(Path('native-qwen9b-audit.json').read_text())
+          assert report['parent_distinct']==48 and report['GAIA_supervision']==0
+          assert report['selected_actions']=={'tool_call':24,'final':24}
+          t=AutoTokenizer.from_pretrained('Qwen/Qwen3.5-9B',
+               revision='c202236235762e1c871ad0ccb60c8ee5ba337b9a',
+               trust_remote_code=True)
+          rows=load_verified_rows('native-qwen9b-train48.jsonl')
+          rendered=_render_turn_examples(t,rows)
+          assert len(rendered)==48
+          tokenized=_tokenize_completion_examples(
+               t, rendered, max_length=4096, require_full_prompt=True)
+          assert len(tokenized)==48
+          report['max_train_tokens']=max(len(x['input_ids']) for x in tokenized)
+          report['full_prompt_complete']=True
+          report['actual_GPU_steps']=0
+          Path('native-qwen9b-audit.json').write_text(json.dumps(
+              report,sort_keys=True,indent=2)+'\n')
+          print('NATIVE_QWEN9B_48_ACTUAL_SOURCE_ACTIONS_4K_VERIFIED',report,flush=True)
+          PY
+      - name: Retain frozen native TRAIN-only source and exact report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-qwen9b-train48-full-original-observations
+          path: |
+            native-qwen9b-train48.jsonl
+            native-qwen9b-audit.json
+          if-no-files-found: warn
+          retention-days: 30
