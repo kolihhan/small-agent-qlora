@@ -5,6 +5,7 @@
 - **Hypothesis:** without matching official scoring, frozen IDs, repeated seeds and decontamination we cannot identify real GAIA gain.
 - **Predeclared pass:** scripted scorer parity against approved reference edge cases, reproducible Level-based DEV manifest, per-cohort exposure audit, and audited GAIA+BIRD DEV exclusion corpora. Missing full references must yield **BLOCKED**, not silent pass.
 - **Estimated cost:** 0 GPU-hours; 0 model/tool calls; CPU-only tests. No score can be promoted.
+- **Source audit update [Verified: Actions `43844291341`]:** 48 NextSearch source windows / 28 parents screened against **GAIA validation165 + test301 + BIRD DEV1534** with 0 exact/strong-near parent-question overlaps; full 146 training message text spans versus all GAIA questions and BIRD DEV question/SQL texts had 0 exact embedded-reference matches. **LEXICAL SOURCE SCREEN PASS, NOT TRAINING-PROMOTION PASS**; semantic paraphrases, attachments, independent task-success verification and a new source-independent GAIA evaluation remain unverified.
 - **Status [Verified: Actions `43836875211`]:** actual SHA-pinned official scorer parity tested on **123 synthetic cases, 0 mismatches**, without reading any GAIA task; the remaining M0 gates (full GAIA/BIRD source overlap audit, historical exposure ledger, ≥3 independent seeds/Level) remain **BLOCKED**, not passed. No agent model gain.
 
 ## M1: hard agent failures on external source-disjoint tasks
