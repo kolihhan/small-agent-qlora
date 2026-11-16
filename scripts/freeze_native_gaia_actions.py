@@ -110,7 +110,10 @@ def eligible_actions(rows):
 def freeze(rows, *, per_kind=24):
     choices = eligible_actions(rows)
     chosen, used = [], set()
-    for kind in ("tool_call", "final"):
+    # Allocate the scarcer original action class first, maximizing parent-disjoint coverage.
+    # This is source-only curation; no evaluation questions or GAIA labels are consulted.
+    kinds = sorted(choices, key=lambda k: len({item[1]["task_id"] for item in choices[k]}))
+    for kind in kinds:
         count = 0
         for _, row, idx, obs in sorted(choices[kind]):
             if row["task_id"] in used:
