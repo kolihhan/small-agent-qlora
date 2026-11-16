@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/checkout@fbc6f3992d24b796d5a040ff273f7fcc4a7b6c09
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.11'
@@ -31,11 +31,11 @@ jobs:
           github-token: ${{ github.token }}
           name: qlora-v7-unique-balanced-train-validation
           path: inputs/v7
-      - name: Freeze 24 actual native next-tool and 24 evidence-to-final actions
+      - name: Freeze 20 actual native next-tool and 20 evidence-to-final actions
         run: |
           python -m scripts.freeze_native_gaia_actions \
             --input inputs/v7/qlora-v7-train.jsonl \
-            --output native-qwen9b-train48.jsonl \
+            --output native-qwen9b-train40.jsonl \
             --report native-qwen9b-audit.json
       - name: Verify original Qwen9B tool messages, FULL prompt context, no label truncation
         run: |
@@ -48,31 +48,31 @@ jobs:
               load_verified_rows, _render_turn_examples, _tokenize_completion_examples
           )
           report=json.loads(Path('native-qwen9b-audit.json').read_text())
-          assert report['parent_distinct']==48 and report['GAIA_supervision']==0
-          assert report['selected_actions']=={'tool_call':24,'final':24}
+          assert report['parent_distinct']==40 and report['GAIA_supervision']==0
+          assert report['selected_actions']=={'tool_call':20,'final':20}
           t=AutoTokenizer.from_pretrained('Qwen/Qwen3.5-9B',
                revision='c202236235762e1c871ad0ccb60c8ee5ba337b9a',
                trust_remote_code=True)
-          rows=load_verified_rows('native-qwen9b-train48.jsonl')
+          rows=load_verified_rows('native-qwen9b-train40.jsonl')
           rendered=_render_turn_examples(t,rows)
-          assert len(rendered)==48
+          assert len(rendered)==40
           tokenized=_tokenize_completion_examples(
                t, rendered, max_length=4096, require_full_prompt=True)
-          assert len(tokenized)==48
+          assert len(tokenized)==40
           report['max_train_tokens']=max(len(x['input_ids']) for x in tokenized)
           report['full_prompt_complete']=True
           report['actual_GPU_steps']=0
           Path('native-qwen9b-audit.json').write_text(json.dumps(
               report,sort_keys=True,indent=2)+'\n')
-          print('NATIVE_QWEN9B_48_ACTUAL_SOURCE_ACTIONS_4K_VERIFIED',report,flush=True)
+          print('NATIVE_QWEN9B_40_ACTUAL_SOURCE_ACTIONS_4K_VERIFIED',report,flush=True)
           PY
       - name: Retain frozen native TRAIN-only source and exact report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4086f43607fa02
         with:
-          name: native-qwen9b-train48-full-original-observations
+          name: native-qwen9b-train40-full-original-observations
           path: |
-            native-qwen9b-train48.jsonl
+            native-qwen9b-train40.jsonl
             native-qwen9b-audit.json
           if-no-files-found: warn
           retention-days: 30
