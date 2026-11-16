@@ -32,6 +32,7 @@ jobs:
           python -m scripts.audit_nextsearch_native_compatibility \
             --source inputs/nextsearch-balanced-source-states-4k.jsonl \
             --output native-gaia-source-compatibility.json
+          python -c "import json; r=json.load(open('native-gaia-source-compatibility.json')); assert r['native_qlora_training_examples_certified']==0 and r['new_gaia_score'] is None"
       - name: Preserve only aggregate tool contract and source checksums
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
