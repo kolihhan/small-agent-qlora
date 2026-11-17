@@ -1,0 +1,131 @@
+name: PRO 2Wiki8 physical Base-v7 x serializer (CPU only)
+on:
+  push:
+    branches: [experiment/gaia-protected-v7-factorial-2wiki8-20261117]
+    paths:
+      - scripts/eval_2wiki8_v7_factorial.py
+      - tests/test_eval_2wiki8_v7_factorial.py
+      - .github/workflows/pro-v7-2wiki8-factorial-cpu.yml
+  pull_request:
+    types: [synchronize]
+    branches: [experiment/qwen9b-2wiki-serializer-confirm48-20261117]
+    paths:
+      - scripts/eval_2wiki8_v7_factorial.py
+      - tests/test_eval_2wiki8_v7_factorial.py
+      - .github/workflows/pro-v7-2wiki8-factorial-cpu.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+env:
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_SHA: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  V7_SHA: 475f5fb59a553390a0dde9425d36b42ff85a0345bdd31b8465c22fd4d2bc02e2
+jobs:
+  freeze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - run: |
+          python -m pip install -e '.[eval,files,dev]'
+          python -m pytest -q tests/test_eval_2wiki8_v7_factorial.py
+          python -m compileall -q scripts/eval_2wiki8_v7_factorial.py
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: {repository: kolihhan/small-agent-qlora, run-id: 43712873154, github-token: "${{ github.token }}", name: 2wiki-original-source-cohort-frozen, path: prior-linked}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: {repository: kolihhan/small-agent-qlora, run-id: 43862358318, github-token: "${{ github.token }}", name: source-2wiki-body8, path: prior-novel}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: {repository: kolihhan/small-agent-qlora, run-id: 44016763563, github-token: "${{ github.token }}", name: qwen9b-2wiki16-serializer-new-source-locked, path: prior-positive16}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: {repository: kolihhan/small-agent-qlora, run-id: 44022276727, github-token: "${{ github.token }}", name: qwen9b-2wiki48-serializer-new-source-locked, path: prior-positive48}
+      - name: Frozen eight new cases after previously tested 40+48
+        run: |
+          set -euo pipefail
+          python -m scripts.eval_2wiki8_v7_factorial --source-only \
+            --prior-linked prior-linked/2wiki-linked-frozen.json \
+            --prior-novel prior-novel/frozen.json \
+            --prior-confirmed prior-positive16/2wiki16-serializer-source-frozen.json \
+            --prior-48 prior-positive48/2wiki48-serializer-source-frozen.json \
+            --output factorial-new8-source-frozen.json
+          python - <<'PY'
+          import json
+          f=json.load(open('factorial-new8-source-frozen.json'))
+          assert f['n']==8 and f['new_support_doc_paths']==32
+          print('FACTORIAL_FROZEN_SHA',f['source_sha'])
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with: {name: qwen9b-v7-factorial-new8-source-frozen, path: factorial-new8-source-frozen.json, if-no-files-found: error, retention-days: 30}
+  paired:
+    needs: freeze
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3]
+        mode: [base,adapter]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - run: python -m pip install -e '.[eval,files]'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: {name: qwen9b-v7-factorial-new8-source-frozen}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: {run-id: 43434228699, repository: kolihhan/small-agent-qlora, github-token: "${{ github.token }}", name: qlora-v7-converted-f16-gguf, path: adapters}
+      - name: Pin base and adapter GGUF checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 "$MODEL_URL" -o base.gguf
+          curl -fsSL --retry 5 "$LLAMA_URL" -o llama.tar.gz
+          echo "$MODEL_SHA  base.gguf" | sha256sum -c -
+          echo "$LLAMA_SHA  llama.tar.gz" | sha256sum -c -
+          echo "$V7_SHA  adapters/qlora-v7-adapter-f16.gguf" | sha256sum -c -
+          mkdir -p llama
+          tar -xzf llama.tar.gz -C llama
+          server=$(find "$PWD/llama" -type f -name llama-server -print -quit)
+          test -x "$server"
+          echo "LLAMA_SERVER=$server" >> "$GITHUB_ENV"
+      - name: Real paired Qwen9B inference with fixed local tools
+        shell: bash
+        env: {MODE: "${{ matrix.mode }}", SHARD: "${{ matrix.shard }}"}
+        run: |
+          set -euo pipefail
+          args=(-m base.gguf --alias qwen3.5-9b --host 127.0.0.1 --port 8080 --ctx-size 16384 --threads 4 --parallel 1 --jinja --reasoning-budget 0 --temperature 0)
+          if [ "$MODE" = adapter ]; then args+=(--lora adapters/qlora-v7-adapter-f16.gguf); fi
+          "$LLAMA_SERVER" "${args[@]}" > "$RUNNER_TEMP/factorial-$MODE-$SHARD.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..180}; do curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 && break; sleep 2; done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+          python -m scripts.eval_2wiki8_v7_factorial \
+            --frozen factorial-new8-source-frozen.json --mode "$MODE" --shard "$SHARD" \
+            --output "factorial-$MODE-$SHARD.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with: {name: "factorial-qwen9b-${{ matrix.mode }}-${{ matrix.shard }}", path: factorial-*.json, if-no-files-found: warn, retention-days: 30}
+  aggregate:
+    if: always()
+    needs: paired
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - run: python -m pip install -e '.[eval,files]'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: {pattern: 'factorial-qwen9b-*', path: shards, merge-multiple: true}
+      - run: |
+          set -euo pipefail
+          python -m scripts.eval_2wiki8_v7_factorial --inputs shards/factorial-base-*.json shards/factorial-adapter-*.json --output factorial-qwen9b-complete.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with: {name: qwen9b-v7-factorial-new8-complete-only, path: factorial-qwen9b-complete.json, if-no-files-found: warn, retention-days: 30}
