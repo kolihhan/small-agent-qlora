@@ -76,5 +76,34 @@
     "Hotpot types bridge/comparison but many entertainment topics",
     "model-specific native trajectories differ",
     "no source-independent hidden GAIA evaluation"
-  ]
+  ],
+  "by_type": {
+    "bridge": {
+      "n": 4,
+      "base_native_correct": 1,
+      "base_serializer_correct": 2,
+      "v7_native_correct": 2,
+      "v7_serializer_correct": 2,
+      "base_native_calls": 14,
+      "v7_native_calls": 19,
+      "base_native_tools": 11,
+      "v7_native_tools": 16,
+      "base_native_completed": 4,
+      "v7_native_completed": 4
+    },
+    "comparison": {
+      "n": 4,
+      "base_native_correct": 0,
+      "base_serializer_correct": 2,
+      "v7_native_correct": 0,
+      "v7_serializer_correct": 2,
+      "base_native_calls": 10,
+      "v7_native_calls": 21,
+      "base_native_tools": 11,
+      "v7_native_tools": 25,
+      "base_native_completed": 4,
+      "v7_native_completed": 3
+    }
+  },
+  "new_hypothesis": "v7 LoRA may induce over-exploration/invalid finalization in comparison tasks, but n=4 and no training-causality inference; test fresh disjoint tasks with controlled step cap/stop policy, rather than blindly scaling training steps."
 }
