@@ -121,6 +121,22 @@ jobs:
           assert not r['official_reference_trace_is_proven_necessary']
           print('APPWORLD_ACTION_REPLAY_STATE',r['counts'])
           PY
+      - name: Counterfactual task state when one late original TRAIN API action is omitted
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest -q tests/test_audit_appworld_train_action_ablation.py
+          python -m scripts.audit_appworld_train_action_ablation \
+            --out appworld-original-train-late-action-ablation-aggregate-only.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          x=json.loads(Path('appworld-original-train-late-action-ablation-aggregate-only.json').read_text())
+          assert x['no_decrypted_reference_data_exported'] and x['no_training']
+          assert x['no_GAIA_or_DEV_or_TEST_data']
+          assert x['counts']['source_tasks']==8
+          print('APPWORLD_LATE_ACTION_ABLATION_STATE',x['counts'])
+          PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: appworld-original-train-dev-reference-api-horizon-aggregates-only
@@ -128,5 +144,6 @@ jobs:
             appworld-original-train-dev-aggregate-only.json
             appworld-original-train-reference-state-replay-aggregate-only.json
             appworld-original-train-request-replay-state-results-only.json
+            appworld-original-train-late-action-ablation-aggregate-only.json
           if-no-files-found: error
           retention-days: 30
