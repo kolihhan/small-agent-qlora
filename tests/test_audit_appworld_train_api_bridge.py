@@ -67,3 +67,15 @@ def test_unmapped_actions_are_categorized_not_auto_skipped_when_business():
     assert m.request_category({"method":"post","url":"/supervisor/complete_task","data":{}})=="supervisor"
     assert m.request_category({"method":"get","url":"/spotify/search","data":{}})=="business"
     assert m.request_category({"url":""})=="malformed"
+
+
+def test_public_supervisor_get_is_opt_in_only_and_never_private_write():
+    d=_docs()
+    d["supervisor"]["show_profile"]={"method":"GET","path":"/supervisor/show_profile"}
+    d["supervisor"]["delete_database"]={"method":"POST","path":"/supervisor/delete_database"}
+    original=m.public_route_lookup(d,["spotify"])
+    expanded=m.public_route_lookup(d,["spotify"],allow_supervisor_public_reads=True)
+    expected={"method":"get","url":"/supervisor/show_profile","data":{}}
+    assert m.match_public_request(expected,original)[0]=="unmapped"
+    assert m.match_public_request(expected,expanded)[0]=="mapped"
+    assert m.match_public_request({"method":"post","url":"/supervisor/delete_database","data":{}},expanded)[0]=="unmapped"
