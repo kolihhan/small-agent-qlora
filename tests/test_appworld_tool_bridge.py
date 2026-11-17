@@ -89,3 +89,34 @@ def test_root_api_discovery_explicitly_surfaces_optin_public_supervisor_reads():
     assert json.loads(AppWorldDocsTool(w,allow_supervisor_public_reads=True).run({
       "app":"supervisor"},Path(".")).content)["apis"]==[
       "complete_task","show_account","show_profile"]
+
+
+def test_docs_activation_and_http_status_diagnostics_never_export_private_body():
+    """Instrument why an affordance is unused without changing the student view."""
+    w=world()
+    w.task.api_docs["supervisor"]={
+      "show_profile":{"method":"GET","description":"Public read","path":"/supervisor/show_profile"},
+      "secret_write":{"method":"POST","path":"/supervisor/secret_write"},
+    }
+    docs=AppWorldDocsTool(w,allow_supervisor_public_reads=True)
+    assert docs.run({},Path(".")).ok
+    assert docs.run({"app":"supervisor"},Path(".")).ok
+    assert docs.run({"app":"supervisor","api":"show_profile"},Path(".")).ok
+    assert (docs.root_discovery_calls,docs.supervisor_list_calls,
+            docs.supervisor_detail_calls)==(1,1,1)
+
+    class FailingRequester:
+        def request(self, **kwargs):
+            raise RuntimeError("Response status code is 422: private task details")
+    w.requester=FailingRequester()
+    caller=AppWorldCallTool(w,report_http_failures=True,
+                            allow_supervisor_public_reads=True)
+    result=caller.run({"app":"supervisor","api":"show_profile",
+                       "arguments":{}},Path("."))
+    assert not result.ok and result.error_code=="HTTP_ERROR"
+    assert caller.http_errors==1 and caller.http_status_counts=={"422":1}
+    assert "private task details" not in result.content
+    # Undocumented writes never reach the requester or alter HTTP counters.
+    assert caller.run({"app":"supervisor","api":"secret_write",
+                       "arguments":{}},Path(".")).error_code=="API_DENIED"
+    assert caller.http_status_counts=={"422":1}
