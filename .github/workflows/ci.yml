@@ -88,9 +88,27 @@ jobs:
           assert o["train"]["n"]>=60 and o["dev"]["n"]>=20
           print('APPWORLD_CPU_REF_FEASIBLE_TASKS6PLUS',o['train']['tasks_with_6plus_business_calls'])
           PY
+      - name: Replay eight distinct TRAIN gold references privately, evaluate real AppWorld state
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest -q tests/test_replay_appworld_train_reference.py
+          python -m scripts.replay_appworld_train_reference \
+            --out appworld-original-train-reference-state-replay-aggregate-only.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          o=json.loads(Path('appworld-original-train-reference-state-replay-aggregate-only.json').read_text())
+          assert o['n']==8 and o['split']=='train'
+          assert not o['training_labels_ready']
+          assert o['dev_or_test_content_loaded'] is False
+          print('APPWORLD_TRAIN_ONLY_REFERENCE_STATE_REPLAY_COUNTS',o['counts'])
+          PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: appworld-original-train-dev-reference-api-horizon-aggregates-only
-          path: appworld-original-train-dev-aggregate-only.json
+          path: |
+            appworld-original-train-dev-aggregate-only.json
+            appworld-original-train-reference-state-replay-aggregate-only.json
           if-no-files-found: error
           retention-days: 30
