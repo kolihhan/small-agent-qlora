@@ -1,0 +1,109 @@
+{
+  "date": "2026-11-17",
+  "status": "VERIFIED_ALL_8_PHYSICAL_SHARDS_AND_STRICT_AGGREGATE_SUCCESS",
+  "run_id": 44037729128,
+  "artifact_id": 14309000564,
+  "source_sha256": "249591c8b085a6fa16fc9092538dcd29aa117af23a8dbc31a8fdd5c37321f6e0",
+  "n": 8,
+  "types": {
+    "bridge": 4,
+    "comparison": 4
+  },
+  "old_ids_excluded": 24,
+  "model": "Qwen3.5-9B Q4_K_M GGUF",
+  "adapter": "original v7 LoRA",
+  "four_arms": {
+    "base_native": {
+      "correct": 1,
+      "completed": 8,
+      "calls": 24,
+      "elapsed_s": 505.88
+    },
+    "base_serializer": {
+      "correct": 4,
+      "completed": 8,
+      "calls": 32,
+      "elapsed_s": 575.82
+    },
+    "adapter_native": {
+      "correct": 2,
+      "completed": 7,
+      "calls": 40,
+      "elapsed_s": 847.29
+    },
+    "adapter_serializer": {
+      "correct": 4,
+      "completed": 7,
+      "calls": 47,
+      "elapsed_s": 911.32
+    }
+  },
+  "paired": {
+    "base_native_to_base_serializer": {
+      "rescues": 3,
+      "regressions": 0,
+      "net": 3,
+      "exact_p": 0.25
+    },
+    "adapter_native_to_adapter_serializer": {
+      "rescues": 2,
+      "regressions": 0,
+      "net": 2,
+      "exact_p": 0.5
+    },
+    "base_native_to_adapter_native": {
+      "rescues": 1,
+      "regressions": 0,
+      "net": 1,
+      "exact_p": 1
+    },
+    "base_serializer_to_adapter_serializer": {
+      "rescues": 1,
+      "regressions": 1,
+      "net": 0,
+      "exact_p": 1
+    }
+  },
+  "effect": "gold-blind same-base verbatim answer extraction rescues correct QA in both arms; adapter yields no advantage after formatter, more calls, one task noncompletion",
+  "comparison_with_prior_2wiki8": "previous source film-heavy 2Wiki8 Base 1→8/8, v7 2→7/8. Hotpot bridge/comparison shows Base 1→4/8, v7 2→4/8. These are different small public cohorts; not GAIA/hidden.",
+  "gaia_change": 0,
+  "training_steps": 0,
+  "production_change": false,
+  "allowed_promotion": false,
+  "limitations": [
+    "n8 too small for robust estimator",
+    "public source, possible pretraining",
+    "Hotpot types bridge/comparison but many entertainment topics",
+    "model-specific native trajectories differ",
+    "no source-independent hidden GAIA evaluation"
+  ],
+  "by_type": {
+    "bridge": {
+      "n": 4,
+      "base_native_correct": 1,
+      "base_serializer_correct": 2,
+      "v7_native_correct": 2,
+      "v7_serializer_correct": 2,
+      "base_native_calls": 14,
+      "v7_native_calls": 19,
+      "base_native_tools": 11,
+      "v7_native_tools": 16,
+      "base_native_completed": 4,
+      "v7_native_completed": 4
+    },
+    "comparison": {
+      "n": 4,
+      "base_native_correct": 0,
+      "base_serializer_correct": 2,
+      "v7_native_correct": 0,
+      "v7_serializer_correct": 2,
+      "base_native_calls": 10,
+      "v7_native_calls": 21,
+      "base_native_tools": 11,
+      "v7_native_tools": 25,
+      "base_native_completed": 4,
+      "v7_native_completed": 3
+    }
+  },
+  "new_hypothesis": "v7 LoRA may induce over-exploration/invalid finalization in comparison tasks, but n=4 and no training-causality inference; test fresh disjoint tasks with controlled step cap/stop policy, rather than blindly scaling training steps."
+}
