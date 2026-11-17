@@ -9,7 +9,7 @@ from scripts import appworld_dev57_fixed_metrics as m
 def test_main_roster_fails_closed_on_unverified_task_ids():
     ids=[f"scene{i//3}_{i%3+1}" for i in range(57)]
     assert len({x.split("_",1)[0] for x in ids})==19
-    with pytest.raises(ValueError,match="source"):
+    with pytest.raises(ValueError,match="identity/scenario drift"):
         m.freeze_official_dev(ids)
     assert m.N==57 and m.SCENARIOS==19
     assert m.EXPOSED_PILOTS==8
