@@ -36,10 +36,48 @@ def _looks_like_textual_tool_call(content: str) -> bool:
 
 
 class AgentRuntime:
-    def __init__(self, model: Model, tools: list[Tool], max_steps: int = 12):
+    def __init__(self, model: Model, tools: list[Tool], max_steps: int = 12, *, terminal_recovery: bool = False):
         self.model = model
         self.tools = {tool.name: tool for tool in tools}
         self.max_steps = max_steps
+        self.terminal_recovery = terminal_recovery
+
+    def _recover_final(self, messages, tool_definitions, trace, metrics, step, original_reason) -> AgentResult:
+        """Try one extra answer-only call, using observed evidence but no new tools.
+
+        This is an inference-time treatment, not new QLoRA learning. A final
+        message is still scored for correctness by the independent benchmark.
+        """
+        trace.append(TraceEvent("terminal_recovery_attempt", step, {"original_stop": original_reason}))
+        updated_messages = [*messages, {
+            "role": "user",
+            "content": (
+                "Tool access is finished. No earlier requested tool call was executed. "
+                "Answer using ONLY information in observations already received. "
+                "Return the shortest supported final answer, or say unknown if "
+                "the evidence does not support an answer. Do not include tool markup, "
+                "new tool requests, or speculative facts."
+            ),
+        }]
+        metrics.terminal_recovery_calls += 1
+        try:
+            complete_final = getattr(self.model, "complete_final", None)
+            if callable(complete_final):
+                reply = complete_final(updated_messages, tool_definitions)
+            else:
+                reply = self.model.complete(updated_messages, [])
+        except ModelCapacityError:
+            trace.append(TraceEvent("terminal_recovery_failed", step, {"reason": "model_capacity"}))
+            return AgentResult("", False, original_reason, trace, metrics)
+        except ModelRuntimeError as exc:
+            trace.append(TraceEvent("terminal_recovery_failed", step, {"reason": exc.stop_reason}))
+            return AgentResult("", False, original_reason, trace, metrics)
+        answer = (reply.content or "").strip()
+        if reply.tool_calls or not answer or _looks_like_textual_tool_call(answer):
+            trace.append(TraceEvent("terminal_recovery_failed", step, {"reason": "invalid_final"}))
+            return AgentResult("", False, original_reason, trace, metrics)
+        trace.append(TraceEvent("terminal_recovery_final", step, {"answer": answer}))
+        return AgentResult(answer, True, "terminal_recovery_final", trace, metrics)
 
     def run(self, question: str, workspace: str | Path) -> AgentResult:
         workspace = Path(workspace)
@@ -76,15 +114,21 @@ class AgentRuntime:
             if not turn.tool_calls:
                 answer = (turn.content or "").strip()
                 if not answer:
+                    if final_only and self.terminal_recovery:
+                        return self._recover_final(messages, tool_definitions, trace, metrics, step, "empty_final")
                     trace.append(TraceEvent("empty_final", step, {}))
                     return AgentResult("", False, "empty_final", trace, metrics)
                 if _looks_like_textual_tool_call(answer):
+                    if final_only and self.terminal_recovery:
+                        return self._recover_final(messages, tool_definitions, trace, metrics, step, "invalid_final")
                     trace.append(TraceEvent("invalid_final", step, {"content": answer}))
                     return AgentResult("", False, "invalid_final", trace, metrics)
                 trace.append(TraceEvent("final", step, {"answer": answer}))
                 return AgentResult(answer, True, "final", trace, metrics)
 
             if final_only:
+                if self.terminal_recovery:
+                    return self._recover_final(messages, tool_definitions, trace, metrics, step, "max_steps")
                 trace.append(TraceEvent("max_steps", step, {"blocked_tool_calls": len(turn.tool_calls)}))
                 return AgentResult("", False, "max_steps", trace, metrics)
 

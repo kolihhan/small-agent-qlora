@@ -30,6 +30,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hf-token", required=True)
     parser.add_argument("--shard-index", type=int, required=True)
     parser.add_argument("--shard-count", type=int, default=5)
+    parser.add_argument("--partition", choices=["evaluation", "shadow"], default="evaluation")
+    parser.add_argument("--terminal-recovery", action="store_true")
     parser.add_argument("--work-root", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--thinking", action="store_true")
@@ -74,7 +76,7 @@ def main() -> int:
         tool_preflight = preflight_eval_tools(workspace)
 
     dataset = load_validation("gaia-benchmark/GAIA", token=args.hf_token, revision=GAIA_REVISION)
-    full_selection = select_gaia_partition(dataset, partition="evaluation", seed=LOCAL_PROTOCOL_SEED)
+    full_selection = select_gaia_partition(dataset, partition=args.partition, seed=LOCAL_PROTOCOL_SEED)
     shard = shard_selected_rows(full_selection, shard_index=args.shard_index, shard_count=args.shard_count)
     if not shard:
         raise SystemExit("selected GAIA shard is empty")
@@ -86,7 +88,7 @@ def main() -> int:
     tool_names = tool_preflight["tool_names"]
 
     def factory() -> AgentRuntime:
-        return AgentRuntime(build_model(args), default_tools(), max_steps=12)
+        return AgentRuntime(build_model(args), default_tools(), max_steps=12, terminal_recovery=args.terminal_recovery)
 
     run_config = {
         "backend": args.backend,
@@ -99,7 +101,8 @@ def main() -> int:
         "seed": LOCAL_PROTOCOL_SEED,
         "dataset_revision": GAIA_REVISION,
         "tool_observation_max_chars": MAX_TOOL_OBSERVATION_CHARS,
-        "partition": "evaluation",
+        "partition": args.partition,
+        "terminal_recovery": args.terminal_recovery,
         "cache_implementation": None,
         "tool_names": tool_names,
         "shard_index": args.shard_index,
@@ -119,7 +122,7 @@ def main() -> int:
             manifest_path=None,
             dataset_revision=GAIA_REVISION,
             run_config=run_config,
-            partition="evaluation",
+            partition=args.partition,
         )
     finally:
         gaia_runner.select_gaia_partition = original_selector
@@ -129,7 +132,9 @@ def main() -> int:
 
     payload = {
         "schema_version": "gaia-9b-shard/v1",
-        "benchmark": "GAIA 2023 validation / frozen Evaluation100",
+        "benchmark": "GAIA 2023 validation / " + ("Shadow25" if args.partition == "shadow" else "Evaluation100"),
+        "partition": args.partition,
+        "terminal_recovery": args.terminal_recovery,
         "dataset_revision": GAIA_REVISION,
         "seed": LOCAL_PROTOCOL_SEED,
         "backend": args.backend,
