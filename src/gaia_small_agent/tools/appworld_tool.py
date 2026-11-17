@@ -106,11 +106,13 @@ class AppWorldCallTool(Tool):
         "additionalProperties": False,
     }
 
-    def __init__(self, world: Any, max_calls: int = 50):
+    def __init__(self, world: Any, max_calls: int = 50, *, report_http_failures: bool = False):
         self.world = world
         self.max_calls = max_calls
+        self.report_http_failures = report_http_failures
         self.calls = 0
         self.errors = 0
+        self.http_errors = 0
 
     def run(self, arguments: dict, workspace: Path) -> ToolResult:
         app = arguments.get("app")
@@ -123,12 +125,25 @@ class AppWorldCallTool(Tool):
         self.calls += 1
         try:
             result = self.world.requester.request(
-                _app_name=app, _api_name=api, show=False, raise_on_failure=False, **data
+                _app_name=app, _api_name=api, show=False,
+                raise_on_failure=self.report_http_failures, **data
             )
             content = json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
             return ToolResult(True, content[:_MAX_JSON_CHARS])
         except Exception as exc:
             self.errors += 1
-            # The model may see the short exception *class*, but public CI
-            # evidence and external logs never include raw task or API inputs.
-            return ToolResult(False, "AppWorld request error: " + type(exc).__name__, "APPWORLD_API_ERROR")
+            if self.report_http_failures:
+                # AppWorld raises Exception("Response status code is NNN: ...")
+                # on HTTP failures. Only disclose the status class to Qwen;
+                # never export request/response bodies or hidden task values.
+                import re
+                status = re.search(r"(?:status code is|response status code is|status code)\s*(\d{3})",str(exc),re.I)
+                if status is not None:
+                    self.http_errors += 1
+                    return ToolResult(
+                        False,
+                        "AppWorld API rejected this request (HTTP "+status.group(1)+
+                        "). Check the API documentation and parameters.",
+                        "HTTP_ERROR")
+            return ToolResult(False, "AppWorld request error: "+type(exc).__name__,
+                              "APPWORLD_API_ERROR")
