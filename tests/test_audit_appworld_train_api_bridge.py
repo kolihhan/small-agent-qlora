@@ -59,3 +59,11 @@ def test_reproduction_prior_source_only_selection():
     data=[(f"scene{i}_1",SimpleNamespace(api_calls=calls(i))) for i in range(20)]
     assert len(m.choose_train_entries(data))==8
     assert m.choose_train_entries(data)==m.choose_train_entries(list(reversed(data)))
+
+
+def test_unmapped_actions_are_categorized_not_auto_skipped_when_business():
+    assert m.request_category({"method":"post","url":"/admin/initialize","data":{}})=="admin"
+    assert m.request_category({"method":"get","url":"https://x.org/api_docs/show","data":{}})=="api_docs"
+    assert m.request_category({"method":"post","url":"/supervisor/complete_task","data":{}})=="supervisor"
+    assert m.request_category({"method":"get","url":"/spotify/search","data":{}})=="business"
+    assert m.request_category({"url":""})=="malformed"
