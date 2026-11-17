@@ -45,3 +45,22 @@ def test_only_supervisor_completion_allowed():
     assert allowed_public_api(w,"supervisor","complete_task")
     assert t.run({"app":"supervisor","api":"complete_task","arguments":{}},Path(".")).ok
     assert not allowed_public_api(w,"supervisor","see_reference")
+
+
+def test_opt_in_documented_supervisor_get_only_never_writes_or_hidden_oracle():
+    w=world()
+    w.task.api_docs["supervisor"]={
+      "show_profile":{"method":"GET","path":"/supervisor/show_profile",
+                      "description":"Public user profile"},
+      "secret_answer":{"method":"POST","path":"/supervisor/secret_answer",
+                       "description":"Private"},
+    }
+    assert not allowed_public_api(w,"supervisor","show_profile")
+    assert allowed_public_api(w,"supervisor","show_profile",allow_supervisor_public_reads=True)
+    assert not allowed_public_api(w,"supervisor","secret_answer",allow_supervisor_public_reads=True)
+    docs=AppWorldDocsTool(w,allow_supervisor_public_reads=True)
+    available=docs.run({"app":"supervisor"},Path(".")).content
+    assert "show_profile" in available and "secret_answer" not in available
+    tool=AppWorldCallTool(w,allow_supervisor_public_reads=True)
+    assert tool.run({"app":"supervisor","api":"show_profile","arguments":{}},Path(".")).ok
+    assert tool.run({"app":"supervisor","api":"secret_answer","arguments":{}},Path(".")).error_code=="API_DENIED"
