@@ -1,0 +1,173 @@
+name: PRO Qwen9B Hotpot16 failure-only finalization Base vs v7 (NO TRAIN)
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [experiment/hotpot8-v7-crossfamily-factorial-20261117]
+    paths:
+      - scripts/eval_hotpot16_final_salvage_v7.py
+      - tests/test_hotpot16_final_salvage_v7.py
+      - .github/workflows/pro-hotpot16-v7-final-salvage-cpu.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+env:
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_SHA: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  V7_SHA: 475f5fb59a553390a0dde9425d36b42ff85a0345bdd31b8465c22fd4d2bc02e2
+jobs:
+  freeze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: CPU safety and paired source-claim tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[eval,files,dev]'
+          python -m pytest -q tests/test_hotpot16_final_salvage_v7.py
+          python -m compileall -q scripts/eval_hotpot16_final_salvage_v7.py
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44010234843
+          github-token: ${{ github.token }}
+          name: hotpot8-source-frozen-before-model
+          path: prior8
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44011715345
+          github-token: ${{ github.token }}
+          name: qwen9b-hotpot16-serializer-source-frozen
+          path: prior16
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44037729128
+          github-token: ${{ github.token }}
+          name: hotpot8-v7-factorial-crossfamily-source-frozen
+          path: priornew8
+      - name: Freeze 16 fresh public QA identities and 32 support docs, never prior Hotpot32
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.eval_hotpot16_final_salvage_v7 --source-only \
+            --prior8 prior8/hotpot8-frozen.json \
+            --prior16 prior16/new-hotpot16-frozen.json \
+            --prior-latest8 priornew8/hotpot8-factorial-source.json \
+            --output hotpot16-salvage-source.json
+          python - <<'PY'
+          import json,hashlib
+          a=json.load(open('hotpot16-salvage-source.json'))
+          assert a['status']=='SOURCE_FROZEN_PREINFERENCE'
+          assert a['n']==16 and a['shards']==8 and a['types']=={'bridge':8,'comparison':8}
+          assert a['known_prior_ids_excluded']==32 and a['selected_support_paths']==32
+          assert a['source_sha']==hashlib.sha256(json.dumps(a['cases'],sort_keys=True).encode()).hexdigest()
+          print("SOURCE_FROZEN_FINAL_SALVAGE",a['source_sha'],flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hotpot16-v7-final-salvage-frozen-source-only
+          path: hotpot16-salvage-source.json
+          if-no-files-found: error
+          retention-days: 30
+  inference:
+    needs: freeze
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0,1,2,3,4,5,6,7]
+        mode: [base,adapter]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - run: python -m pip install -e '.[eval,files]'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: hotpot16-v7-final-salvage-frozen-source-only
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 43434228699
+          github-token: ${{ github.token }}
+          name: qlora-v7-converted-f16-gguf
+          path: adapters
+      - name: SHA-verify fixed Base, original v7 LoRA and original llama.cpp runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 "$MODEL_URL" -o base.gguf
+          curl -fsSL --retry 5 "$LLAMA_URL" -o llama.tar.gz
+          echo "$MODEL_SHA  base.gguf" | sha256sum -c -
+          echo "$LLAMA_SHA  llama.tar.gz" | sha256sum -c -
+          echo "$V7_SHA  adapters/qlora-v7-adapter-f16.gguf" | sha256sum -c -
+          mkdir -p llama
+          tar -xzf llama.tar.gz -C llama
+          server=$(find "$PWD/llama" -type f -name llama-server -print -quit)
+          test -x "$server"
+          echo "LLAMA_SERVER=$server" >> "$GITHUB_ENV"
+      - name: Same-model original 12-step agent; optional failure-only evidence-grounded finalize
+        shell: bash
+        env:
+          MODE: "${{ matrix.mode }}"
+          SHARD: "${{ matrix.shard }}"
+        run: |
+          set -euo pipefail
+          args=(-m base.gguf --alias qwen3.5-9b --host 127.0.0.1 --port 8080
+                --ctx-size 16384 --threads 4 --parallel 1 --jinja --reasoning-budget 0 --temperature 0)
+          if [ "$MODE" = adapter ]; then args+=(--lora adapters/qlora-v7-adapter-f16.gguf); fi
+          "$LLAMA_SERVER" "${args[@]}" > "$RUNNER_TEMP/salvage-$MODE-$SHARD.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..180}; do curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 && break; sleep 2; done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+          python -m scripts.eval_hotpot16_final_salvage_v7 \
+            --frozen hotpot16-salvage-source.json --mode "$MODE" --shard "$SHARD" \
+            --output "salvage-$MODE-$SHARD.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: "hotpot16-v7-physical-${{ matrix.mode }}-${{ matrix.shard }}"
+          path: salvage-*.json
+          if-no-files-found: warn
+          retention-days: 30
+  aggregate:
+    if: always()
+    needs: inference
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - run: python -m pip install -e '.[eval,files]'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: hotpot16-v7-physical-*
+          path: shards
+          merge-multiple: true
+      - name: Strict exactly 16 matched Qwen mode×shard outputs or no score
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.eval_hotpot16_final_salvage_v7 \
+            --inputs shards/salvage-base-*.json shards/salvage-adapter-*.json \
+            --output hotpot16-v7-failure-salvage-complete.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: hotpot16-v7-failure-salvage-complete-only
+          path: hotpot16-v7-failure-salvage-complete.json
+          if-no-files-found: warn
+          retention-days: 30
