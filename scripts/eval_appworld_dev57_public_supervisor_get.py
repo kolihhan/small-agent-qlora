@@ -143,9 +143,9 @@ def validate_scene_parts(parts,meta,*, arm):
             p.get("shards")!=SCENARIOS):
             raise ValueError("model/source/arm/shard drift")
         if arm=="original":
-            if p.get("fixed_source_sha256")!=SOURCE_SHA or
-               p.get("no_training") is not True or
-               p.get("student_never_saw_reference") is not True:
+            if (p.get("fixed_source_sha256")!=SOURCE_SHA or
+                p.get("no_training") is not True or
+                p.get("student_never_saw_reference") is not True):
                 raise ValueError("original baseline evidence invalid")
         else:
             if (p.get("source_sha256")!=SOURCE_SHA or
