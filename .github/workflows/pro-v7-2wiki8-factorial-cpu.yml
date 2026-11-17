@@ -6,6 +6,13 @@ on:
       - scripts/eval_2wiki8_v7_factorial.py
       - tests/test_eval_2wiki8_v7_factorial.py
       - .github/workflows/pro-v7-2wiki8-factorial-cpu.yml
+  pull_request:
+    types: [synchronize]
+    branches: [experiment/qwen9b-2wiki-serializer-confirm48-20261117]
+    paths:
+      - scripts/eval_2wiki8_v7_factorial.py
+      - tests/test_eval_2wiki8_v7_factorial.py
+      - .github/workflows/pro-v7-2wiki8-factorial-cpu.yml
   workflow_dispatch:
 permissions:
   contents: read
