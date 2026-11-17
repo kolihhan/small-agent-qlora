@@ -1,0 +1,130 @@
+name: PRO Qwen9B Hotpot source-shift evidence links vs locked final answer
+
+on:
+  push:
+    branches: [experiment/qwen9b-hotpot-source-links-final-contract-20261117]
+    paths:
+      - scripts/eval_hotpot_source_shift.py
+      - tests/test_eval_hotpot_source_shift.py
+      - .github/workflows/pro-hotpot-source-shift-qwen9b.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  freeze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: CPU source-freeze tests (no model, no training)
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[eval,dev,files]'
+          python -m pytest -q tests/test_eval_hotpot_source_shift.py
+          python -m compileall -q scripts/eval_hotpot_source_shift.py
+      - name: Freeze published HotpotQA DISTRACTOR validation tasks before any inference
+        run: |
+          set -euo pipefail
+          python -m scripts.eval_hotpot_source_shift --output hotpot8-frozen.json
+          python - <<'PY'
+          import json
+          j=json.load(open('hotpot8-frozen.json'))
+          assert j['status']=='FROZEN_SOURCE_BEFORE_MODEL'
+          assert j['n']==8 and j['groups']=={'bridge':4,'comparison':4}
+          assert j['source_revision']=='1908d6afbbead072334abe2965f91bd2709910ab'
+          assert j['predeclared_gate']['net_end_to_end']==2
+          assert len({r['id'] for r in j['cases']})==8
+          print('HOTPOT_FROZEN_BEFORE_QWEN_INFERENCE',j['cases_sha256'])
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hotpot8-source-frozen-before-model
+          path: hotpot8-frozen.json
+          retention-days: 30
+          if-no-files-found: error
+
+  paired:
+    needs: freeze
+    runs-on: ubuntu-latest
+    timeout-minutes: 140
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    env:
+      OLLAMA_HOST: 127.0.0.1:11434
+      OLLAMA_CONTEXT_LENGTH: '8192'
+      OLLAMA_NUM_PARALLEL: '1'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Install original agent, no stronger teacher / training
+        run: python -m pip install -e '.[eval,files]'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: hotpot8-source-frozen-before-model
+      - name: Start pinned original Qwen3.5-9B on GitHub CPU
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+          ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          for i in {1..60}; do
+            curl -fsS http://127.0.0.1:11434/api/tags > /dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
+          ollama pull qwen3.5:9b-q4_K_M
+      - name: Paired native vs source-linked tool; raw vs locked parser same output
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python -m scripts.eval_hotpot_source_shift \
+            --cohort hotpot8-frozen.json --shard "$SHARD" \
+            --output "hotpot-paired-shard-$SHARD.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: hotpot-paired-shard-${{ matrix.shard }}
+          path: hotpot-paired-shard-${{ matrix.shard }}.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    if: always()
+    needs: paired
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: hotpot-paired-shard-*
+          path: paired-shards
+          merge-multiple: true
+      - name: Only score if all original 8 matched physical cases complete
+        run: |
+          set -euo pipefail
+          python -m scripts.eval_hotpot_source_shift \
+            --inputs paired-shards/hotpot-paired-shard-*.json \
+            --output hotpot-strict-complete.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: hotpot-source-shift-complete-only
+          path: hotpot-strict-complete.json
+          if-no-files-found: warn
+          retention-days: 30
