@@ -34,17 +34,25 @@ jobs:
           github-token: ${{ github.token }}
           name: 2wiki-original-source-cohort-frozen
           path: prior-2wiki
-      - name: Freeze 16 new 2Wiki validation IDs plus support docs before any Qwen prediction
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 43862358318
+          github-token: ${{ github.token }}
+          name: source-2wiki-body8
+          path: prior-2wiki-novel
+      - name: Freeze new 2Wiki validation cohort excluding all 24 recorded prior VAL identities and support docs
         run: |
           set -euo pipefail
           python -m scripts.eval_2wiki_serializer_new16 \
             --prior-linked prior-2wiki/2wiki-linked-frozen.json \
+            --prior-novel prior-2wiki-novel/frozen.json \
             --output 2wiki16-serializer-source-frozen.json
           python - <<'PY'
           import json
           o=json.load(open('2wiki16-serializer-source-frozen.json'))
           assert o["status"]=="FROZEN_BEFORE_NEW_QWEN_MODEL_INFERENCE"
-          assert o["known_prior_ids_excluded"]==16
+          assert o["known_prior_ids_excluded"]==24
           assert o["n"]==16 and o["shards"]==4
           assert o["gate"]=={"net_exact":3,"max_regressions":1,"min_completed":12}
           assert o["serializer_sha256"]=="a1f844029179ab91e9ff0ebd0b9b8a6293801c686e4080921edd5b3a82ef60a3"
