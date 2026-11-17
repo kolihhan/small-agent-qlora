@@ -60,7 +60,9 @@ def replay(task_ids):
                 stage="reference_execute"
                 # Official reference program (NOT external model teacher).
                 # Execute inside the task's own stateful AppWorld APIs.
-                module.solution(world.task.supervisor,world.apis,g.public_data)
+                if tuple(sig.parameters)!=("apis","requester"):
+                    raise TypeError("pinned AppWorld original gold function signature drift")
+                module.solution(world.apis,world.requester)
                 stage="state_evaluate"
                 tracker=world.evaluate(suppress_errors=True)
                 passed=bool(tracker.success)
