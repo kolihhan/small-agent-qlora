@@ -1,7 +1,7 @@
 name: PRO Qwen9B Hotpot16 failure-only finalization Base vs v7 (NO TRAIN)
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened]
     branches: [experiment/hotpot8-v7-crossfamily-factorial-20261117]
     paths:
       - scripts/eval_hotpot16_final_salvage_v7.py
