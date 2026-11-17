@@ -1,0 +1,166 @@
+name: PRO Qwen3.5-9B v7 GAIA exposed15 failed-final JSON grammar diagnosis
+
+on:
+  push:
+    branches: [experiment/qwen9b-gaia15-final-json-grammar-20261117]
+    paths:
+      - scripts/eval_gaia_terminal_grammar15.py
+      - tests/test_gaia_terminal_grammar15.py
+      - .github/workflows/pro-gaia15-final-grammar.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_SHA: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  V7_SHA: 475f5fb59a553390a0dde9425d36b42ff85a0345bdd31b8465c22fd4d2bc02e2
+
+jobs:
+  freeze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Enforce static original-trajectory and no-GAIA-label serializer tests
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev,eval,files,search]'
+          python -m pytest -q tests/test_gaia_terminal_grammar15.py
+          python -m compileall -q scripts/eval_gaia_terminal_grammar15.py
+      - name: Tag all 15 residual GAIA IDs as EXPOSED previously tested in 43467405441
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          python -m scripts.eval_gaia_terminal_grammar15 --source-only --output gaia15-exposed-grammar-frozen.json
+          python - <<'PY'
+          import json
+          x=json.load(open('gaia15-exposed-grammar-frozen.json'))
+          assert x['status']=='EXPOSED_HISTORICAL_GAIA15_SOURCE_REUSED_DIAGNOSTIC_ONLY'
+          assert x['n']==15 and x['shards']==3
+          assert x['preregistered_gate']=={'net_rescues':2,'max_regressions':0,'min_levels':2,'min_completion_gain':2}
+          assert len(x['structured_grammar_sha256'])==64
+          assert len(set(x['hashed_tasks']))==15
+          assert x['fallback_only_after_failed_terminal'] is True
+          print("GAIA15_EXPOSED_SOURCE_LOCK",x["task_id_sequence_sha256"])
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gaia15-exposed-final-grammar-source-locked
+          path: gaia15-exposed-grammar-frozen.json
+          retention-days: 30
+          if-no-files-found: error
+
+  paired:
+    needs: freeze
+    runs-on: ubuntu-latest
+    timeout-minutes: 250
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Original GAIA evaluator and exact v7 model with schema-only fallback
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev,eval,search,files]'
+          python -m pytest -q tests/test_gaia_terminal_grammar15.py
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: gaia15-exposed-final-grammar-source-locked
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43434228699
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: qlora-v7-converted-f16-gguf
+          path: adapters
+      - name: Download exactly pinned original Qwen9B base, LoRA, llama.cpp
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 "$MODEL_URL" -o base.gguf
+          curl -fsSL --retry 5 "$LLAMA_URL" -o llama.tar.gz
+          echo "$MODEL_SHA  base.gguf" | sha256sum -c -
+          echo "$LLAMA_SHA  llama.tar.gz" | sha256sum -c -
+          echo "$V7_SHA  adapters/qlora-v7-adapter-f16.gguf" | sha256sum -c -
+          mkdir -p llama
+          tar -xzf llama.tar.gz -C llama
+          server=$(find "$PWD/llama" -type f -name llama-server -print -quit)
+          test -x "$server"
+          echo "LLAMA_SERVER=$server" >> "$GITHUB_ENV"
+      - name: Original autonomous v7 Qwen: schema fallback ONLY on failed final
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          SHARD: ${{ matrix.shard }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          "$LLAMA_SERVER" -m base.gguf --lora adapters/qlora-v7-adapter-f16.gguf \
+            --alias qwen3.5-9b --host 127.0.0.1 --port 8080 \
+            --ctx-size 16384 --threads 4 --parallel 1 --jinja \
+            --reasoning-budget 0 --temperature 0 \
+            > "$RUNNER_TEMP/v7-gaia-residual15-server.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..180}; do
+            curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+          python -m scripts.eval_gaia_terminal_grammar15 --probe-server
+          python -m scripts.eval_gaia_terminal_grammar15 \
+            --frozen gaia15-exposed-grammar-frozen.json --shard "$SHARD" \
+            --output "gaia15-grammar-shard-$SHARD.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: gaia15-grammar-shard-${{ matrix.shard }}
+          path: gaia15-grammar-shard-${{ matrix.shard }}.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    if: always()
+    needs: paired
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: gaia15-grammar-shard-*
+          path: shards
+          merge-multiple: true
+      - name: Score all exposed 15/15 with matched same-trace final fallback
+        run: |
+          set -euo pipefail
+          python -m scripts.eval_gaia_terminal_grammar15 \
+            --inputs shards/gaia15-grammar-shard-*.json \
+            --output gaia15-final-grammar-complete.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: gaia15-final-grammar-full-only
+          path: gaia15-final-grammar-complete.json
+          retention-days: 30
+          if-no-files-found: warn
