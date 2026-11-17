@@ -4,7 +4,27 @@ import pytest
 
 from scripts import eval_hotpot8_v7_factorial as f
 from scripts import eval_2wiki8_v7_factorial as old
-from tests.test_eval_2wiki8_v7_factorial import all_shards
+def all_shards():
+    shards=[]
+    for mode in ('base','adapter'):
+        for shard in range(4):
+            cases=[]
+            for i in range(2):
+                n=2*shard+i
+                arms={}
+                for suffix in ('native','serializer'):
+                    score=(n<2 if mode=='base' else n<3) or (suffix=='serializer' and n==5)
+                    arms[f'{mode}_{suffix}']={
+                        'correct':score,'model_calls':1+(suffix=='serializer'),
+                        'elapsed_s':1.5,'completed':True,'tool_calls':2}
+                cases.append({'task_sha256':sha256(str(n).encode()).hexdigest(),
+                              'source_sha':sha256(b'new').hexdigest(),'arms':arms})
+            shards.append({
+                'status':'COMPLETE_PHYSICAL_ONE_MODEL_MODE','protocol':f.PROTOCOL,
+                'mode':mode,'shard':shard,'n':2,'source_sha':sha256(b'new').hexdigest(),
+                'base_gguf_sha256':old.BASE_SHA,'adapter_gguf_sha256':old.V7_SHA,
+                'serializer_sha256':f.old.SERIALIZER_SHA,'cases':cases})
+    return shards
 
 
 def sample_source():
