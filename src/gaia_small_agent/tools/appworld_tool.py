@@ -74,10 +74,29 @@ class AppWorldDocsTool(Tool):
         api = arguments.get("api")
         if not app:
             apps = sorted(set(self.world.task.allowed_apps) - _TOOL_APPS_DENY)
-            return ToolResult(True, json.dumps({
+            response = {
                 "task_apps": apps,
                 "supervisor_completion": "supervisor.complete_task"
-            }, sort_keys=True))
+            }
+            if self.allow_supervisor_public_reads:
+                # Discovery must reach the student; an allowed but
+                # undiscoverable API is not an actionable intervention.
+                # These are task-supplied PUBLIC GET API names ONLY: never
+                # private/hidden evaluator, admin or supervisor writes.
+                reads = sorted(
+                    name for name in self.world.task.api_docs.get("supervisor", {})
+                    if allowed_public_api(
+                        self.world, "supervisor", name,
+                        allow_supervisor_public_reads=True)
+                    and name != "complete_task"
+                )
+                response["supervisor_public_read_apis"] = reads
+                response["public_read_help"] = (
+                    "Public supervisor GET APIs can provide permitted task "
+                    "context. Inspect their parameters using "
+                    "appworld_docs(app='supervisor', api=...)."
+                )
+            return ToolResult(True,json.dumps(response,sort_keys=True))
         if not isinstance(app, str) or app in _TOOL_APPS_DENY:
             return ToolResult(False, "App unavailable for this task.", "APP_DENIED")
         if app == "supervisor":
