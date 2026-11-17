@@ -103,7 +103,7 @@ jobs:
           server=$(find "$PWD/llama" -type f -name llama-server -print -quit)
           test -x "$server"
           echo "LLAMA_SERVER=$server" >> "$GITHUB_ENV"
-      - name: Original autonomous v7 Qwen: schema fallback ONLY on failed final
+      - name: 'Original autonomous v7 Qwen - schema fallback ONLY on failed final'
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           SHARD: ${{ matrix.shard }}
