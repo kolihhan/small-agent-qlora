@@ -68,11 +68,16 @@ class AppWorldDocsTool(Tool):
     def __init__(self, world: Any, *, allow_supervisor_public_reads: bool = False):
         self.world = world
         self.allow_supervisor_public_reads = allow_supervisor_public_reads
+        # Source-only counters: never alter the tool response seen by the model.
+        self.root_discovery_calls = 0
+        self.supervisor_list_calls = 0
+        self.supervisor_detail_calls = 0
 
     def run(self, arguments: dict, workspace: Path) -> ToolResult:
         app = arguments.get("app")
         api = arguments.get("api")
         if not app:
+            self.root_discovery_calls += 1
             apps = sorted(set(self.world.task.allowed_apps) - _TOOL_APPS_DENY)
             response = {
                 "task_apps": apps,
@@ -100,6 +105,10 @@ class AppWorldDocsTool(Tool):
         if not isinstance(app, str) or app in _TOOL_APPS_DENY:
             return ToolResult(False, "App unavailable for this task.", "APP_DENIED")
         if app == "supervisor":
+            if api:
+                self.supervisor_detail_calls += 1
+            else:
+                self.supervisor_list_calls += 1
             extra=sorted(
                 name for name,doc in self.world.task.api_docs.get("supervisor",{}).items()
                 if allowed_public_api(self.world,"supervisor",name,
@@ -157,6 +166,7 @@ class AppWorldCallTool(Tool):
         self.calls = 0
         self.errors = 0
         self.http_errors = 0
+        self.http_status_counts: dict[str, int] = {}
 
     def run(self, arguments: dict, workspace: Path) -> ToolResult:
         app = arguments.get("app")
@@ -186,6 +196,8 @@ class AppWorldCallTool(Tool):
                 status = re.search(r"(?:status code is|response status code is|status code)\s*(\d{3})",str(exc),re.I)
                 if status is not None:
                     self.http_errors += 1
+                    code = status.group(1)
+                    self.http_status_counts[code] = self.http_status_counts.get(code, 0) + 1
                     return ToolResult(
                         False,
                         "AppWorld API rejected this request (HTTP "+status.group(1)+
