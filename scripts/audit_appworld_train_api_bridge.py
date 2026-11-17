@@ -23,6 +23,37 @@ SOURCE_COMMIT = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
 PILOT_COUNT = 8
 
 
+
+PILOT_SEED="state-verified-official-human-reference-8-tasks-train-only-20261117"
+
+
+def choose_train_entries(entries):
+    """Reproduce the eight earlier source-selected original TRAIN gold tasks."""
+    selected=[]
+    eligible=[]
+    for tid,g in entries:
+        apps=set()
+        business=0
+        for req in g.api_calls:
+            url=req.get("url") or ""
+            parts=url.lstrip("/").split("/")
+            app=parts[0].lower() if len(parts)>1 else ""
+            if app and app not in {"admin","api_docs","supervisor"}:
+                business+=1
+                apps.add(app)
+        if business>=12 and len(apps)>=2:
+            eligible.append((sha256(f"{PILOT_SEED}:{tid}".encode()).hexdigest(),tid))
+    seen=set()
+    for _,tid in sorted(eligible):
+        scene=tid.split("_",1)[0]
+        if scene in seen:continue
+        seen.add(scene)
+        selected.append(tid)
+        if len(selected)==PILOT_COUNT:break
+    if len(selected)!=PILOT_COUNT:
+        raise ValueError("the original independently selected TRAIN8 has drifted")
+    return selected
+
 def source_hash(ids):
     if len(set(ids)) != len(ids) or not ids:
         raise ValueError("official TRAIN task ID corruption")
@@ -169,7 +200,6 @@ def main():
     totals=summarize_reference_coverage(rows,route_maps)
     # Reuse the same prospectively predeclared 8 source-only TRAIN tasks from
     # preceding gold replay, not outcome-selected dev tasks.
-    from scripts.replay_appworld_train_reference import choose_train_entries
     original_rows=[(tid,GroundTruth.load(task_id=tid,mode="full")) for tid in ids]
     subset=choose_train_entries(original_rows)
     replay=private_route_replay(subset)
