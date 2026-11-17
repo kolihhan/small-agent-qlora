@@ -1,0 +1,85 @@
+{
+  "date": "2026-11-17",
+  "status": "COMPLETE_PHYSICAL_PUBLIC_HOTPOT16_REJECTED",
+  "run_id": 44050447378,
+  "aggregate_artifact_id": 14313254736,
+  "source_sha256": "cfdb3a9fbc3f4074eba6910057a77883027618c130df57c79a50efba32cd058f",
+  "n": 16,
+  "type_counts": {
+    "bridge": 8,
+    "comparison": 8
+  },
+  "excluded_prior_task_ids": 32,
+  "original_base_gguf_sha256": "8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54",
+  "historical_v7_adapter_sha256": "475f5fb59a553390a0dde9425d36b42ff85a0345bdd31b8465c22fd4d2bc02e2",
+  "frozen_serializer_sha256": "a1f844029179ab91e9ff0ebd0b9b8a6293801c686e4080921edd5b3a82ef60a3",
+  "salvage_policy_sha256": "88665ae5ae6369c6709223673a3b0ef660ec1af89c49dda160ecadab52aff3e1",
+  "full_16_mode_shards_success": true,
+  "aggregator_success": true,
+  "arms": {
+    "base_frozen_formatter": {
+      "correct": 11,
+      "completed": 16,
+      "model_calls": 79,
+      "tool_calls": 61,
+      "elapsed_s": 1341.61
+    },
+    "base_failure_salvage": {
+      "correct": 11,
+      "completed": 16,
+      "model_calls": 79,
+      "tool_calls": 61,
+      "elapsed_s": 1341.61
+    },
+    "v7_frozen_formatter": {
+      "correct": 10,
+      "completed": 15,
+      "model_calls": 91,
+      "tool_calls": 75,
+      "elapsed_s": 1863.95
+    },
+    "v7_failure_salvage": {
+      "correct": 10,
+      "completed": 15,
+      "model_calls": 92,
+      "tool_calls": 75,
+      "elapsed_s": 1980.1
+    }
+  },
+  "failure_salvage": {
+    "base": {
+      "fallback_uses": 0,
+      "accepted": 0,
+      "rescues": 0,
+      "regressions": 0
+    },
+    "v7": {
+      "fallback_uses": 1,
+      "accepted": 0,
+      "rescues": 0,
+      "regressions": 0
+    }
+  },
+  "specific_failed_case": {
+    "task_sha256_prefix": "1645aec05",
+    "type": "bridge",
+    "adapter_stop_reason": "invalid_final",
+    "adapter_step_count": 12,
+    "adapter_tool_calls": 13,
+    "extra_same_model_call": 1,
+    "extra_seconds": 116.15,
+    "supported_verbatim_answer_found": false
+  },
+  "conclusion": "Historical v7 adapter does not establish positive task transfer: Base 11/16 > v7 10/16 with same original Qwen serializer. Narrow failure-only one-call source-evidence recovery did not rescue the one v7 failure and added time. Do not promote or rerun this approach on exposed source.",
+  "limitations": [
+    "Public QA not GAIA",
+    "16-case sample",
+    "No unseen hidden task family",
+    "No evidence of trained adapter gains",
+    "Source cases selected before inference, historical exposure beyond tracked IDs unknown"
+  ],
+  "gaia_score_change": 0,
+  "new_training_steps": 0,
+  "training_authorized_only_in_separate_agent_track": true,
+  "production_changed": false
+}
