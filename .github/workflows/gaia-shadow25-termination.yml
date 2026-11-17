@@ -1,0 +1,191 @@
+name: QLoRA one-shot GAIA Shadow25 termination diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research/termination-shift-diagnostic-20261112
+    paths:
+      - .github/GAIA_TERMINATION_SHADOW_TRIGGER
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  V3B_RUN_ID: "38156235327"
+  V3B_ARTIFACT: qwen35-9b-qlora-v3b-gguf
+  V3B_SHA256: e7caec609a905d21e056b107519d78916d3ef79e7bdc70db916e40d801d2187d
+  V3D_RUN_ID: "38714014392"
+  V3D_ARTIFACT: qwen35-9b-qlora-v3d-gguf
+  V3D_SHA256: 9bb1ae55d20c7ddeed737ec682e7ad9dc73844b59c0e8fd35685a4a6b57c23ca
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA256: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_RELEASE_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_RELEASE_SHA256: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  MODEL_ALIAS: qwen3.5-9b
+
+jobs:
+  paired-shadow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    steps:
+      - name: Checkout this diagnostic revision
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Install evaluation dependencies
+        run: python -m pip install --quiet -e '.[search,files,eval]'
+
+      - name: Verify GAIA credential before downloading models
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN_NOT_CONFIGURED"; exit 42; }
+
+      - name: Download frozen v3B adapter
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V3B_ARTIFACT }}
+          path: matched-input/v3b
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.V3B_RUN_ID }}
+
+      - name: Download frozen v3D adapter
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.V3D_ARTIFACT }}
+          path: matched-input/v3d
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.V3D_RUN_ID }}
+
+      - name: Download and verify frozen model and llama-server
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model matched-input/v3b matched-input/v3d /tmp/llama-bin
+          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf
+          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
+          curl -fL --retry 5 --retry-delay 3 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+
+      - name: Verify adapter digests
+        run: |
+          set -euo pipefail
+          test -s matched-input/v3b/qwen35-9b-qlora-v3b-adapter.gguf
+          test -s matched-input/v3d/qwen35-9b-qlora-v3d-adapter.gguf
+          echo "$V3B_SHA256  matched-input/v3b/qwen35-9b-qlora-v3b-adapter.gguf" | sha256sum -c -
+          echo "$V3D_SHA256  matched-input/v3d/qwen35-9b-qlora-v3d-adapter.gguf" | sha256sum -c -
+
+      - name: Run matched v3B and v3D on disjoint Shadow25
+        shell: bash
+        run: |
+          set -euo pipefail
+          shard="${{ matrix.shard }}"
+          run_arm() {
+            arm="$1"
+            out="runs/$arm/shard-$shard"
+            mkdir -p "$out"
+            if [ "$arm" = "qlora-v3b" ]; then
+              adapter="matched-input/v3b/qwen35-9b-qlora-v3b-adapter.gguf"
+            else
+              adapter="matched-input/v3d/qwen35-9b-qlora-v3d-adapter.gguf"
+            fi
+            "$LLAMA_SERVER" -m model/Qwen3.5-9B-Q4_K_M.gguf \
+              --lora "$adapter" --alias "$MODEL_ALIAS" --host 127.0.0.1 --port 8080 \
+              --ctx-size 16384 --threads 4 --parallel 1 \
+              --jinja --reasoning-budget 0 --temperature 0 \
+              > "$out/llama-server.log" 2>&1 &
+            pid=$!
+            trap 'kill "$pid" 2>/dev/null || true' RETURN
+            for i in {1..180}; do
+              if curl -fsS http://127.0.0.1:8080/health >/dev/null; then break; fi
+              sleep 2
+            done
+            curl -fsS http://127.0.0.1:8080/health >/dev/null
+            python scripts/run_gaia_eval_shard.py \
+              --partition shadow --backend openai_compat \
+              --model "$MODEL_ALIAS" --openai-base-url http://127.0.0.1:8080 \
+              --hf-token "$HF_TOKEN" --shard-index "$shard" --shard-count 5 \
+              --work-root "$out" --output "$out/shard.json"
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            trap - RETURN
+            sleep 2
+          }
+          run_arm qlora-v3b
+          run_arm qlora-v3d
+          mkdir -p sanitized
+          python -m scripts.analyze_termination_shift \
+            --v3b "runs/qlora-v3b/shard-$shard/results.jsonl" \
+            --v3d "runs/qlora-v3d/shard-$shard/results.jsonl" \
+            --expected 5 \
+            --output "sanitized/shadow25-shard-$shard.json"
+
+      - name: Upload aggregate-only per-shard diagnostics
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow25-termination-shard-${{ matrix.shard }}
+          path: sanitized/shadow25-shard-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    needs: paired-shadow
+    if: ${{ always() && needs.paired-shadow.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code for aggregate merger
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Download sanitized shard aggregates only
+        uses: actions/download-artifact@v4
+        with:
+          pattern: shadow25-termination-shard-*
+          path: sanitized
+          merge-multiple: true
+      - name: Merge and verify exactly 25 paired tasks
+        run: |
+          set -euo pipefail
+          python -m scripts.merge_termination_shards \
+            --inputs sanitized/shadow25-shard-*.json \
+            --output sanitized/shadow25-summary.json
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          p = Path("sanitized/shadow25-summary.json")
+          s = json.loads(p.read_text(encoding="utf-8"))
+          assert s["n"] == 25 and s["shards"] == 5
+          s["provenance"].update({
+            "source_commit": os.environ["GITHUB_SHA"],
+            "dataset_revision": "682dd723ee1e1697e00360edccf2366dc8418dd9",
+            "partition_seed": "gaia-local-v2",
+            "model_sha256": os.environ["MODEL_SHA256"],
+            "v3b_adapter_sha256": os.environ["V3B_SHA256"],
+            "v3d_adapter_sha256": os.environ["V3D_SHA256"],
+            "context_tokens": 16384,
+            "temperature": 0,
+            "reasoning_budget": 0,
+          })
+          p.write_text(json.dumps(s, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print("SHADOW25_SUMMARY aggregate-only 25/25, NO RAW GAIA DATA")
+          PY
+      - name: Upload sanitized final aggregate only
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow25-termination-summary
+          path: sanitized/shadow25-summary.json
+          if-no-files-found: error
+          retention-days: 30
