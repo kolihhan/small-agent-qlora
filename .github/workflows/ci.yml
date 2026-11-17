@@ -367,3 +367,67 @@ jobs:
           path: appworld-dev57-original-qwen-fully-verified.json
           if-no-files-found: warn
           retention-days: 30
+
+
+  appworld_train_gold_public_api_bridge_contract:
+    if: github.event_name == 'pull_request' && github.head_ref == 'research/appworld-train-public-api-bridge-coverage-20261117'
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Test source-only public bridge mapping and privacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[eval,files]' pytest
+          python -m pytest -q tests/test_audit_appworld_train_api_bridge.py tests/test_appworld_tool_bridge.py
+          python -m compileall -q scripts/audit_appworld_train_api_bridge.py
+      - name: Install original pinned AppWorld official TRAIN source, never expose decrypted task data
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+          echo "APPWORLD_ROOT=$RUNNER_TEMP/appworld" >> "$GITHUB_ENV"
+      - name: Official original TRAIN90 public-API route feasibility and independent TRAIN8 replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.audit_appworld_train_api_bridge \
+            --out appworld-train90-source-only-public-api-bridge-aggregates.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('appworld-train90-source-only-public-api-bridge-aggregates.json')
+          x=json.loads(p.read_text())
+          assert x['status']=='COMPLETE_TRAIN_ONLY_API_TOOL_SOURCE_CONTRACT'
+          assert x['train_task_count']==90 and x['models_called']==0
+          assert x['run_contains_decrypted_source_or_references'] is False
+          assert x['DEV_or_TEST_opened'] is False
+          assert x['train8_route_replay']['tasks_attempted']==8
+          print('APPWORLD_TRAIN90_PUBLIC_ROUTE_TOTALS',x['train_request_coverage'])
+          print('APPWORLD_TRAIN8_PHYSICAL_BRIDGE_TOTALS',x['train8_route_replay'])
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: appworld-original-train90-public-api-tool-contract-aggregates-only
+          path: appworld-train90-source-only-public-api-bridge-aggregates.json
+          if-no-files-found: warn
+          retention-days: 30
