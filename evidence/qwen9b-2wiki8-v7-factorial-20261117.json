@@ -1,0 +1,81 @@
+{
+  "date": "2026-11-17",
+  "status": "VERIFIED_PHYSICAL_COMPLETE_NO_PROMOTION",
+  "run_id": 44034337935,
+  "artifact_id": 14307341620,
+  "source_freeze_artifact_id": 14306257776,
+  "frozen_source_sha256": "d74159af39e93ea5522f11b1770d13b6288c54525f100c55185d65abe6ca0303",
+  "gguf_base_sha256": "8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54",
+  "gguf_v7_adapter_sha256": "475f5fb59a553390a0dde9425d36b42ff85a0345bdd31b8465c22fd4d2bc02e2",
+  "formatter_sha256": "a1f844029179ab91e9ff0ebd0b9b8a6293801c686e4080921edd5b3a82ef60a3",
+  "n": 8,
+  "physical_shards": 8,
+  "all_shards_completed": true,
+  "freeze_success": true,
+  "aggregator_success": true,
+  "cohort": "public 2WikiMultihopQA validation, 8 new identities and 32 support docs absent from 40+48 tracked prior 2Wiki cohorts",
+  "source_selection_warning": "all 8 happen to be film/director/producer comparison questions; not independent task-family, not GAIA",
+  "arms": {
+    "base_native": {
+      "correct": 1,
+      "completed": 8,
+      "model_calls": 36,
+      "tool_calls": 58,
+      "elapsed_s": 1094.92
+    },
+    "base_serializer": {
+      "correct": 8,
+      "completed": 8,
+      "model_calls": 44,
+      "tool_calls": 58,
+      "elapsed_s": 1172.38
+    },
+    "v7_native": {
+      "correct": 2,
+      "completed": 7,
+      "model_calls": 46,
+      "tool_calls": 71,
+      "elapsed_s": 1224.86
+    },
+    "v7_serializer": {
+      "correct": 7,
+      "completed": 7,
+      "model_calls": 53,
+      "tool_calls": 71,
+      "elapsed_s": 1289.16
+    }
+  },
+  "paired": {
+    "base_native_to_base_serializer": {
+      "rescues": 7,
+      "regressions": 0,
+      "exact_mcnemar_2s_p": 0.015625
+    },
+    "v7_native_to_v7_serializer": {
+      "rescues": 5,
+      "regressions": 0,
+      "exact_mcnemar_2s_p": 0.0625
+    },
+    "base_native_to_v7_native": {
+      "rescues": 1,
+      "regressions": 0,
+      "exact_mcnemar_2s_p": 1
+    },
+    "base_serializer_to_v7_serializer": {
+      "rescues": 0,
+      "regressions": 1,
+      "exact_mcnemar_2s_p": 1
+    }
+  },
+  "adapter_plus_formatter_interaction_correct_cases": -2,
+  "adapter_serializer_one_incorrect_cause": "v7 agent did not complete; formatter never invoked, not formatter output regression",
+  "conclusion": "Observed narrow public QA success comes overwhelmingly from gold-blind same-base verbatim extraction of earlier replies; no robust LoRA weight superiority proven. This is not GAIA, hidden, novel reasoning, or independent source-generalization gain.",
+  "constraints": {
+    "new_training": false,
+    "stronger_inference_model": false,
+    "hidden_holdout_used": false,
+    "production_change": false,
+    "promotion_allowed": false,
+    "aa_repeats_done": false
+  }
+}
