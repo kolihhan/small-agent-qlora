@@ -1,0 +1,147 @@
+name: PRO Qwen9B new-source 2Wiki16 question-aware answer serializer
+
+on:
+  push:
+    branches: [experiment/qwen9b-2wiki-serializer-new16-20261117]
+    paths:
+      - scripts/eval_2wiki_serializer_new16.py
+      - tests/test_eval_2wiki_serializer_new16.py
+      - .github/workflows/pro-2wiki16-serializer-qwen9b.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  freeze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e '.[eval,dev,files]'
+      - name: Check source ID/document exclusion and pair invariants before inference
+        run: |
+          python -m pytest -q tests/test_eval_2wiki_serializer_new16.py
+          python -m compileall -q scripts/eval_2wiki_serializer_new16.py
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 43712873154
+          github-token: ${{ github.token }}
+          name: 2wiki-original-source-cohort-frozen
+          path: prior-2wiki
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 43862358318
+          github-token: ${{ github.token }}
+          name: source-2wiki-body8
+          path: prior-2wiki-novel
+      - name: Freeze new 2Wiki validation cohort excluding all 24 recorded prior VAL identities and support docs
+        run: |
+          set -euo pipefail
+          python -m scripts.eval_2wiki_serializer_new16 \
+            --prior-linked prior-2wiki/2wiki-linked-frozen.json \
+            --prior-novel prior-2wiki-novel/frozen.json \
+            --output 2wiki16-serializer-source-frozen.json
+          python - <<'PY'
+          import json
+          o=json.load(open('2wiki16-serializer-source-frozen.json'))
+          assert o["status"]=="FROZEN_BEFORE_NEW_QWEN_MODEL_INFERENCE"
+          assert o["known_prior_ids_excluded"]==24
+          assert o["n"]==16 and o["shards"]==4
+          assert o["gate"]=={"net_exact":3,"max_regressions":1,"min_completed":12}
+          assert o["serializer_sha256"]=="a1f844029179ab91e9ff0ebd0b9b8a6293801c686e4080921edd5b3a82ef60a3"
+          assert len({c["id"] for c in o["cases"]})==16
+          print("TWOWIKI16_PREINFERENCE_FROZEN",o["frozen_source_sha256"])
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qwen9b-2wiki16-serializer-new-source-locked
+          path: 2wiki16-serializer-source-frozen.json
+          if-no-files-found: error
+          retention-days: 30
+
+  paired:
+    needs: freeze
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      OLLAMA_HOST: 127.0.0.1:11434
+      OLLAMA_CONTEXT_LENGTH: '8192'
+      OLLAMA_NUM_PARALLEL: '1'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e '.[eval,files]'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: qwen9b-2wiki16-serializer-new-source-locked
+      - name: Start unchanged pinned Qwen3.5-9B (same as positive Hotpot16)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+          ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          for i in {1..60}; do
+            curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
+          ollama pull qwen3.5:9b-q4_K_M
+      - name: One original autonomous local-search/read Qwen answer then one same Qwen formatter
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python -m scripts.eval_2wiki_serializer_new16 \
+            --frozen 2wiki16-serializer-source-frozen.json --shard "$SHARD" \
+            --output "serializer-2wiki16-shard-$SHARD.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: qwen9b-2wiki16-serializer-shard-${{ matrix.shard }}
+          path: serializer-2wiki16-shard-${{ matrix.shard }}.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    if: always()
+    needs: paired
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: qwen9b-2wiki16-serializer-shard-*
+          path: shards
+          merge-multiple: true
+      - name: Strict paired aggregate only if all 16 fixed source cases completed
+        run: |
+          set -euo pipefail
+          python -m scripts.eval_2wiki_serializer_new16 \
+            --inputs shards/serializer-2wiki16-shard-*.json \
+            --output 2wiki16-serializer-complete.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: qwen9b-2wiki16-serializer-full-only
+          path: 2wiki16-serializer-complete.json
+          if-no-files-found: warn
+          retention-days: 30
