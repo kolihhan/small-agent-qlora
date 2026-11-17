@@ -1,7 +1,7 @@
 name: PRO Hotpot8 cross-family Base-v7 x serializer physical (CPU)
 on:
   pull_request:
-    types: [synchronize]
+    types: [opened, synchronize]
     branches: [experiment/gaia-protected-v7-factorial-2wiki8-20261117]
     paths:
       - scripts/eval_hotpot8_v7_factorial.py
