@@ -173,10 +173,17 @@ def private_route_replay(task_ids):
                         protected.append(action)
                     elif status=="unmapped" and request_category(req) in ("admin","api_docs"):
                         stats["intentionally_excluded_admin_or_docs"]+=1
+                    elif status=="unmapped" and request_category(req)=="supervisor":
+                        # Supplied official gold transcript may contain hidden
+                        # privileged supervisor pre/post calls. The student
+                        # must NEVER have access to these endpoints. We test
+                        # physical BUSINESS action replay with these omitted
+                        # as a strictly limited source-only diagnostic.
+                        stats["intentionally_excluded_nonpublic_supervisor"]+=1
                     else:
-                        stats["unreplayable_business_or_supervisor_calls"]+=1
+                        stats["unreplayable_business_or_bad_calls"]+=1
                 local_blocked=sum(status!="mapped" and
-                    not (status=="unmapped" and request_category(req) in ("admin","api_docs"))
+                    not (status=="unmapped" and request_category(req) in ("admin","api_docs","supervisor"))
                     for req,(status,_) in zip(g.api_calls,planned))
                 if local_blocked or not protected:
                     stats["tasks_unreplayable_due_to_schema"]+=1
@@ -239,7 +246,7 @@ def main():
          "run_contains_decrypted_source_or_references":False,
          "training":False,"models_called":0,"DEV_or_TEST_opened":False,
          "no_GAIA_score":True,
-         "interpretation":"Matched public API route availability and physical source-only replay are bridge feasibility tests. No LLM task success or independent method gain. If full gold requests cannot map, investigate public tool scope or doc schema; never infer Qwen reasoning inability from unreachable API route."}
+         "interpretation":"Original reference TRAIN90 business API coverage and restricted public bridge replay of earlier eight TRAIN-only traces, explicitly omitting UNAVAILABLE privileged supervisor calls. Successful state is a business-trace feasibility result only, NOT proof model could reconstruct hidden supervisor info or correct next-actions. No LLM task success, DEV/GAIA model gain, or supervised selector."}
     args.out.parent.mkdir(parents=True,exist_ok=True)
     args.out.write_text(json.dumps(out,sort_keys=True,indent=2)+"\n")
     print("APPWORLD_TRAIN90_BRIDGE_COVERAGE",json.dumps(totals,sort_keys=True),flush=True)
