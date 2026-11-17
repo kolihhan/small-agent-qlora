@@ -1,81 +1,58 @@
-name: PRO Qwen9B 2Wiki48 source-disjoint confirmation of frozen Hotpot verbatim serializer
-
+name: PRO Qwen9B 2Wiki8 frozen Base vs v7 LoRA x serializer physical
 on:
   push:
-    branches: [experiment/qwen9b-2wiki-serializer-confirm48-20261117]
+    branches: [experiment/gaia-protected-v7-factorial-2wiki8-20261117]
     paths:
-      - scripts/eval_2wiki_serializer_confirm48.py
-      - tests/test_eval_2wiki_serializer_confirm48.py
+      - scripts/eval_2wiki8_v7_factorial.py
+      - tests/test_eval_2wiki8_v7_factorial.py
       - .github/workflows/pro-2wiki48-serializer-qwen9b.yml
   workflow_dispatch:
-
 permissions:
   contents: read
   actions: read
-
+env:
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_SHA: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  V7_SHA: 475f5fb59a553390a0dde9425d36b42ff85a0345bdd31b8465c22fd4d2bc02e2
 jobs:
   freeze:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
-        with:
-          python-version: '3.11'
-      - run: python -m pip install -e '.[eval,dev,files]'
-      - name: Check source ID/document exclusion and pair invariants before inference
-        run: |
-          python -m pytest -q tests/test_eval_2wiki_serializer_confirm48.py
-          python -m compileall -q scripts/eval_2wiki_serializer_confirm48.py
+        with: {python-version: '3.11'}
+      - run: |
+          python -m pip install -e '.[eval,files,dev]'
+          python -m pytest -q tests/test_eval_2wiki8_v7_factorial.py
+          python -m compileall -q scripts/eval_2wiki8_v7_factorial.py
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          repository: kolihhan/small-agent-qlora
-          run-id: 43712873154
-          github-token: ${{ github.token }}
-          name: 2wiki-original-source-cohort-frozen
-          path: prior-2wiki
+        with: {repository: kolihhan/small-agent-qlora, run-id: 43712873154, github-token: "${{ github.token }}", name: 2wiki-original-source-cohort-frozen, path: prior-linked}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          repository: kolihhan/small-agent-qlora
-          run-id: 43862358318
-          github-token: ${{ github.token }}
-          name: source-2wiki-body8
-          path: prior-2wiki-novel
+        with: {repository: kolihhan/small-agent-qlora, run-id: 43862358318, github-token: "${{ github.token }}", name: source-2wiki-body8, path: prior-novel}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          repository: kolihhan/small-agent-qlora
-          run-id: 44016763563
-          github-token: ${{ github.token }}
-          name: qwen9b-2wiki16-serializer-new-source-locked
-          path: prior-2wiki-success16
-      - name: Freeze 48 new 2Wiki cases excluding all 40 prior cases and their 160 supporting documents
+        with: {repository: kolihhan/small-agent-qlora, run-id: 44016763563, github-token: "${{ github.token }}", name: qwen9b-2wiki16-serializer-new-source-locked, path: prior-positive16}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: {repository: kolihhan/small-agent-qlora, run-id: 44022276727, github-token: "${{ github.token }}", name: qwen9b-2wiki48-serializer-new-source-locked, path: prior-positive48}
+      - name: Frozen eight new cases after previously tested 40+48
         run: |
           set -euo pipefail
-          python -m scripts.eval_2wiki_serializer_confirm48 \
-            --prior-linked prior-2wiki/2wiki-linked-frozen.json \
-            --prior-novel prior-2wiki-novel/frozen.json \
-            --prior-confirmed prior-2wiki-success16/2wiki16-serializer-source-frozen.json \
-            --output 2wiki48-serializer-source-frozen.json
+          python -m scripts.eval_2wiki8_v7_factorial --source-only \
+            --prior-linked prior-linked/2wiki-linked-frozen.json \
+            --prior-novel prior-novel/frozen.json \
+            --prior-confirmed prior-positive16/2wiki16-serializer-source-frozen.json \
+            --prior-48 prior-positive48/2wiki48-serializer-source-frozen.json \
+            --output factorial-new8-source-frozen.json
           python - <<'PY'
           import json
-          o=json.load(open('2wiki48-serializer-source-frozen.json'))
-          assert o["status"]=="FROZEN_BEFORE_NEW_QWEN_MODEL_INFERENCE"
-          assert o["known_prior_ids_excluded"]==40
-          assert o["known_previous_document_hashes_excluded"]==160
-          assert o["previous_positive16_source_sha"]=="cb661a030156a60cbfb1bb4eb17bcb06bc056dbb7920126be517226fbf3c32dd"
-          assert o["n"]==48 and o["shards"]==8
-          assert o["gate"]=={"net_exact":8,"max_regressions":1,"min_completed":40,"max_exact_mcnemar_p":0.05}
-          assert o["serializer_sha256"]=="a1f844029179ab91e9ff0ebd0b9b8a6293801c686e4080921edd5b3a82ef60a3"
-          assert len({c["id"] for c in o["cases"]})==48
-          print("TWOWIKI48_PREINFERENCE_FROZEN",o["frozen_source_sha256"])
+          f=json.load(open('factorial-new8-source-frozen.json'))
+          assert f['n']==8 and f['new_support_doc_paths']==32
+          print('FACTORIAL_FROZEN_SHA',f['source_sha'])
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: qwen9b-2wiki48-serializer-new-source-locked
-          path: 2wiki48-serializer-source-frozen.json
-          if-no-files-found: error
-          retention-days: 30
-
+        with: {name: qwen9b-v7-factorial-new8-source-frozen, path: factorial-new8-source-frozen.json, if-no-files-found: error, retention-days: 30}
   paired:
     needs: freeze
     runs-on: ubuntu-latest
@@ -84,48 +61,49 @@ jobs:
       fail-fast: false
       max-parallel: 8
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
-    env:
-      OLLAMA_HOST: 127.0.0.1:11434
-      OLLAMA_CONTEXT_LENGTH: '8192'
-      OLLAMA_NUM_PARALLEL: '1'
+        shard: [0,1,2,3]
+        mode: [base,adapter]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
-        with:
-          python-version: '3.11'
+        with: {python-version: '3.11'}
       - run: python -m pip install -e '.[eval,files]'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: qwen9b-2wiki48-serializer-new-source-locked
-      - name: Start unchanged pinned Qwen3.5-9B (same as positive Hotpot16)
+        with: {name: qwen9b-v7-factorial-new8-source-frozen}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: {run-id: 43434228699, repository: kolihhan/small-agent-qlora, github-token: "${{ github.token }}", name: qlora-v7-converted-f16-gguf, path: adapters}
+      - name: Pin base and adapter GGUF checksums
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL --retry 5 https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
-          ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
-          for i in {1..60}; do
-            curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break
-            sleep 2
-          done
-          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
-          ollama pull qwen3.5:9b-q4_K_M
-      - name: One original autonomous local-search/read Qwen answer then one same Qwen formatter
-        env:
-          SHARD: ${{ matrix.shard }}
+          curl -fsSL --retry 5 "$MODEL_URL" -o base.gguf
+          curl -fsSL --retry 5 "$LLAMA_URL" -o llama.tar.gz
+          echo "$MODEL_SHA  base.gguf" | sha256sum -c -
+          echo "$LLAMA_SHA  llama.tar.gz" | sha256sum -c -
+          echo "$V7_SHA  adapters/qlora-v7-adapter-f16.gguf" | sha256sum -c -
+          mkdir -p llama
+          tar -xzf llama.tar.gz -C llama
+          server=$(find "$PWD/llama" -type f -name llama-server -print -quit)
+          test -x "$server"
+          echo "LLAMA_SERVER=$server" >> "$GITHUB_ENV"
+      - name: Real paired Qwen9B inference with fixed local tools
+        shell: bash
+        env: {MODE: "${{ matrix.mode }}", SHARD: "${{ matrix.shard }}"}
         run: |
           set -euo pipefail
-          python -m scripts.eval_2wiki_serializer_confirm48 \
-            --frozen 2wiki48-serializer-source-frozen.json --shard "$SHARD" \
-            --output "serializer-2wiki48-shard-$SHARD.json"
+          args=(-m base.gguf --alias qwen3.5-9b --host 127.0.0.1 --port 8080 --ctx-size 16384 --threads 4 --parallel 1 --jinja --reasoning-budget 0 --temperature 0)
+          if [ "$MODE" = adapter ]; then args+=(--lora adapters/qlora-v7-adapter-f16.gguf); fi
+          "$LLAMA_SERVER" "${args[@]}" > "$RUNNER_TEMP/factorial-$MODE-$SHARD.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..180}; do curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 && break; sleep 2; done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+          python -m scripts.eval_2wiki8_v7_factorial \
+            --frozen factorial-new8-source-frozen.json --mode "$MODE" --shard "$SHARD" \
+            --output "factorial-$MODE-$SHARD.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
-        with:
-          name: qwen9b-2wiki48-serializer-shard-${{ matrix.shard }}
-          path: serializer-2wiki48-shard-${{ matrix.shard }}.json
-          if-no-files-found: warn
-          retention-days: 30
-
+        with: {name: "factorial-qwen9b-${{ matrix.mode }}-${{ matrix.shard }}", path: factorial-*.json, if-no-files-found: warn, retention-days: 30}
   aggregate:
     if: always()
     needs: paired
@@ -134,24 +112,13 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
-        with:
-          python-version: '3.11'
-      - run: python -m pip install -e .
+        with: {python-version: '3.11'}
+      - run: python -m pip install -e '.[eval,files]'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          pattern: qwen9b-2wiki48-serializer-shard-*
-          path: shards
-          merge-multiple: true
-      - name: Strict paired aggregate only if all 48 source cases completed
-        run: |
+        with: {pattern: 'factorial-qwen9b-*', path: shards, merge-multiple: true}
+      - run: |
           set -euo pipefail
-          python -m scripts.eval_2wiki_serializer_confirm48 \
-            --inputs shards/serializer-2wiki48-shard-*.json \
-            --output 2wiki48-serializer-complete.json
+          python -m scripts.eval_2wiki8_v7_factorial --inputs shards/factorial-base-*.json shards/factorial-adapter-*.json --output factorial-qwen9b-complete.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
-        with:
-          name: qwen9b-2wiki48-serializer-full-only
-          path: 2wiki48-serializer-complete.json
-          if-no-files-found: warn
-          retention-days: 30
+        with: {name: qwen9b-v7-factorial-new8-complete-only, path: factorial-qwen9b-complete.json, if-no-files-found: warn, retention-days: 30}
