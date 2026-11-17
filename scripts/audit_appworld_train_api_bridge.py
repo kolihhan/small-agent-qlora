@@ -84,16 +84,19 @@ def request_category(req: dict) -> str:
         return app
     return "business" if app else "malformed"
 
-def public_route_lookup(api_docs, allowed_apps) -> dict[str, list]:
+def public_route_lookup(api_docs, allowed_apps, *,
+                        allow_supervisor_public_reads: bool = False) -> dict[str, list]:
     # Docs (not hidden oracle) specify actual path and HTTP method.
     out = {}
     for app in sorted(set(allowed_apps) | {"supervisor"}):
         if app in {"admin", "api_docs"}: continue
         docs = api_docs.get(app, {})
         for api, info in docs.items():
-            if app == "supervisor" and api != "complete_task":continue
             if not isinstance(info, dict):continue
             method=str(info.get("method") or "").lower()
+            if app == "supervisor" and api != "complete_task" and not (
+                    allow_supervisor_public_reads and method == "get"):
+                continue
             path=str(info.get("path") or "")
             if method not in {"get","post","put","patch","delete"} or not path.startswith("/"):
                 continue
@@ -144,7 +147,7 @@ def summarize_reference_coverage(tasks, docs_by_task):
     return total
 
 
-def private_route_replay(task_ids):
+def private_route_replay(task_ids, *, allow_supervisor_public_reads: bool = False):
     from appworld import AppWorld
     from appworld.ground_truth import GroundTruth
     stats=Counter()
@@ -155,7 +158,8 @@ def private_route_replay(task_ids):
                 g=world.task.ground_truth
                 if g is None or g.api_calls is None:
                     raise RuntimeError("gold reference source unavailable")
-                routes=public_route_lookup(world.task.api_docs,world.task.allowed_apps)
+                routes=public_route_lookup(world.task.api_docs,world.task.allowed_apps,
+                    allow_supervisor_public_reads=allow_supervisor_public_reads)
                 planned=[match_public_request(req,routes) for req in g.api_calls]
                 stats["tasks_attempted"]+=1
                 stats["reference_requests"]+=len(planned)
@@ -188,9 +192,11 @@ def private_route_replay(task_ids):
                 if local_blocked or not protected:
                     stats["tasks_unreplayable_due_to_schema"]+=1
                     continue
-                tool=AppWorldCallTool(world,max_calls=1000,report_http_failures=True)
+                tool=AppWorldCallTool(world,max_calls=1000,report_http_failures=True,
+                    allow_supervisor_public_reads=allow_supervisor_public_reads)
                 for action in protected:
-                    if not allowed_public_api(world,action["app"],action["api"]):
+                    if not allowed_public_api(world,action["app"],action["api"],
+                            allow_supervisor_public_reads=allow_supervisor_public_reads):
                         stats["api_allowlist_rejected"]+=1
                         raise ValueError("request was mapped to unapproved API")
                     result=tool.run(action,Path("."))
@@ -222,6 +228,7 @@ def main():
     if len(ids)!=90:raise ValueError("pinned original TRAIN90 IDs changed")
     rows=[]
     route_maps={}
+    expanded_route_maps={}
     # Only original TRAIN records accessed; all action/GT data remain private.
     for tid in ids:
         g=GroundTruth.load(task_id=tid,mode="full")
@@ -231,17 +238,22 @@ def main():
         with AppWorld(task_id=tid,experiment_name="private-train-bridge-coverage",
                       ground_truth_mode="full",timeout_seconds=240) as world:
             route_maps[tid]=public_route_lookup(world.task.api_docs,world.task.allowed_apps)
+            expanded_route_maps[tid]=public_route_lookup(world.task.api_docs,
+                world.task.allowed_apps,allow_supervisor_public_reads=True)
     totals=summarize_reference_coverage(rows,route_maps)
+    expanded=summarize_reference_coverage(rows,expanded_route_maps)
     # Reuse the same prospectively predeclared 8 source-only TRAIN tasks from
     # preceding gold replay, not outcome-selected dev tasks.
     original_rows=[(tid,GroundTruth.load(task_id=tid,mode="full")) for tid in ids]
     subset=choose_train_entries(original_rows)
-    replay=private_route_replay(subset)
+    replay=private_route_replay(subset,allow_supervisor_public_reads=True)
     out={"status":"COMPLETE_TRAIN_ONLY_API_TOOL_SOURCE_CONTRACT",
          "protocol":PROTOCOL,"original_upstream_commit":SOURCE_COMMIT,
          "train_id_hash":source_hash(ids),
          "train_task_count":len(ids),
          "train_request_coverage":dict(sorted(totals.items())),
+         "train_request_coverage_with_public_supervisor_GET":dict(sorted(expanded.items())),
+         "newly_representable_official_supervisor_GET_requests":expanded["mapped"]-totals["mapped"],
          "train8_route_replay":dict(sorted(replay.items())),
          "run_contains_decrypted_source_or_references":False,
          "training":False,"models_called":0,"DEV_or_TEST_opened":False,
@@ -250,6 +262,7 @@ def main():
     args.out.parent.mkdir(parents=True,exist_ok=True)
     args.out.write_text(json.dumps(out,sort_keys=True,indent=2)+"\n")
     print("APPWORLD_TRAIN90_BRIDGE_COVERAGE",json.dumps(totals,sort_keys=True),flush=True)
+    print("APPWORLD_TRAIN90_READ_ONLY_SUPERVISOR_COVERAGE",json.dumps(expanded,sort_keys=True),flush=True)
     print("APPWORLD_TRAIN8_BRIDGE_REPLAY",json.dumps(replay,sort_keys=True),flush=True)
 
 
