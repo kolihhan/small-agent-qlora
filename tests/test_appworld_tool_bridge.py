@@ -1,3 +1,4 @@
+import json
 """No AppWorld installation required: public docs and tool budget contract."""
 from pathlib import Path
 from types import SimpleNamespace
@@ -64,3 +65,27 @@ def test_opt_in_documented_supervisor_get_only_never_writes_or_hidden_oracle():
     tool=AppWorldCallTool(w,allow_supervisor_public_reads=True)
     assert tool.run({"app":"supervisor","api":"show_profile","arguments":{}},Path(".")).ok
     assert tool.run({"app":"supervisor","api":"secret_answer","arguments":{}},Path(".")).error_code=="API_DENIED"
+
+
+def test_root_api_discovery_explicitly_surfaces_optin_public_supervisor_reads():
+    """Regression for model-action reachability: allowed != discoverable."""
+    w=world()
+    w.task.api_docs["supervisor"]={
+      "show_profile":{"method":"GET","path":"/supervisor/show_profile"},
+      "show_account":{"method":"GET","path":"/supervisor/show_account"},
+      "hidden_solution":{"method":"POST","path":"/supervisor/hidden_solution"},
+      "_private_read":{"method":"GET","path":"/supervisor/_private_read"},
+    }
+    default=AppWorldDocsTool(w).run({},Path("."))
+    optin=AppWorldDocsTool(w,allow_supervisor_public_reads=True).run({},Path("."))
+    assert default.ok and optin.ok
+    baseline=json.loads(default.content)
+    variant=json.loads(optin.content)
+    assert "supervisor_public_read_apis" not in baseline
+    assert variant["supervisor_public_read_apis"]==["show_account","show_profile"]
+    assert "hidden_solution" not in optin.content
+    assert "_private_read" not in optin.content
+    assert "supervisor.complete_task" in optin.content
+    assert json.loads(AppWorldDocsTool(w,allow_supervisor_public_reads=True).run({
+      "app":"supervisor"},Path(".")).content)["apis"]==[
+      "complete_task","show_account","show_profile"]
