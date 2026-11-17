@@ -31,3 +31,63 @@ jobs:
         run: python -m pytest -q
       - name: Compile
         run: python -m compileall -q src tests
+
+  appworld_gold_source_feasibility:
+    if: github.event_name == 'pull_request' && github.head_ref == 'research/appworld-gold-api-horizon-source-feasibility-20261117'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: CPU contracts for source privacy and long API depth
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -q pytest
+          python -m pytest -q tests/test_audit_appworld_training_horizon.py
+          python -m compileall -q scripts/audit_appworld_training_horizon.py
+      - name: Install exact original AppWorld upstream revision with licensed LFS bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          appworld install --repo
+          appworld download data
+          test -f data/datasets/train.txt
+          test -f data/datasets/dev.txt
+          echo "APPWORLD_ROOT=$RUNNER_TEMP/appworld" >> "$GITHUB_ENV"
+      - name: Source-only private reference API histogram, no extracted task content
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.audit_appworld_training_horizon \
+            --out appworld-original-train-dev-aggregate-only.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('appworld-original-train-dev-aggregate-only.json')
+          o=json.loads(p.read_text())
+          assert o["no_model"] and o["no_training"] and o["no_gpu"]
+          assert o["no_raw_ground_truth_or_task_ids_exported"] is True
+          assert o["train"]["n"]>=60 and o["dev"]["n"]>=20
+          print('APPWORLD_CPU_REF_FEASIBLE_TASKS6PLUS',o['train']['tasks_with_6plus_business_calls'])
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: appworld-original-train-dev-reference-api-horizon-aggregates-only
+          path: appworld-original-train-dev-aggregate-only.json
+          if-no-files-found: error
+          retention-days: 30
