@@ -31,3 +31,65 @@ jobs:
         run: python -m pytest -q
       - name: Compile
         run: python -m compileall -q src tests
+
+
+  appworld_dev57_fixed_roster_freeze:
+    if: github.event_name == 'pull_request' && github.head_ref == 'research/fixed-appworld-dev57-stage-metrics-20261117'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: CPU test fixed 57-task stage metrics and source rejection
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -q pytest
+          python -m pytest -q tests/test_appworld_dev57_fixed_metrics.py
+      - name: Install exact original AppWorld DEV task IDs only (never gold to student)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+          echo "APPWORLD_ROOT=$RUNNER_TEMP/appworld" >> "$GITHUB_ENV"
+      - name: Freeze ALL 57 official DEV task hashes across 19 scenarios, mark 8 historical pilots
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from appworld import load_task_ids
+          from scripts.appworld_dev57_fixed_metrics import freeze_official_dev
+          r=freeze_official_dev(load_task_ids('dev'))
+          assert r['n']==57 and r['scenario_count']==19
+          assert r['previously_exposed']==8
+          assert r['estimated_unexposed_in_roster']==49
+          assert r['source_selected_without_student_outputs']
+          Path('appworld-dev57-original-fixed-metric-roster.json').write_text(
+              json.dumps(r,sort_keys=True,indent=2)+'\n')
+          print('APPWORLD_PERMANENT_DEV57_ROSTER_FROZEN',r['task_ids_sha256'],
+                r['task_hashes_sha256'],'historically_exposed',r['previously_exposed'])
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: appworld-original-dev57-fixed-primary-roster-hashes-only
+          path: appworld-dev57-original-fixed-metric-roster.json
+          if-no-files-found: error
+          retention-days: 30
