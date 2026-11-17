@@ -147,3 +147,161 @@ jobs:
             appworld-original-train-late-action-ablation-aggregate-only.json
           if-no-files-found: error
           retention-days: 30
+
+  appworld_dev4_freeze:
+    if: github.event_name == 'pull_request' && github.head_ref == 'experiment/appworld-closedloop-qwen9b-baseline-20261117'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - name: CPU public AppWorld API and frozen-source safety tests (no model)
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[eval,dev]'
+          python -m pytest -q tests/test_appworld_tool_bridge.py tests/test_eval_appworld_qwen9b_dev4.py
+          python -m compileall -q src/gaia_small_agent/tools/appworld_tool.py scripts/eval_appworld_qwen9b_dev4.py
+      - name: Install pinned original AppWorld task/data to freeze independent DEV task IDs only
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+      - name: Freeze four DEV source task identities before Qwen inference (no gold)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.eval_appworld_qwen9b_dev4 --source-only --out appworld-qwen-dev4-source.json
+          python - <<'PY'
+          import json
+          x=json.load(open('appworld-qwen-dev4-source.json'))
+          assert x['status']=='SOURCE_FROZEN_BEFORE_QWEN_INFERENCE'
+          assert x['no_training'] and x['no_dev_ground_truth_loaded_during_selection']
+          assert x['n']==4 and x['distinct_scenarios']==4
+          print('APPWORLD_DEV4_SOURCE_SHA',x['task_ids_sha256'])
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: appworld-qwen9b-dev4-source-frozen-before-inference
+          path: appworld-qwen-dev4-source.json
+          retention-days: 30
+          if-no-files-found: error
+
+  appworld_dev4_inference:
+    needs: appworld_dev4_freeze
+    if: github.event_name == 'pull_request' && github.head_ref == 'experiment/appworld-closedloop-qwen9b-baseline-20261117'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - name: Install original Qwen tool runtime and original AppWorld (no teachers)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[eval,files]'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: appworld-qwen9b-dev4-source-frozen-before-inference
+      - name: SHA pin original Qwen3.5-9B GGUF and llama-server
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 'https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true' -o base.gguf
+          echo '8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54  base.gguf' | sha256sum -c -
+          curl -fsSL --retry 5 'https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz' -o llama.tar.gz
+          echo '36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b  llama.tar.gz' | sha256sum -c -
+          mkdir -p llama
+          tar -xzf llama.tar.gz -C llama
+          server=$(find "$PWD/llama" -type f -name llama-server -print -quit)
+          test -x "$server"
+          echo "LLAMA_SERVER=$server" >> "$GITHUB_ENV"
+      - name: Native Qwen zero-train public-doc/API tool closed-loop DEV task, official state score hidden
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          "$LLAMA_SERVER" -m base.gguf --alias qwen3.5-9b \
+            --host 127.0.0.1 --port 8080 --ctx-size 8192 \
+            --threads 4 --parallel 1 --jinja --reasoning-budget 0 \
+            --temperature 0 > "$RUNNER_TEMP/appworld-original-qwen.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for i in {1..180}; do curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 && break; sleep 2; done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+          python -m scripts.eval_appworld_qwen9b_dev4 \
+            --frozen appworld-qwen-dev4-source.json --shard "$SHARD" \
+            --work physical-dev-task \
+            --out "appworld-dev-qwen-$SHARD.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: appworld-qwen9b-dev4-physical-shard-${{ matrix.shard }}
+          path: appworld-dev-qwen-*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  appworld_dev4_aggregate:
+    if: always() && github.event_name == 'pull_request' && github.head_ref == 'experiment/appworld-closedloop-qwen9b-baseline-20261117'
+    needs: appworld_dev4_inference
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - run: python -m pip install -e .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: appworld-qwen9b-dev4-physical-shard-*
+          path: shards
+          merge-multiple: true
+      - name: Strict complete four task native Qwen9B zero-train DEV result only
+        run: |
+          set -euo pipefail
+          python -m scripts.eval_appworld_qwen9b_dev4 \
+            --inputs shards/appworld-dev-qwen-*.json \
+            --out appworld-dev-qwen-complete.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: appworld-qwen9b-dev4-original-base-complete-only
+          path: appworld-dev-qwen-complete.json
+          retention-days: 30
+          if-no-files-found: warn
