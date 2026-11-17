@@ -1,0 +1,41 @@
+{
+  "date": "2026-11-17",
+  "status": "COMPLETE_PHYSICAL_ORIGINAL_QWEN_APPWORLD_DEV57_FIXED_MAIN",
+  "source_commit": "42b5bcf3cd334fee33f0c37c02070a9f5807add5",
+  "dev_ids_sha256": "d36670b383552f4c586baf1f84f0d53fcd3e05db5698b1532b2291ace23288a8",
+  "dev_task_hashes_sha256": "f6f4121b9f75b1d4f57ec2da12a1234966acd3bbcf7626ae117cba5b9b2bc9b1",
+  "model_sha256": "8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54",
+  "physical_runs": [
+    44092560274,
+    44093515137
+  ],
+  "aggregate_artifact": 14339758304,
+  "task_count": 57,
+  "scene_count": 19,
+  "previously_exposed_tasks": 8,
+  "task_success": 0,
+  "official_test_pass": 48,
+  "official_test_total": 291,
+  "tool_calls": 777,
+  "tool_format_validity": 1,
+  "model_steps": 834,
+  "business_api_calls": 402,
+  "http_errors": 380,
+  "post_http_successful_api_observations": 3,
+  "normal_final": 45,
+  "model_error_stops": 9,
+  "invalid_final_stops": 3,
+  "source_reference_depth_6to11": {
+    "tasks": 9,
+    "success": 0,
+    "tests_pass": 3,
+    "tests_total": 42
+  },
+  "source_reference_depth_12plus": {
+    "tasks": 48,
+    "success": 0,
+    "tests_pass": 45,
+    "tests_total": 249
+  },
+  "claim_boundary": "Original Qwen3.5-9B base no LoRA, no stronger teacher, original AppWorld public DEV57, not GAIA. 57 tasks belong to 19 correlated scenes and 8 were previously evaluated. 291 state tests nested, not 291 independent tasks. Tool validity is schema-level, HTTP recovery proxy not actual state success. No promotion until full same-task paired effect with source-validated public supervisor GET intervention is measured."
+}
