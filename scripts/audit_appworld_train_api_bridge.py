@@ -74,6 +74,16 @@ def route_pattern(path: str) -> re.Pattern[str]:
     return re.compile("^" + "".join(regex) + "$")
 
 
+def request_category(req: dict) -> str:
+    """Report only high-level action classes, never API names/parameters."""
+    if not isinstance(req, dict) or not isinstance(req.get("url"), str):
+        return "malformed"
+    path=urlsplit(req["url"]).path.strip("/")
+    app=path.split("/",1)[0].casefold()
+    if app in {"admin","api_docs","supervisor"}:
+        return app
+    return "business" if app else "malformed"
+
 def public_route_lookup(api_docs, allowed_apps) -> dict[str, list]:
     # Docs (not hidden oracle) specify actual path and HTTP method.
     out = {}
@@ -128,6 +138,7 @@ def summarize_reference_coverage(tasks, docs_by_task):
         for call in original_calls:
             state,_=match_public_request(call,routes)
             total[state]+=1
+            total[state+"_"+request_category(call)]+=1
         total["tasks"]+=1
         total["requests"]+=len(original_calls)
     return total
@@ -151,11 +162,27 @@ def private_route_replay(task_ids):
                 stats["public_mappable"]+=sum(status=="mapped" for status,_ in planned)
                 stats["unmapped"]+=sum(status=="unmapped" for status,_ in planned)
                 stats["ambiguous"]+=sum(status=="ambiguous" for status,_ in planned)
-                if any(status!="mapped" for status,_ in planned):
+                for req,(status,_) in zip(g.api_calls,planned):
+                    if status!="mapped":
+                        stats["unmapped_"+request_category(req)]+=1
+                # Administrative bootstrap/doc-only calls can be omitted
+                # from a student-visible tool policy, never business/supervisor.
+                protected=[]
+                for req,(status,action) in zip(g.api_calls,planned):
+                    if status=="mapped":
+                        protected.append(action)
+                    elif status=="unmapped" and request_category(req) in ("admin","api_docs"):
+                        stats["intentionally_excluded_admin_or_docs"]+=1
+                    else:
+                        stats["unreplayable_business_or_supervisor_calls"]+=1
+                local_blocked=sum(status!="mapped" and
+                    not (status=="unmapped" and request_category(req) in ("admin","api_docs"))
+                    for req,(status,_) in zip(g.api_calls,planned))
+                if local_blocked or not protected:
                     stats["tasks_unreplayable_due_to_schema"]+=1
                     continue
                 tool=AppWorldCallTool(world,max_calls=1000,report_http_failures=True)
-                for status,action in planned:
+                for action in protected:
                     if not allowed_public_api(world,action["app"],action["api"]):
                         stats["api_allowlist_rejected"]+=1
                         raise ValueError("request was mapped to unapproved API")
