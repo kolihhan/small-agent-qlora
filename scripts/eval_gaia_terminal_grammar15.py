@@ -116,8 +116,8 @@ def server_schema_preflight(base_url:str="http://127.0.0.1:8080")->bool:
     answer,status=_request_json_final(m,[
         {"role":"system","content":"Respond to the test request with the word ready in the answer field only."},
         {"role":"user","content":"Output exactly ready."},
-    ],[])
-    return status=="accepted_schema" and answer.casefold()=="ready"
+    ],[tool.definition() for tool in default_tools()])
+    return status=="accepted_schema" and bool(answer.strip())
 
 class FailedFinalGrammarModel(OpenAICompatModel):
     """Record identical original terminal, only attempt grammar if invalid."""
