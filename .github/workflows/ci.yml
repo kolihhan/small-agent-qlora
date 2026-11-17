@@ -46,7 +46,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install -q pytest
+          python -m pip install -e '.[eval,files]' pytest
           python -m pytest -q tests/test_appworld_dev57_fixed_metrics.py tests/test_eval_appworld_qwen9b_dev57.py tests/test_appworld_tool_bridge.py
       - name: Install exact original AppWorld DEV task IDs only (never gold to student)
         shell: bash
