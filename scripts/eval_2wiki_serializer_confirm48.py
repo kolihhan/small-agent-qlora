@@ -120,8 +120,8 @@ def freeze(rows:list[dict],linked_prior:dict,novel_prior:dict,positive_prior:dic
                     for r in linked_prior["cases"] for p in r["support"]}
     if len(linked_ids)!=8 or len(linked_support)<8:
         raise RuntimeError("Earlier 2Wiki source identities incomplete")
-    excluded_ids=FIRST_EXPOSED_IDS | linked_ids | novel_ids
-    excluded_support=FIRST_EXPOSED_SUPPORT | linked_support | novel_support
+    excluded_ids=set(FIRST_EXPOSED_IDS | linked_ids | novel_ids)
+    excluded_support=set(FIRST_EXPOSED_SUPPORT | linked_support | novel_support)
     if (FIRST_EXPOSED_IDS & linked_ids or FIRST_EXPOSED_IDS & novel_ids
         or linked_ids & novel_ids
         or FIRST_EXPOSED_SUPPORT & linked_support
