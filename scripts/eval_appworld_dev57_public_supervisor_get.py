@@ -97,6 +97,11 @@ def one_task(task_id,workspace):
             event.data["arguments"].get("app")=="supervisor" and
             event.data["arguments"].get("api")!="complete_task"
             for event in student.trace)
+        # Diagnostics are aggregate/source-only and NEVER model context.
+        row["docs_root_discovery_calls"] = docs.root_discovery_calls
+        row["docs_supervisor_list_calls"] = docs.supervisor_list_calls
+        row["docs_supervisor_detail_calls"] = docs.supervisor_detail_calls
+        row["api_http_status_counts"] = dict(sorted(api.http_status_counts.items()))
         row["student_elapsed_raw_wall_s"]=round((base.clock()-start)/1e9,2)
         return row
 
