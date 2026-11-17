@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   test:
@@ -31,3 +32,36 @@ jobs:
         run: python -m pytest -q
       - name: Compile
         run: python -m compileall -q src tests
+
+  audit_v8_horizon:
+    if: github.event_name == 'pull_request' && github.head_ref == 'research/v8-long-horizon-label-coverage-audit-20261117'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Download immutable original no-GAIA v8 train and teacher-forced holdout sources
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 43619541894
+          github-token: ${{ github.token }}
+          name: qlora-v8-protected-source-balanced-token-checked
+          path: original
+      - name: Recompute source-only selected action horizon distribution, fail on source SHA drift
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest -q tests/test_audit_v8_horizon_supervision.py
+          python -m scripts.audit_v8_horizon_supervision \
+            --train original/qlora-v8-train.jsonl \
+            --holdout original/qlora-v8-holdout.jsonl \
+            --out v8-source-horizon-audit.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: original-v8-long-horizon-selected-action-label-coverage-audit
+          path: v8-source-horizon-audit.json
+          retention-days: 30
+          if-no-files-found: error
