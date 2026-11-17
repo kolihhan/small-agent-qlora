@@ -29,14 +29,28 @@ def _linked_prior()->dict:
     }
 
 
+def _novel_prior(old:dict)->dict:
+    cases=[{"id":f"novel-{i}","support":{
+        m.page_path(f"novel support {i} {j}"):["source"] for j in range(4)}}
+        for i in range(8)]
+    return {
+        "protocol":"qwen35-9b-v3b-vs-base-2wiki-novel-validation8-v1",
+        "source_revision":m.REV,"source8_sha":old["cases_sha"],
+        "n":8,"cases":cases,
+        "new8_sha":sha256(json.dumps(cases,sort_keys=True).encode()).hexdigest(),
+    }
+
+
 def test_source_freeze_selects_16_disjoint_and_locks_same_serializer(monkeypatch):
     old=_linked_prior()
+    third=_novel_prior(old)
     monkeypatch.setattr(m,"LINKED_PREVIOUS_SHA",old["cases_sha"])
+    monkeypatch.setattr(m,"NOVEL_PREVIOUS_SHA",third["new8_sha"])
     cases=[_row(i) for i in range(28)]
-    frozen=m.freeze(cases,old)
+    frozen=m.freeze(cases,old,third)
     assert frozen["n"]==16
     assert len({c["id"] for c in frozen["cases"]})==16
-    assert frozen["known_prior_ids_excluded"]==16
+    assert frozen["known_prior_ids_excluded"]==24
     assert frozen["serializer_sha256"]==m.SERIALIZER_LOCKED_SHA
     assert frozen["model_digest"]==m.DIGEST
     m.validate_frozen(frozen)
@@ -48,11 +62,13 @@ def test_source_freeze_selects_16_disjoint_and_locks_same_serializer(monkeypatch
 
 def test_source_freeze_fails_closed_if_one_old_case_used(monkeypatch):
     old=_linked_prior()
+    third=_novel_prior(old)
     monkeypatch.setattr(m,"LINKED_PREVIOUS_SHA",old["cases_sha"])
+    monkeypatch.setattr(m,"NOVEL_PREVIOUS_SHA",third["new8_sha"])
     bad=_row(999)
     bad["id"]=old["cases"][0]["id"]
     with pytest.raises(RuntimeError,match="Insufficient"):
-        m.freeze([bad]+[_row(i) for i in range(15)],old)
+        m.freeze([bad]+[_row(i) for i in range(15)],old,third)
 
 
 def test_aggregate_requires_complete_unique_16_and_paired_stats():
