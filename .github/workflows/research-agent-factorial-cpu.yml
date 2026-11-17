@@ -1,0 +1,19 @@
+name: Research agent factorial evidence gate (CPU only)
+on:
+  pull_request:
+    paths:
+      - 'research/agent_factorial_gate.py'
+      - 'tests/test_agent_factorial_gate.py'
+      - '.github/workflows/research-agent-factorial-cpu.yml'
+  workflow_dispatch:
+jobs:
+  factorial-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pytest
+      - run: python -m pytest -q tests/test_agent_factorial_gate.py
