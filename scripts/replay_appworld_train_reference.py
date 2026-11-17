@@ -44,16 +44,24 @@ def replay(task_ids):
     counts=Counter()
     safe_stats=[]
     for task_id in task_ids:
+        stage="world_construct"
         try:
             with AppWorld(task_id=task_id,experiment_name="private-train-gold-reference-replay",
                           ground_truth_mode="full",timeout_seconds=240) as world:
+                stage="reference_load"
                 g=world.task.ground_truth
                 if g is None or not g.compiled_solution_code or g.api_calls is None:
                     raise RuntimeError("missing original official TRAIN compiled reference")
                 module=g.compiled_solution_module()
+                import inspect
+                sig=inspect.signature(module.solution)
+                counts["signature_nargs_"+str(len(sig.parameters))]+=1
+                counts["signature_args_"+",".join(sig.parameters.keys())]+=1
+                stage="reference_execute"
                 # Official reference program (NOT external model teacher).
                 # Execute inside the task's own stateful AppWorld APIs.
                 module.solution(world.task.supervisor,world.apis,g.public_data)
+                stage="state_evaluate"
                 tracker=world.evaluate(suppress_errors=True)
                 passed=bool(tracker.success)
                 counts["successful_state"]+=int(passed)
@@ -65,6 +73,7 @@ def replay(task_ids):
             # Do not leak decrypted task or reference program via exception text.
             counts["errors"]+=1
             counts["exception_class_"+type(exc).__name__]+=1
+            counts["error_stage_"+stage]+=1
     return {"n":len(task_ids),"task_subset_sha256":_source_sha(task_ids),
             "counts":dict(sorted(counts.items())),
             "mean_reference_apis":round(sum(x["api_calls_at_source"] for x in safe_stats)/len(safe_stats),2) if safe_stats else None,
