@@ -1,7 +1,7 @@
 """Prospective *second benchmark* Qwen3.5-9B lossless answer-serializer trial.
 
 2WikiMultihopQA validation only, original realistic local article search + read,
-source-doc/ID exclusion of the 8 original-native and 8 source-link historical
+source-doc/ID exclusion of the 8 original-native, 8 source-link and 8 later novel historical
 2Wiki cases. The same original autonomous Qwen9B agent makes one reply;
 one extra call to SAME model uses Hotpot16's frozen question-aware serializer
 to extract only verbatim answer substrings. No external LLM, gold or tool access
@@ -41,6 +41,7 @@ SHARDS=4
 PER_SHARD=4
 MIN_GATE={"net_exact":3,"max_regressions":1,"min_completed":12}
 LINKED_PREVIOUS_SHA="fded3c65e2ccc829ae0efdd8af448896320590b63bb69e0e9ff1d52eadc4fbb7"
+NOVEL_PREVIOUS_SHA="d102a3047ed96237c987ba30fe10f95d15c8ebcd4042cf78c71f4d1ecddbb8e9"
 SERIALIZER_LOCKED_SHA="a1f844029179ab91e9ff0ebd0b9b8a6293801c686e4080921edd5b3a82ef60a3"
 
 # Historical original native8, pinned in earlier eval_2wiki_linked_read.py.
@@ -91,7 +92,7 @@ def source_rank(identity:str)->str:
     return sha256(f"{SEED}:{identity}".encode()).hexdigest()
 
 
-def freeze(rows:list[dict],linked_prior:dict)->dict:
+def freeze(rows:list[dict],linked_prior:dict,novel_prior:dict)->dict:
     if (linked_prior.get("protocol")!="2wiki-validation-qwen9b-visible-local-links-pair-v1"
         or linked_prior.get("cases_sha")!=LINKED_PREVIOUS_SHA
         or linked_prior.get("source_revision")!=REV
@@ -99,14 +100,32 @@ def freeze(rows:list[dict],linked_prior:dict)->dict:
         or sha256(json.dumps(linked_prior["cases"],sort_keys=True).encode()).hexdigest()
             !=LINKED_PREVIOUS_SHA):
         raise RuntimeError("Earlier source-linked 2Wiki8 freeze missing or changed")
+    if (novel_prior.get("protocol")!="qwen35-9b-v3b-vs-base-2wiki-novel-validation8-v1"
+        or novel_prior.get("new8_sha")!=NOVEL_PREVIOUS_SHA
+        or novel_prior.get("source8_sha")!=LINKED_PREVIOUS_SHA
+        or novel_prior.get("source_revision")!=REV
+        or novel_prior.get("n")!=8
+        or len(novel_prior.get("cases",[]))!=8
+        or sha256(json.dumps(novel_prior["cases"],sort_keys=True).encode()).hexdigest()
+           !=NOVEL_PREVIOUS_SHA):
+        raise RuntimeError("Third previously exposed 2Wiki NOVEL8 is missing or changed")
+    novel_ids={r["id"] for r in novel_prior["cases"]}
+    novel_support={p.rsplit("/",1)[-1][:-4]
+                   for r in novel_prior["cases"] for p in r["support"]}
+    if len(novel_ids)!=8 or len(novel_support)<8:
+        raise RuntimeError("Previous novel8 source identities incomplete")
     linked_ids={r["id"] for r in linked_prior["cases"]}
     linked_support={p.rsplit("/",1)[-1][:-4]
                     for r in linked_prior["cases"] for p in r["support"]}
     if len(linked_ids)!=8 or len(linked_support)<8:
         raise RuntimeError("Earlier 2Wiki source identities incomplete")
-    excluded_ids=FIRST_EXPOSED_IDS | linked_ids
-    excluded_support=FIRST_EXPOSED_SUPPORT | linked_support
-    if FIRST_EXPOSED_IDS & linked_ids or FIRST_EXPOSED_SUPPORT & linked_support:
+    excluded_ids=FIRST_EXPOSED_IDS | linked_ids | novel_ids
+    excluded_support=FIRST_EXPOSED_SUPPORT | linked_support | novel_support
+    if (FIRST_EXPOSED_IDS & linked_ids or FIRST_EXPOSED_IDS & novel_ids
+        or linked_ids & novel_ids
+        or FIRST_EXPOSED_SUPPORT & linked_support
+        or FIRST_EXPOSED_SUPPORT & novel_support
+        or linked_support & novel_support):
         raise RuntimeError("Prior 2Wiki first8/linked8 overlap unexpected")
     chosen,used_support=[],set(excluded_support)
     for row in sorted(rows,key=lambda r:source_rank(str(r.get("id") or r.get("_id")))):
@@ -146,9 +165,11 @@ def freeze(rows:list[dict],linked_prior:dict)->dict:
     return {
         "status":"FROZEN_BEFORE_NEW_QWEN_MODEL_INFERENCE",
         "protocol":PROTOCOL,"source_repo":REPO,"source_revision":REV,
-        "split":"validation","known_prior_ids_excluded":16,
+        "split":"validation","known_prior_ids_excluded":24,
         "previous_first8_support_count":len(FIRST_EXPOSED_SUPPORT),
         "previous_linked8_source_sha":LINKED_PREVIOUS_SHA,
+        "previous_novel8_source_sha":NOVEL_PREVIOUS_SHA,
+        "previous_novel8_support_count":len(novel_support),
         "previous_linked8_support_count":len(linked_support),
         "frozen_source_sha256":source_sha,
         "serializer_sha256":SERIALIZER_SHA,
@@ -196,7 +217,7 @@ def validate_frozen(frozen:dict)->None:
         or frozen.get("serializer_sha256")!=SERIALIZER_SHA
         or SERIALIZER_SHA!=SERIALIZER_LOCKED_SHA
         or frozen.get("gate")!=MIN_GATE
-        or frozen.get("known_prior_ids_excluded")!=16
+        or frozen.get("known_prior_ids_excluded")!=24
         or len(frozen.get("cases",[]))!=N
         or sha256(json.dumps(frozen["cases"],sort_keys=True).encode()).hexdigest()
            !=frozen.get("frozen_source_sha256")):
@@ -312,6 +333,7 @@ def aggregate(shards:list[dict])->dict:
 def main():
     p=argparse.ArgumentParser()
     p.add_argument("--prior-linked",type=Path)
+    p.add_argument("--prior-novel",type=Path)
     p.add_argument("--frozen",type=Path)
     p.add_argument("--shard",type=int)
     p.add_argument("--inputs",type=Path,nargs="+")
@@ -325,14 +347,17 @@ def main():
         print("TWOWIKI16_SERIALIZER_PAIRED_FINAL",json.dumps({
             k:v for k,v in result.items() if k!="cases"},sort_keys=True),flush=True)
     elif args.prior_linked:
+        if args.prior_novel is None:
+            p.error("Source freeze requires --prior-novel third historical cohort")
         from datasets import load_dataset
         dataset=list(islice(load_dataset(
             REPO,split="validation",revision=REV,streaming=True),5000))
-        result=freeze(dataset,json.loads(args.prior_linked.read_text()))
+        result=freeze(dataset,json.loads(args.prior_linked.read_text()),
+                      json.loads(args.prior_novel.read_text()))
         print("TWOWIKI16_SOURCE_FROZEN",result["frozen_source_sha256"],flush=True)
     else:
         if not args.frozen or args.shard is None:
-            p.error("Need --prior-linked, --inputs or --frozen and --shard")
+            p.error("Need --prior-linked and --prior-novel, --inputs or --frozen and --shard")
         result=run_shard(json.loads(args.frozen.read_text()),args.shard,args.work)
     args.output.parent.mkdir(parents=True,exist_ok=True)
     args.output.write_text(json.dumps(result,sort_keys=True,indent=2,ensure_ascii=False)+"\n")
