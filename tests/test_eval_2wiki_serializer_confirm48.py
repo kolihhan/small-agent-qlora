@@ -8,7 +8,40 @@ import json
 import pytest
 
 import scripts.eval_2wiki_serializer_confirm48 as m
-from tests.test_eval_2wiki_serializer_new16 import _row, _linked_prior, _novel_prior
+def _row(i:int)->dict:
+    titles=[f"2Wiki synthetic case {i} title {j}" for j in range(7)]
+    original={t:[f"Answer_{i} on {t}",f"Second sentence {i} {j}"]
+              for j,t in enumerate(titles)}
+    return {
+        "id":f"fake-2wiki-id-{i}","question":f"Question about synthetic case {i}?",
+        "answer":f"Answer_{i}",
+        "context":{"title":titles,"sentences":list(original.values())},
+        "supporting_facts":{"title":titles[:4],"sent_id":[0,0,0,0]},
+    }
+
+
+def _linked_prior()->dict:
+    cases=[{"id":f"old-{i}","support":{m.page_path(f"old support {i} {j}"):["x"]
+           for j in range(4)}} for i in range(8)]
+    return {
+        "protocol":"2wiki-validation-qwen9b-visible-local-links-pair-v1",
+        "source_revision":m.REV,"cases":cases,
+        "cases_sha":sha256(json.dumps(cases,sort_keys=True).encode()).hexdigest(),
+    }
+
+
+def _novel_prior(old:dict)->dict:
+    cases=[{"id":f"novel-{i}","support":{
+        m.page_path(f"novel support {i} {j}"):["source"] for j in range(4)}}
+        for i in range(8)]
+    return {
+        "protocol":"qwen35-9b-v3b-vs-base-2wiki-novel-validation8-v1",
+        "source_revision":m.REV,"source8_sha":old["cases_sha"],
+        "n":8,"cases":cases,
+        "new8_sha":sha256(json.dumps(cases,sort_keys=True).encode()).hexdigest(),
+    }
+
+
 
 
 def prior_positive16() -> dict:
