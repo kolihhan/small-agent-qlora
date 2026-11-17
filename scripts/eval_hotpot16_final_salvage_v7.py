@@ -19,7 +19,6 @@ import json
 from pathlib import Path
 from time import monotonic
 
-from datasets import load_dataset
 from gaia_small_agent.agent.loop import AgentRuntime
 from gaia_small_agent.benchmark.scoring import gaia_score
 from gaia_small_agent.tools import ReadTool
@@ -330,6 +329,7 @@ def main():
     if args.source_only:
         if any(x is None for x in (args.prior8,args.prior16,args.prior_latest8)):
             p.error("need all 3 prior artifacts to exclude 32 exposed cases")
+        from datasets import load_dataset
         rows=list(islice(load_dataset(REPO,"distractor",split="validation",revision=REV,streaming=True),2500))
         result=freeze(rows,json.loads(args.prior8.read_text()),
                       json.loads(args.prior16.read_text()),
