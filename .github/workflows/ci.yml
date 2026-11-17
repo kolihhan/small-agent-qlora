@@ -64,6 +64,9 @@ jobs:
           test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
           git lfs pull
           python -m pip install -e .
+          # Pin compatible Pydantic/FastAPI: unpinned 2026 newest Pydantic
+          # breaks FastAPI schema import before official AppWorld CLI starts.
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
           appworld install --repo
           appworld download data
           test -f data/datasets/train.txt
