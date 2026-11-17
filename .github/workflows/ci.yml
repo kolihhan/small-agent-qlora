@@ -367,3 +367,247 @@ jobs:
           path: appworld-dev57-original-qwen-fully-verified.json
           if-no-files-found: warn
           retention-days: 30
+
+
+  appworld_dev57_supervisor_get_source_freeze:
+    if: github.event_name == 'pull_request' && github.head_ref == 'experiment/appworld-dev57-public-supervisor-get-paired-20261117'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Original model and unchanged benchmark paired contract CPU tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[eval,files]' pytest
+          python -m pytest -q \
+            tests/test_appworld_dev57_fixed_metrics.py \
+            tests/test_eval_appworld_qwen9b_dev57.py \
+            tests/test_appworld_tool_bridge.py \
+            tests/test_eval_appworld_dev57_public_supervisor_get.py
+          python -m compileall -q scripts/eval_appworld_dev57_public_supervisor_get.py
+      - name: Install original pinned AppWorld source for source IDs ONLY
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+          echo "APPWORLD_ROOT=$RUNNER_TEMP/appworld" >> "$GITHUB_ENV"
+      - name: Re-freeze EXACT baseline DEV57 ids and source hashes but only broaden public GET supervisor permission
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.eval_appworld_dev57_public_supervisor_get freeze \
+            --out appworld-dev57-readonly-supervisor-frozen-source.json
+          python - <<'PY'
+          import json
+          r=json.load(open('appworld-dev57-readonly-supervisor-frozen-source.json'))
+          assert r['n']==57 and r['scenario_count']==19
+          assert r['task_ids_sha256']=='d36670b383552f4c586baf1f84f0d53fcd3e05db5698b1532b2291ace23288a8'
+          assert r['task_hashes_sha256']=='f6f4121b9f75b1d4f57ec2da12a1234966acd3bbcf7626ae117cba5b9b2bc9b1'
+          assert r['supervisor_public_GET_only'] and r['ground_truth_never_in_student_messages']
+          print('APPWORLD_DEV57_PUBLIC_SUPERVISOR_READONLY_SOURCE_FROZEN',r['task_ids_sha256'],flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: appworld-dev57-qwen9b-supervisor-public-readonly-frozen-source-hashes-only
+          path: appworld-dev57-readonly-supervisor-frozen-source.json
+          if-no-files-found: error
+          retention-days: 30
+
+  appworld_dev57_supervisor_get_inference:
+    needs: appworld_dev57_supervisor_get_source_freeze
+    if: github.event_name == 'pull_request' && github.head_ref == 'experiment/appworld-dev57-public-supervisor-get-paired-20261117'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Install unmodified Qwen AgentRuntime and pinned original AppWorld
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[eval,files]'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+          echo "APPWORLD_ROOT=$RUNNER_TEMP/appworld" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: appworld-dev57-qwen9b-supervisor-public-readonly-frozen-source-hashes-only
+      - name: SHA pin original Qwen3.5-9B GGUF and exact runtime binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 'https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true' -o base.gguf
+          echo '8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54  base.gguf' | sha256sum -c -
+          curl -fsSL --retry 5 'https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz' -o llama.tar.gz
+          echo '36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b  llama.tar.gz' | sha256sum -c -
+          mkdir -p llama
+          tar -xzf llama.tar.gz -C llama
+          server=$(find "$PWD/llama" -type f -name llama-server -print -quit)
+          test -x "$server"
+          echo "LLAMA_SERVER=$server" >> "$GITHUB_ENV"
+      - name: Real original Qwen3.5-9B same AppWorld DEV57 scenario with ONLY public GET supervisor reads enabled
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          "$LLAMA_SERVER" -m base.gguf --alias qwen3.5-9b \
+            --host 127.0.0.1 --port 8080 --ctx-size 8192 \
+            --threads 4 --parallel 1 --jinja --reasoning-budget 0 \
+            --temperature 0 > "$RUNNER_TEMP/appworld-original-qwen-private.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..180}; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+          python -m scripts.eval_appworld_dev57_public_supervisor_get run \
+            --frozen appworld-dev57-readonly-supervisor-frozen-source.json \
+            --shard "$SHARD" \
+            --workspace "original-qwen-private-readonly-supervisor-$SHARD" \
+            --out "appworld-dev57-qwen9b-public-supervisor-scene-$SHARD.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: appworld-dev57-qwen9b-public-supervisor-physical-scene-${{ matrix.shard }}
+          path: appworld-dev57-qwen9b-public-supervisor-scene-*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  appworld_dev57_supervisor_get_paired_aggregate:
+    needs: [appworld_dev57_supervisor_get_source_freeze,appworld_dev57_supervisor_get_inference]
+    if: github.event_name == 'pull_request' && github.head_ref == 'experiment/appworld-dev57-public-supervisor-get-paired-20261117' && needs.appworld_dev57_supervisor_get_source_freeze.result == 'success' && needs.appworld_dev57_supervisor_get_inference.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Install original AppWorld source to verify exact main benchmark identity before scoring
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[eval,files]'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+          echo "APPWORLD_ROOT=$RUNNER_TEMP/appworld" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: appworld-dev57-qwen9b-supervisor-public-readonly-frozen-source-hashes-only
+      - name: Retrieve original Qwen DEV57 baseline first two immutable scene results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44092560274
+          github-token: ${{ github.token }}
+          pattern: appworld-dev57-original-qwen-physical-scene-*
+          path: original
+          merge-multiple: true
+      - name: Retrieve original Qwen DEV57 baseline remaining 17 immutable scene results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44093515137
+          github-token: ${{ github.token }}
+          pattern: appworld-dev57-original-qwen-physical-scene-*
+          path: original
+          merge-multiple: true
+      - name: Retrieve same-task Qwen DEV57 treatment 19 new immutable scene results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: appworld-dev57-qwen9b-public-supervisor-physical-scene-*
+          path: treatment
+          merge-multiple: true
+      - name: Source-pinned 57-task matched official state scoring with task and scenario-cluster confidence intervals
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import glob
+          orig=glob.glob('original/appworld-dev57-original-qwen-scene-*.json')
+          treat=glob.glob('treatment/appworld-dev57-qwen9b-public-supervisor-scene-*.json')
+          assert len(orig)==len(treat)==19,(len(orig),len(treat))
+          print('SOURCE_FIXED_PAIRED_APPWORLD_DEV57_AGGREGATING',len(orig),len(treat))
+          PY
+          python -m scripts.eval_appworld_dev57_public_supervisor_get aggregate \
+            --frozen appworld-dev57-readonly-supervisor-frozen-source.json \
+            --original-inputs original/appworld-dev57-original-qwen-scene-*.json \
+            --treatment-inputs treatment/appworld-dev57-qwen9b-public-supervisor-scene-*.json \
+            --out original-qwen-dev57-public-supervisor-paired-complete.json
+          python - <<'PY'
+          import json
+          x=json.load(open('original-qwen-dev57-public-supervisor-paired-complete.json'))
+          assert x['status']=='COMPLETE_ORIGINAL_QWEN_DEV57_PUBLIC_SUPERVISOR_PAIRED'
+          assert x['n_tasks']==57 and x['n_scenarios']==19
+          assert x['original']['n']==x['supervisor_public_get']['n']==57
+          assert x['original_model_sha256']=='8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54'
+          assert x['no_training'] and x['not_GAIA'] and not x['promotion_allowed']
+          print('APPWORLD_DEV57_PUBLIC_SUPERVISOR_FINAL',
+                x['original']['state_success'],
+                x['supervisor_public_get']['state_success'],
+                x['task_rescues'],x['task_regressions'],
+                x['paired_task_gain'],x['scenario_cluster_bootstrap95'],flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: appworld-original-qwen35-9b-dev57-public-supervisor-fully-paired-official-score-only
+          path: original-qwen-dev57-public-supervisor-paired-complete.json
+          if-no-files-found: warn
+          retention-days: 30
