@@ -1,0 +1,72 @@
+{
+  "date_verified": "2026-11-19",
+  "status": "COMPLETE_FIXED_APPWORLD_DEV57_PUBLIC_SUPERVISOR_READS_NO_TASK_GAIN",
+  "original_source": {
+    "github_run": "https://github.com/kolihhan/small-agent-qlora/actions/runs/44111637311",
+    "original_final_artifact_id": 14351250266,
+    "full_original_JSON_SHA256": "d0757d62f99a9bff8f7612f4f168aa75e6da97206ac70e5fbe3af57e8f0d9c26",
+    "canonical_57_task_source_SHA": "d36670b383552f4c586baf1f84f0d53fcd3e05db5698b1532b2291ace23288a8",
+    "canonical_task_hash_set_SHA": "f6f4121b9f75b1d4f57ec2da12a1234966acd3bbcf7626ae117cba5b9b2bc9b1",
+    "original_Qwen_GGUF_SHA256": "8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54",
+    "baseline_source_run": "https://github.com/kolihhan/small-agent-qlora/actions/runs/44093515137",
+    "baseline_source_artifact_id": 14339758304,
+    "rejected_algorithm_PR": "https://github.com/kolihhan/small-agent-qlora/pull/90"
+  },
+  "full_paired_original_qwen": {
+    "original_scenarios": 19,
+    "original_tasks": 57,
+    "treatment_scenarios": 19,
+    "treatment_tasks": 57,
+    "baseline_official_task_success": 0,
+    "public_supervisor_get_official_task_success": 0,
+    "task_rescues": 0,
+    "task_regressions": 0,
+    "baseline_nested_official_state_tests_passed": 48,
+    "public_supervisor_get_nested_official_state_tests_passed": 48,
+    "original_nested_state_tests_total": 291,
+    "baseline_tool_calls": 777,
+    "treatment_tool_calls": 790,
+    "baseline_real_business_API_calls": 402,
+    "treatment_real_business_API_calls": 407,
+    "baseline_HTTP_error_count": 380,
+    "treatment_HTTP_error_count": 383,
+    "baseline_HTTP_error_rate": 0.945273631840796,
+    "treatment_HTTP_error_rate": 0.941031941031941,
+    "baseline_successful_API_after_HTTP_error": 3,
+    "treatment_successful_API_after_HTTP_error": 8,
+    "baseline_normal_finals": 45,
+    "treatment_normal_finals": 45,
+    "baseline_model_errors": 9,
+    "treatment_model_errors": 10,
+    "actual_new_public_supervisor_GET_student_calls": 1,
+    "paired_task_bootstrap_95CI": [
+      0,
+      0
+    ],
+    "paired_19_scene_cluster_bootstrap_95CI": [
+      0,
+      0
+    ],
+    "exact_McNemar_p": 1
+  },
+  "strict_claim_boundary": {
+    "this_is_training_evaluation": false,
+    "QLoRA_or_new_adapter_used": false,
+    "GAIA_benchmark": false,
+    "tasks_are_correlated_19_scenarios": true,
+    "source_train8_reference_gold_replay_does_not_count_as_model_success": true,
+    "no_hidden_TEST_used": true,
+    "student_task_success_gain": false,
+    "public_GET_permissions_tested_but_new_GET_student_calls_only_one": true
+  },
+  "decision": {
+    "accept_new_permission_as_production_accuracy_improvement": false,
+    "close_PR90_unmerged": true,
+    "do_not_automatically_run_another_DEV57_full_CPU_sweep": true,
+    "discovery_affordance_PR91": "https://github.com/kolihhan/small-agent-qlora/pull/91",
+    "discovery_affordance_is_unvalidated_hypothesis": true,
+    "training_implication": "Do not train QLoRA on AppWorld protected plaintext or on failed-model actions; first prove correct target actions with real tools and authorized data handling. This AppWorld result cannot demonstrate or falsify QLoRA gains on GAIA.",
+    "GAIA_unchanged_baseline_metrics": "Original matched v3B 18/100, v3D 18/100 vs base 9/100 at run 38911211243. Another v7 configuration scored 26/100 on different runtime; NOT a matched v3B comparison. QLoRA actual GAIA uplift beyond known matched 9→18 is UNVERIFIED.",
+    "next": "Prioritize matched GAIA success and long-horizon source-aligned trajectory quality; preserve original model and adapter identities, do not conflate AppWorld state accuracy and GAIA exact answer."
+  }
+}
