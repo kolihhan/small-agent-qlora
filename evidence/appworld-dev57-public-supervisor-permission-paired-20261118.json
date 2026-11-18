@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-18",
+  "status": "COMPLETE_VERIFIED_PHYSICAL_FIXED_DEV57_PERMISSION_ONLY_NO_GAIN",
+  "run_id": 44111637311,
+  "aggregate_artifact_id": 14351250266,
+  "source_sha256": "d36670b383552f4c586baf1f84f0d53fcd3e05db5698b1532b2291ace23288a8",
+  "task_hashes_sha256": "f6f4121b9f75b1d4f57ec2da12a1234966acd3bbcf7626ae117cba5b9b2bc9b1",
+  "model_sha256": "8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54",
+  "tasks": 57,
+  "scenes": 19,
+  "source_arm": "original_Qwen9B_no_QLoRA",
+  "treatment_arm": "same_Qwen9B_plus_documented_public_supervisor_GET_permission_only",
+  "base": {
+    "task_success": 0,
+    "state_assertions_passed": 48,
+    "state_assertions_total": 291,
+    "api_calls": 402,
+    "api_http_failures": 380,
+    "tool_calls": 777,
+    "normal_final": 45,
+    "tool_schema_validity": 1
+  },
+  "treatment": {
+    "task_success": 0,
+    "state_assertions_passed": 48,
+    "state_assertions_total": 291,
+    "api_calls": 407,
+    "api_http_failures": 383,
+    "tool_calls": 790,
+    "normal_final": 45,
+    "tool_schema_validity": 1,
+    "public_supervisor_GET_calls": 1
+  },
+  "paired_task_gain": 0,
+  "task_rescues": 0,
+  "task_regressions": 0,
+  "paired_task_ci95": [
+    0,
+    0
+  ],
+  "paired_scenario_cluster_ci95": [
+    0,
+    0
+  ],
+  "predeclared_gate_passed": false,
+  "interpretation": "Permission alone failed to activate the documented public supervisor GET affordance in autonomous student behavior. This does not establish a training effect or that discoverability-only PR91 improves task correctness. 19 scenarios are the correlated units; 291 nested state assertions are not independent cases. No hidden TEST, GAIA, or QLoRA model promotion.",
+  "next_gate": "Do not run an additional 57-task CPU model comparison solely because root docs were patched. Require a cheap observable discovery/selection activation signal and interpretable HTTP request-status taxonomy before any next model calls."
+}
