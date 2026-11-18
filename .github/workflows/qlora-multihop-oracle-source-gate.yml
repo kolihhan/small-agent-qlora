@@ -1,0 +1,84 @@
+name: MuSiQue annotated multi-hop source-to-tool SFT gate (CPU only)
+# Preserve strict evidence checks; use a distinct third 4-hop holdout family when needed.
+# Fixed synthetic fixtures to honor official minimum passage length and unique question families.
+on:
+  workflow_dispatch:
+  push:
+    branches: [experiment/qlora-multihop-oracle-supervision-20261115]
+    paths: [.github/workflows/qlora-multihop-oracle-source-gate.yml]
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  source_oracle_gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Verify native tool replay, annotation, and source-family holdout contracts
+        run: |
+          python -m pip install -e '.[dev]'
+          python -m pytest -q tests/test_curate_musique_annotation_teacher.py
+      - name: Download previously tested eight MuSiQue TRAIN parents for exclusion
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43595818628
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: musique-multihop8-train-source-only
+          path: frozen8
+      - name: Recover official pinned MuSiQue TRAIN/DEV and confirm exact bytes
+        run: |
+          set -euo pipefail
+          mkdir -p sources
+          root="https://huggingface.co/datasets/bdsaglam/musique/resolve/667064b514d22deecae00a3dccbd92bccf88869e"
+          curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 --max-time 1500 "$root/musique_ans_v1.0_train.jsonl" -o sources/train.jsonl
+          curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 --max-time 600 "$root/musique_ans_v1.0_dev.jsonl" -o sources/dev.jsonl
+          echo '83a75b1e11e4e9bb8f8308e72ac40ca617ae4431b3a0d955b61cab259248490a  sources/train.jsonl' | sha256sum -c -
+          echo '15fa63794d18a94ce12411aca6e2327e65b6e83b0b1490efab3f1962e48abf3b  sources/dev.jsonl' | sha256sum -c -
+      - name: Replay real ReadTool for TRAIN-only annotation-supported source chains
+        run: |
+          python -m scripts.curate_musique_annotation_teacher \
+            --train sources/train.jsonl \
+            --dev sources/dev.jsonl \
+            --prior-evaluation frozen8/musique-train-multihop8.jsonl \
+            --per-hop-train 32 --per-hop-holdout 12 \
+            --output musique-oracle-train64.jsonl \
+            --holdout musique-oracle-holdout24.jsonl \
+            --report musique-oracle-source-gate.json
+      - name: Prove no parent/family/physical-support leakage and honest provenance
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          read=lambda p:[json.loads(s) for s in Path(p).read_text().splitlines() if s.strip()]
+          train,hold=read('musique-oracle-train64.jsonl'),read('musique-oracle-holdout24.jsonl')
+          report=json.load(open('musique-oracle-source-gate.json'))
+          assert len(train)==64 and len(hold)==24
+          assert {r['composition_family'] for r in train}=={'3hop1','4hop1'}
+          assert {r['composition_family'] for r in hold}=={'3hop2','4hop2','4hop3'}
+          assert {x['task_id'] for x in train}.isdisjoint({x['task_id'] for x in hold})
+          support=lambda rows:{h for r in rows for h in r['supporting_paragraph_hashes']}
+          assert support(train).isdisjoint(support(hold))
+          for r in train+hold:
+              assert r['derived_from_annotation_not_observed_model'] is True
+              assert r['verified'] is True
+              assert r['training_action_indices'][-1] == len(r['messages'])-1
+              assert r['source']=='musique-train'
+          assert report['gaia_training_rows']==0 and not report['training_ran']
+          print('VERIFIED_ANNOTATED_TOOL_SFT_GATE',report['train'],report['holdout'])
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: qlora-multihop-oracle-training-source-only
+          path: |
+            musique-oracle-train64.jsonl
+            musique-oracle-holdout24.jsonl
+            musique-oracle-source-gate.json
+          if-no-files-found: warn
+          retention-days: 30

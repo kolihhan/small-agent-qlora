@@ -1,0 +1,29 @@
+QLoRA v8 GPU one-shot requested after user updated Colab repository secret.
+Frozen source: GitHub Actions 43619541894, artifact 14124045608.
+304 unique TRAIN parents; 798 Qwen3.5-9B supervised actions; 35 source-shift holdout parents.
+If authorization fails, do not infer a training success. Do not retry in a loop.
+
+Attempt 2: Python 3.12 CLI dependency correction; previous run failed during package install before ADC validation.
+
+Attempt 3: verified COLAB_ADC_JSON credential refreshed with original scopes,
+Colab read-only sessions authenticated in run 43622650283, and the formal
+L4 workflow now avoids adding unconsented scopes (source commit 5b06bb6).
+This one-shot trigger is authorized by the user's explicit "update already go".
+Do not auto-retry if account allocation or training fails.
+
+Attempt 4 (T4-only fallback): ADC refresh and Colab sessions verified in run
+43622650283; L4 GPU allocation was explicitly rejected in run 43622800558.
+Use account-permitted free T4 once with the same 304-parent Qwen9B v8 source
+and strict no-truncation; stop and report if T4 quota/memory insufficient.
+
+Attempt 5 (single corrected T4 retry): T4 session and CUDA verified physically
+in run 43623074100 (Tesla T4 14.56 GiB), but model training call failed
+before first optimizer step due an unsupported v7-only optional kwarg.
+Script now checks the exact train_qlora signature before optimizer setup.
+Do not repeat after this attempt without new evidence.
+
+Attempt 6: observed T4 14.56 GiB and verified 15 trainer args in
+run 43623352758. Colab CLI interrupted the silent model load after its
+30-second default idle deadline. This attempt uses the documented
+--timeout 1800 option; identical frozen data, Qwen9B, LR and optimizer steps.
+No further automatic retries.

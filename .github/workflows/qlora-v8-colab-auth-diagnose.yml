@@ -1,0 +1,141 @@
+name: QLoRA v8 Colab ADC secret shape diagnosis (no credentials disclosed)
+on:
+  push:
+    branches: [experiment/qlora-multihop-oracle-supervision-20261115]
+    paths: [.github/workflows/qlora-v8-colab-auth-diagnose.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Check credential shape only; print no JSON or values
+        run: |
+          python - <<'PY'
+          import os,json,base64,re
+          raw=os.environ.get("COLAB_ADC_JSON","").strip().lstrip("\ufeff")
+          if not raw:
+              print("COLAB_ADC_SHAPE: absent")
+              raise SystemExit(13)
+          attempts=[("raw",raw)]
+          if raw.startswith('"'):
+              try:
+                  inner=json.loads(raw)
+                  if isinstance(inner,str):
+                      attempts.append(("json-string",inner))
+              except (ValueError,TypeError):
+                  pass
+          if 12<len(raw)<100000 and re.fullmatch(r'[A-Za-z0-9_+/\-=\s]+',raw):
+              try:
+                  decoded=base64.b64decode(raw,validate=False).decode('utf-8')
+                  attempts.append(("base64",decoded))
+              except (ValueError,UnicodeError):
+                  pass
+          findings=[]
+          for encoding,candidate in attempts:
+              try:
+                  obj=json.loads(candidate)
+              except (ValueError,TypeError):
+                  continue
+              if isinstance(obj,str):
+                  try: obj=json.loads(obj)
+                  except (ValueError,TypeError): pass
+              if isinstance(obj,list):
+                  findings.append((encoding,"array_not_adc",[]))
+                  continue
+              if not isinstance(obj,dict):
+                  findings.append((encoding,"nonobject_not_adc",[]))
+                  continue
+              for wrapper in ("credentials","adc","authorized_user","google_credentials"):
+                  if isinstance(obj.get(wrapper),dict):
+                      obj=obj[wrapper]
+                      break
+              typ=obj.get("type")
+              if all(isinstance(obj.get(k),str) and obj.get(k) for k in ("client_id","client_secret","refresh_token")):
+                  findings.append((encoding,"authorized_user_refreshable",[]))
+              elif typ=="authorized_user":
+                  missing=[k for k in ("client_id","client_secret","refresh_token") if not obj.get(k)]
+                  findings.append((encoding,"authorized_user_incomplete",missing))
+              elif typ=="service_account":
+                  missing=[k for k in ("client_email","private_key","token_uri") if not obj.get(k)]
+                  findings.append((encoding,"service_account_complete" if not missing else "service_account_incomplete",missing))
+              elif typ=="external_account":
+                  findings.append((encoding,"external_account_unsupported",[]))
+              elif "installed" in obj or "web" in obj:
+                  findings.append((encoding,"oauth_client_only_no_refresh_token",[]))
+              elif "access_token" in obj or "token" in obj:
+                  findings.append((encoding,"short_lived_token_only",[]))
+              else:
+                  findings.append((encoding,"json_object_unknown_shape",[]))
+          if findings:
+              for encoding,kind,missing in findings:
+                  print("COLAB_ADC_SHAPE:",encoding,kind,"missing_names="+(",".join(missing) if missing else "none"))
+              if any(kind in ("authorized_user_refreshable","service_account_complete") for _,kind,_ in findings):
+                  print("COLAB_ADC_SHAPE_GATE: structurally_compatible")
+              else:
+                  print("COLAB_ADC_SHAPE_GATE: no_compatible_adc")
+          elif raw.lstrip().startswith("type:") or "client_id:" in raw:
+              print("COLAB_ADC_SHAPE: yaml_not_json")
+          elif raw.startswith("ya29.") or raw.startswith("1//"):
+              print("COLAB_ADC_SHAPE: bearer_or_refresh_token_without_adc_wrapper")
+          else:
+              print("COLAB_ADC_SHAPE: opaque_or_invalid_json")
+          PY
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Check original-grant refresh and Colab read-only session access without revealing identity
+        run: |
+          python -m pip -q install 'google-auth>=2.20' 'requests>=2.31' 'google-colab-cli==0.8.0'
+          python - <<'PY'
+          import json,os,subprocess,pathlib
+          from google.auth.exceptions import RefreshError
+          from google.auth.transport.requests import Request
+          from google.oauth2.credentials import Credentials
+          raw=os.environ.get('COLAB_ADC_JSON','')
+          try:
+              obj=json.loads(raw)
+              if not isinstance(obj,dict):
+                  print('COLAB_REFRESH_ORIGINAL: malformed_json')
+                  raise SystemExit(0)
+              # Do NOT request scopes not originally consented. User ADCs
+              # cannot expand scopes via google.auth.default(scopes=...).
+              credentials=Credentials.from_authorized_user_info(obj, scopes=None)
+              credentials.refresh(Request())
+              print('COLAB_REFRESH_ORIGINAL: authenticated')
+          except RefreshError as exc:
+              message=str(exc).casefold()
+              kind=next((x for x in ('invalid_scope','invalid_grant','invalid_client',
+                                     'unauthorized_client','access_denied','interaction_required')
+                         if x in message),'refresh_error_other')
+              print('COLAB_REFRESH_ORIGINAL:',kind)
+              raise SystemExit(0)
+          except Exception as exc:
+              print('COLAB_REFRESH_ORIGINAL:',type(exc).__name__)
+              raise SystemExit(0)
+          path=pathlib.Path(os.environ['RUNNER_TEMP'])/'colab-diagnostic-adc.json'
+          path.write_text(raw)
+          path.chmod(0o600)
+          env=dict(os.environ,GOOGLE_APPLICATION_CREDENTIALS=str(path))
+          try:
+              proc=subprocess.run(['colab','--auth=adc','sessions'],
+                   text=True,capture_output=True,timeout=90,env=env)
+              if proc.returncode==0:
+                  print('COLAB_READ_ONLY_SESSIONS: authenticated')
+              else:
+                  output=(proc.stderr+'\n'+proc.stdout).casefold()
+                  tag=next((x for x in ('invalid_scope','invalid_grant','401',
+                           '403','permission','unauthorized','no valid default credentials')
+                           if x in output),'cli_error_other')
+                  print('COLAB_READ_ONLY_SESSIONS:',tag,'exit',proc.returncode)
+          except Exception as exc:
+              print('COLAB_READ_ONLY_SESSIONS:',type(exc).__name__)
+          finally:
+              path.unlink(missing_ok=True)
+          PY
