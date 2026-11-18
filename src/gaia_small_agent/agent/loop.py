@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Protocol
 
@@ -20,6 +21,30 @@ When you have enough evidence, return the final answer concisely.
 Do not reveal hidden chain-of-thought; tool calls and short factual status are sufficient.
 """
 MAX_TOOL_OBSERVATION_CHARS = 2000
+_LOOP_GUIDANCE = (
+    "\\nProgress checkpoint: An already-attempted search was repeated and gave "
+    "no new evidence. Avoid rephrasing the same search just to try again. "
+    "If current observations support an answer, return the concise final answer; "
+    "otherwise change sources or tools. Never invent unobserved facts."
+)
+_DEADLINE_GUIDANCE = (
+    "\\nBudget checkpoint: Tool calls are nearly exhausted. Prioritize a grounded "
+    "final answer when evidence is sufficient, not speculative extra searches. "
+    "If evidence is insufficient, say what remains unknown rather than guessing."
+)
+
+
+def _dedup_key(name: str, arguments: dict, *, normalize_search: bool) -> str:
+    """Dedup same search with casing/whitespace differences, not file paths."""
+    normalized = arguments
+    if normalize_search and name == "search" and isinstance(arguments, dict):
+        query = arguments.get("query")
+        if isinstance(query, str):
+            normalized = dict(arguments)
+            normalized["query"] = re.sub(r"\s+", " ", query).strip().casefold()
+            normalized.setdefault("max_results", 5)
+    return json.dumps([name, normalized], sort_keys=True, ensure_ascii=False, default=str)
+
 _RETRYABLE_TOOL_ERRORS = frozenset({
     "SEARCH_TIMEOUT",
     "SEARCH_ERROR",
@@ -36,10 +61,12 @@ def _looks_like_textual_tool_call(content: str) -> bool:
 
 
 class AgentRuntime:
-    def __init__(self, model: Model, tools: list[Tool], max_steps: int = 12):
+    def __init__(self, model: Model, tools: list[Tool], max_steps: int = 12,
+                 *, tool_policy_guard: bool = False):
         self.model = model
         self.tools = {tool.name: tool for tool in tools}
         self.max_steps = max_steps
+        self.tool_policy_guard = tool_policy_guard
 
     def run(self, question: str, workspace: str | Path) -> AgentResult:
         workspace = Path(workspace)
@@ -53,6 +80,8 @@ class AgentRuntime:
         seen: dict[str, ToolResult] = {}
         retry_counts: dict[str, int] = {}
         tool_definitions = [tool.definition() for tool in self.tools.values()]
+        loop_hint_given = False
+        deadline_hint_given = False
 
         for step in range(1, self.max_steps + 1):
             metrics.steps = step
@@ -107,7 +136,7 @@ class AgentRuntime:
             for call in turn.tool_calls:
                 metrics.tool_calls += 1
                 trace.append(TraceEvent("tool_call", step, {"id": call.id, "name": call.name, "arguments": call.arguments}))
-                key = json.dumps([call.name, call.arguments], sort_keys=True, ensure_ascii=False, default=str)
+                key = _dedup_key(call.name, call.arguments, normalize_search=self.tool_policy_guard)
 
                 previous = seen.get(key)
                 can_retry = (
@@ -154,5 +183,17 @@ class AgentRuntime:
                     "content": obs,
                 }))
                 messages.append({"role": "tool", "tool_call_id": call.id, "name": call.name, "content": obs})
+                if (self.tool_policy_guard and result.error_code == "DUPLICATE_CALL"
+                        and call.name == "search" and not loop_hint_given):
+                    # Never insert system message between an assistant tool call
+                    # and tool outputs; Qwen expects contiguous tool-message blocks.
+                    messages[0]["content"] += _LOOP_GUIDANCE
+                    loop_hint_given = True
+
+            if (self.tool_policy_guard and not deadline_hint_given
+                    and step >= self.max_steps - 2
+                    and metrics.tool_successes >= 1):
+                messages[0]["content"] += _DEADLINE_GUIDANCE
+                deadline_hint_given = True
 
         return AgentResult("", False, "max_steps", trace, metrics)
