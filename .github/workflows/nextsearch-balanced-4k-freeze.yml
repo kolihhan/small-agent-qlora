@@ -1,0 +1,49 @@
+name: PRO freeze balanced Qwen9B 4096 true source-state SFT (NO GPU)
+on:
+  push:
+    branches: [experiment/nextsearch-gold-grounded-search-traces-20261115]
+    paths: [.github/workflows/nextsearch-balanced-4k-freeze.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  source-freeze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install -e '.[dev]'
+          python -m pip install 'transformers>=5.15,<6' 'jinja2>=3.1'
+      - name: Full-source-state and no-truncation 4K selection safety tests
+        run: |
+          python -m pytest -q \
+            tests/test_build_nextsearch_causal_windows.py \
+            tests/test_freeze_nextsearch_balanced_4k.py
+      - name: Fetch actual 173 source-grounded missing/present answer windows
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 43724022656
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          name: nextsearch-source-evidence-state-causal-pilot
+          path: inputs
+      - name: Select balanced next actions with true pinned Qwen3.5-9B tokenization at 4096
+        run: |
+          python -m scripts.freeze_nextsearch_balanced_4k \
+            --source inputs/nextsearch-source-causal-windows.jsonl \
+            --output nextsearch-balanced-source-states-4k.jsonl \
+            --report nextsearch-balanced-source-states-4k-report.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: nextsearch-full-context-balanced-source-4k-sft-v0
+          path: |
+            nextsearch-balanced-source-states-4k.jsonl
+            nextsearch-balanced-source-states-4k-report.json
+          retention-days: 30
+          if-no-files-found: warn
