@@ -1,11 +1,6 @@
 name: Original Qwen9B Hotpot8 source-read affordance paired physical experiment
 on:
-  push:
-    branches: [research/verified-prefix-fork-20261119]
-    paths:
-      - scripts/run_hotpot_read_affordance8.py
-      - tests/test_hotpot_read_affordance8.py
-      - .github/workflows/hotpot8-read-affordance-original-qwen.yml
+  workflow_dispatch:
 permissions:
   contents: read
   actions: read
