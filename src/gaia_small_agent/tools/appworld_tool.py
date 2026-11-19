@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .base import Tool, ToolResult
+from .appworld_public_error_detail import documented_parameter_hint
 
 _TOOL_APPS_DENY = frozenset({"admin", "api_docs"})
 _SUPERVISOR_ALLOW = frozenset({"complete_task"})
@@ -106,10 +107,12 @@ class AppWorldCallTool(Tool):
         "additionalProperties": False,
     }
 
-    def __init__(self, world: Any, max_calls: int = 50, *, report_http_failures: bool = False):
+    def __init__(self, world: Any, max_calls: int = 50, *, report_http_failures: bool = False,
+                 public_422_field_hint: bool = False):
         self.world = world
         self.max_calls = max_calls
         self.report_http_failures = report_http_failures
+        self.public_422_field_hint = public_422_field_hint
         self.calls = 0
         self.errors = 0
         self.http_errors = 0
@@ -140,10 +143,13 @@ class AppWorldCallTool(Tool):
                 status = re.search(r"(?:status code is|response status code is|status code)\s*(\d{3})",str(exc),re.I)
                 if status is not None:
                     self.http_errors += 1
-                    return ToolResult(
-                        False,
-                        "AppWorld API rejected this request (HTTP "+status.group(1)+
-                        "). Check the API documentation and parameters.",
-                        "HTTP_ERROR")
+                    visible = ("AppWorld API rejected this request (HTTP " +
+                               status.group(1) + "). Check the API documentation and parameters.")
+                    if self.public_422_field_hint:
+                        doc = self.world.task.api_docs.get(app, {}).get(api, {})
+                        hint = documented_parameter_hint(str(exc), doc)
+                        if hint is not None:
+                            visible += " " + hint
+                    return ToolResult(False, visible, "HTTP_ERROR")
             return ToolResult(False, "AppWorld request error: "+type(exc).__name__,
                               "APPWORLD_API_ERROR")
