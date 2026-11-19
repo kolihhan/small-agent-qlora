@@ -1,12 +1,6 @@
 name: Physical Qwen9B original-prefix non-GAIA fork pilot
 on:
-  push:
-    branches: [research/verified-prefix-fork-20261119]
-    paths:
-      - scripts/run_verified_prefix_fork_pilot.py
-      - src/gaia_small_agent/benchmark/fork_probe.py
-      - tests/test_fork_probe.py
-      - .github/workflows/physical-qwen9b-prefix-fork-pilot.yml
+  workflow_dispatch:
 permissions:
   contents: read
   actions: read
