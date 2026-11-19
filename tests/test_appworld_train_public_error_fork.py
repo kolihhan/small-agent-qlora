@@ -28,7 +28,7 @@ def world():
                 "parameters": [
                     {"name": "query", "required": True, "type": "string"},
                     {"name": "offset", "required": False, "type": "integer"}
-                ]}},
+                ]}}},
             ),
         requester=FakeRequester())
 
