@@ -1,11 +1,6 @@
 name: Natural Hotpot8 Original Qwen9B first-read fork (source-disjoint)
 on:
-  push:
-    branches: [research/verified-prefix-fork-20261119]
-    paths:
-      - scripts/run_hotpot_original_prefix_fork8.py
-      - tests/test_hotpot_original_prefix_fork8.py
-      - .github/workflows/hotpot8-original-qwen-prefix-fork.yml
+  workflow_dispatch:
 permissions:
   contents: read
   actions: read
