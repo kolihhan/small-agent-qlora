@@ -1,0 +1,53 @@
+{
+  "experiment": "APPWORLD-TRAIN-QWEN9B-FIRST-PUBLIC-FIELD-EXACT-PREFIX-FORK-V1",
+  "status": "COMPLETE_NO_ELIGIBLE_PUBLIC_REQUIRED_FIELD_PIVOTS",
+  "workflow": "https://github.com/kolihhan/small-agent-qlora/actions/runs/44553762024",
+  "artifact_id": 14546545350,
+  "physical_task_artifacts": [
+    14545411636,
+    14544208915
+  ],
+  "official_source_split": "train",
+  "selected_independent_scenes": 2,
+  "original_Qwen3_5_9B_no_LoRA": true,
+  "original_official_task_correct": 0,
+  "original_official_task_total": 2,
+  "original_actual_model_turns": 40,
+  "original_actual_API_requests": 25,
+  "original_actual_HTTP_errors": 22,
+  "individual_cases": [
+    {
+      "index": 0,
+      "task_correct": false,
+      "original_model_turns": 20,
+      "api_calls": 15,
+      "http_errors": 15,
+      "eligible_documented_required_missing_field": 0,
+      "original_stop": "final"
+    },
+    {
+      "index": 1,
+      "task_correct": false,
+      "original_model_turns": 20,
+      "api_calls": 10,
+      "http_errors": 7,
+      "eligible_documented_required_missing_field": 0,
+      "original_stop": "final"
+    }
+  ],
+  "eligible_same_state_feedback_forks": 0,
+  "eligible_fork_denominator": 0,
+  "baseline_paired_score": null,
+  "treatment_paired_score": null,
+  "error_rescues": 0,
+  "task_rescues": 0,
+  "task_regressions": 0,
+  "feedback_shown_at_original_errors": "ToolError[HTTP_ERROR]: AppWorld API rejected this request (HTTP <status>). Check the API documentation and parameters.",
+  "public_required_field_extracted_in_selected_tasks": 0,
+  "effect_not_estimable": true,
+  "new_adapter_trained": false,
+  "GAIA_scoring_performed": false,
+  "read_only_task_public_code_only": true,
+  "recommendation": "Do not promote a missing-required-field repair or train QLoRA on failed actions. First diagnose whether actual first HTTP failures have any PUBLIC, source-grounded, actionable field; preserve original Qwen model, source and tool budget.",
+  "source_status_warning": "n=2 only; zero eligible events cannot reject all feedback enrichment hypotheses. These original TRAIN selected scenarios are not independent GAIA validation."
+}
