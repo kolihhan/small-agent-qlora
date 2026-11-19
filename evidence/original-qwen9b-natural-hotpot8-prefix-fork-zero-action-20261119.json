@@ -1,0 +1,48 @@
+{
+  "status": "COMPLETE_NEGATIVE_ORIGINAL_QWEN9B_NATURAL_HOTPOT8_FIRST_READ_FORK",
+  "date": "2026-11-19",
+  "run_id": 44466377952,
+  "aggregate_artifact_id": 14502592507,
+  "source_blind_artifact_id": 14501274595,
+  "source_gold_artifact_id": 14502645627,
+  "source_sha256": "4ecdc54003291f60d05396c163cc691a53168965dc2a0bda4c5312d9be908bf0",
+  "model": "qwen3.5:9b-q4_K_M",
+  "digest": "56671c2ab9385f9cfcb404638e32cd62d88e3501d44822208363c010179a3c90",
+  "original_public_source": "hotpotqa/hotpot_qa distractor validation",
+  "source_question_and_support_disjoint_from_prior_24": true,
+  "n": 8,
+  "bridge": 4,
+  "comparison": 4,
+  "paired": 3,
+  "no_successful_read_prefix": 5,
+  "normalized_answer_now": 1,
+  "normalized_continue": 1,
+  "raw_answer_now": 1,
+  "raw_continue": 1,
+  "rescue": 0,
+  "regression": 0,
+  "extra_postfork_tool_calls": 0,
+  "prefix_support_counts": {
+    "0": 1,
+    "1": 2
+  },
+  "gate": {
+    "min_forked": 6,
+    "normalized_net_min": 2,
+    "max_regressions": 1
+  },
+  "gate_pass": false,
+  "CPU_direct_full_question_local_search_proxy": {
+    "n": 8,
+    "no_title_hit": 0,
+    "both_gold_support_documents_in_top5": 5,
+    "one_gold_support_document_in_top5": 2,
+    "zero_gold_support_documents_in_top5": 1,
+    "interpretation": "Search with raw question, NOT model-actual search queries. This is a reachability upper-signal, not proof model saw a support source."
+  },
+  "decision": "Reject for training; 3 paired answers had ZERO additional tool calls, so their equality/no uplift cannot identify marginal tool value. Instrument model-generated actual search->read observations and compare availability/activation before any QLoRA.",
+  "no_gaia": true,
+  "no_qlora": true,
+  "no_stronger_teacher": true,
+  "limitations": "Previously unseen within public HotpotQA validation only; public pretraining overlap unverified, native GAIA tools differ from local search/read proxy."
+}
