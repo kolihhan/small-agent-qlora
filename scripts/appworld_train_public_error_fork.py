@@ -146,6 +146,7 @@ class PublicFieldCallTool(AppWorldCallTool):
         self.patched_count = 0
         self.http_status_counts: dict[str, int] = {}
         self.recovered_original = False
+        self.first_http_feedback: dict | None = None
         self._known_failures: list[dict] = []
 
     def run(self, arguments: dict, workspace: Path) -> ToolResult:
@@ -192,6 +193,12 @@ class PublicFieldCallTool(AppWorldCallTool):
                 self.http_status_counts[status] = (
                     self.http_status_counts.get(status, 0) + 1)
                 original = FEEDBACK_TEMPLATE.format(status=status)
+                if self.first_http_feedback is None:
+                    self.first_http_feedback = {
+                        "ordinal": ordinal, "model_turn": turn, "status": status,
+                        "actual_observation": "ToolError[HTTP_ERROR]: " + original,
+                        "actual_observation_sha": sha("ToolError[HTTP_ERROR]: " + original),
+                    }
                 missing_field = documented_missing_field(
                     self.world, app, api, data, str(exc))
                 if missing_field:
@@ -270,6 +277,15 @@ def run_task(task_id: str, root: Path) -> dict:
         "original_stop": baseline_stop, "original_model_turns": baseline_decisions,
         "original_api_calls": baseline_calls, "original_http_errors": baseline_errors,
         "first_http_error_observed": bool(baseline_errors),
+        "first_http_error_actual_model_feedback": deepcopy(tool.first_http_feedback),
+        "first_http_error_is_causal_blocker": "NOT_ESTABLISHED",
+        "first_tool_observation_error": next(({
+            "step": event.step,
+            "tool_name": event.data.get("name"),
+            "error_code": event.data.get("error_code"),
+            "content_sha": sha(event.data.get("content", "")),
+        } for event in original.trace if event.kind == "tool_result"
+          and event.data.get("ok") is False), None),
         "eligible_public_missing_field_events": len(tool.eligible),
         "eligible_first_blocker": pivot is not None,
         "original_error_resolved_by_original": baseline_recovered,
