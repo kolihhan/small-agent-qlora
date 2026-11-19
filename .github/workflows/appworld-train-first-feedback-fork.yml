@@ -1,0 +1,192 @@
+name: Original Qwen9B AppWorld TRAIN first-error same-prefix field feedback fork
+on:
+  push:
+    branches: [research/appworld-train-http-observation-gate-20261119]
+    paths: [.github/workflows/appworld-train-first-feedback-fork.yml]
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  train_source_lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Contract tests no AppWorld protected content
+        run: |
+          python -m pip install -e '.[dev,files,search]'
+          python -m pytest -q tests/test_appworld_public_error_detail.py tests/test_appworld_train_first_feedback_fork.py
+      - name: Install exact upstream AppWorld and freeze TRAIN scene-disjoint source IDs
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json
+          from scripts.appworld_train_first_feedback_fork import task_roster,digest
+          from appworld import load_task_ids
+          picked=task_roster()
+          assert len(picked)==8 and len({s.split('_',1)[0] for s in picked})==8
+          print('APPWORLD_TRAIN_FIXED_8_SCENES_SOURCE_HASH_ONLY',digest(picked),
+                'task_count_total',len(load_task_ids('train')))
+          PY
+
+  physical_qwen4:
+    needs: train_source_lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        index: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Install original exact upstream TRAIN simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[eval,files]'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+      - name: Fetch SHA-pinned original Qwen3.5-9B GGUF and llama.cpp server
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 'https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true' -o base.gguf
+          echo '8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54  base.gguf' | sha256sum -c -
+          curl -fsSL --retry 5 'https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz' -o llama.tar.gz
+          echo '36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b  llama.tar.gz' | sha256sum -c -
+          mkdir -p llama
+          tar -xzf llama.tar.gz -C llama
+          server=$(find "$PWD/llama" -type f -name llama-server -print -quit)
+          test -x "$server"
+          echo "LLAMA_SERVER=$server" >> "$GITHUB_ENV"
+      - name: Original Qwen student and exact-prefix one-public-422-field autonomous continuation
+        shell: bash
+        env:
+          SHARD: ${{ matrix.index }}
+        run: |
+          set -euo pipefail
+          "$LLAMA_SERVER" -m base.gguf --alias qwen3.5-9b \
+            --host 127.0.0.1 --port 8080 --ctx-size 8192 \
+            --threads 4 --parallel 1 --jinja --reasoning-budget 0 \
+            --temperature 0 > "$RUNNER_TEMP/private-llama-server.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..180}; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+          python -m scripts.appworld_train_first_feedback_fork \
+            --task-index "$SHARD" --out "qwen-appworld-train-fork-$SHARD.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: success()
+        with:
+          name: appworld-train-qwen-field-fork-${{ matrix.index }}
+          path: qwen-appworld-train-fork-*.json
+          if-no-files-found: error
+          retention-days: 60
+
+  four_source_scenes_failclosed_aggregate:
+    needs: physical_qwen4
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: appworld-train-qwen-field-fork-*
+          merge-multiple: true
+          path: paired
+      - name: Strict SHA/source/denominator and physical task-success aggregate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          files=sorted(Path('paired').glob('qwen-appworld-train-fork-*.json'))
+          assert len(files)==4
+          rows=[json.loads(p.read_text()) for p in files]
+          assert {x['shard'] for x in rows}==set(range(4))
+          assert len({x['task_hash'] for x in rows})==4
+          assert len({x['roster_hash'] for x in rows})==1
+          assert len({x['qwen_gguf_sha256'] for x in rows})==1
+          assert all(x['model_never_saw_gold'] and x['no_adapter_or_training']
+                     and x['GAIA_not_run'] for x in rows)
+          paired=[x for x in rows if x['same_state_fork_scored']]
+          assert all(x['fork_status']=='EXACT_PREFIX_ONE_OBSERVATION_DELTA_PHYSICALLY_VERIFIED'
+                     for x in paired)
+          result={
+            'protocol':'QWEN35-APPWORLD-TRAIN4-ORIGINAL-VS-EXACT-PREFIX-FIELD-V1',
+            'full_original_tasks':len(rows),
+            'task_clusters':len(rows),
+            'source_sha256':rows[0]['roster_hash'],
+            'original_official_success':sum(x['original']['official_task_success'] for x in rows),
+            'same_prefix_paired_denominator':len(paired),
+            'paired_original_success':sum(x['original']['official_task_success'] for x in paired),
+            'paired_treatment_success':sum(x['treatment']['official_task_success'] for x in paired),
+            'paired_task_rescues':sum(x['task_rescue'] for x in paired),
+            'paired_task_regressions':sum(x['task_regression'] for x in paired),
+            'first_error_newly_unblocked':sum(x['first_error_newly_unblocked'] for x in paired),
+            'unpaired_reasons':[
+              {'task_hash':x['task_hash'],'reason':x['fork_status']}
+              for x in rows if not x['same_state_fork_scored']],
+            'total_new_autonomous_treatment_model_calls':sum(
+              x['treatment']['new_autonomous_model_calls'] for x in paired),
+            'no_new_adapter_or_training':True,
+            'GAIA_not_run':True,
+            'not_a_prospective_statistical_promotion':True,
+          }
+          Path('appworld-train4-same-prefix-aggregate.json').write_text(
+              json.dumps(result,sort_keys=True,indent=2)+'\n')
+          print('PHYSICALLY_COMPLETE_TRAIN4',json.dumps({
+            k:result[k] for k in ('full_original_tasks',
+              'same_prefix_paired_denominator','original_official_success',
+              'paired_original_success','paired_treatment_success',
+              'paired_task_rescues','paired_task_regressions','first_error_newly_unblocked')
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: APPWORLD-TRAIN4-QWEN35-9B-FIRST-FEEDBACK-FORK-AGGREGATE
+          path: appworld-train4-same-prefix-aggregate.json
+          if-no-files-found: error
+          retention-days: 60
