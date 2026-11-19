@@ -1,0 +1,60 @@
+{
+  "status": "COMPLETE_NEGATIVE_QWEN9B_HOTPOT8_SEARCH_READ_AFFORDANCE_AND_OUTPUT_AUDIT",
+  "date": "2026-11-19",
+  "source_run": 44467953848,
+  "artifacts": {
+    "source_blind": 14503117054,
+    "reference_gold": 14502644055,
+    "complete_physical_scored": 14503526691
+  },
+  "n": 8,
+  "physical_model": "qwen3.5:9b-q4_K_M",
+  "digest": "56671c2ab9385f9cfcb404638e32cd62d88e3501d44822208363c010179a3c90",
+  "previous_32_hotpot_task_and_annotated_support_excluded": true,
+  "arms": {
+    "original": {
+      "raw_exact": 0,
+      "locked_normalized_exact": 0,
+      "successful_read_tasks": 7,
+      "source_support_paths_read": 12,
+      "tool_calls": 25,
+      "tool_errors": 0,
+      "completed": 8
+    },
+    "read_affordance": {
+      "raw_exact": 0,
+      "locked_normalized_exact": 0,
+      "successful_read_tasks": 8,
+      "source_support_paths_read": 13,
+      "tool_calls": 26,
+      "tool_errors": 0,
+      "completed": 8
+    }
+  },
+  "paired": {
+    "rescues": 0,
+    "regressions": 0,
+    "net_correct": 0,
+    "new_successful_read_cases": 1,
+    "lost_successful_read_cases": 0
+  },
+  "gold_label_and_stored_reply_posthoc_diagnostic": {
+    "literal_publisher_answer_substring_in_raw_original_replies": 6,
+    "literal_publisher_answer_substring_in_raw_affordance_replies": 6,
+    "one_additional_alias_like_reply_requires_manual_adjudication": true,
+    "one_remaining_visibly_wrong_answer_entity": true,
+    "limitations": "Substring is NOT accuracy; agreement on a publisher answer phrase does not prove correct reasoning. The alias is qualitative unvalidated, not added to strict score."
+  },
+  "predeclared_gate": {
+    "net_normalized_min": 2,
+    "read_activation_net_min": 3,
+    "max_regressions": 1
+  },
+  "gate_pass": false,
+  "decision": "No QLoRA training. More search-read affordance can slightly improve action activation without task accuracy. HotpotQA answer serialization is known from earlier source-shift runs, but prior GAIA v7 serializer and grammar interventions failed due non-finalization; no further format-only pilot justified.",
+  "no_gaia": true,
+  "no_training": true,
+  "no_adapter_change": true,
+  "holdout_unknown": false,
+  "generalization_boundary": "Public HotpotQA validation and local search/read proxy only. No independent hidden GAIA gain. Repetitions and model pretraining overlap remain unverified."
+}
