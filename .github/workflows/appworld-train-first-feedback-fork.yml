@@ -1,4 +1,5 @@
 name: Original Qwen9B AppWorld TRAIN first-error same-prefix field feedback fork
+# Fail-closed source and prefix tests corrected in head commit; do not count an incomplete workflow.
 on:
   push:
     branches: [research/appworld-train-http-observation-gate-20261119]
