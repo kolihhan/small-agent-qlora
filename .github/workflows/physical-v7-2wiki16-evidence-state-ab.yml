@@ -1,9 +1,6 @@
 name: Fixed Qwen v7 2Wiki16 evidence prompt A/B
 on:
-  push:
-    branches: [research/verified-prefix-fork-20261119]
-    paths:
-      - scripts/eval_2wiki16_v7_evidence_prompt_ab.py
+  workflow_dispatch:
 permissions:
   contents: read
   actions: read
