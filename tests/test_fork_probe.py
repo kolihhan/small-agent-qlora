@@ -17,10 +17,10 @@ class EchoTool(Tool):
 
 class Model:
     def complete(self, messages, tools):
-        if not tools:
-            return AssistantTurn(content="early guess")
         if any(m.get("role") == "tool" and m.get("content") == "evidence 2" for m in messages):
             return AssistantTurn(content="verified answer")
+        if not tools:
+            return AssistantTurn(content="early guess")
         return AssistantTurn(content="", tool_calls=[
             ToolCall("later", "echo", {"text": "evidence 2"})])
 
