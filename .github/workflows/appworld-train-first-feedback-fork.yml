@@ -40,7 +40,8 @@ jobs:
           python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
           appworld install --repo
           appworld download data
-          cd "$GITHUB_WORKSPACE"
+          cd "$RUNNER_TEMP/appworld"
+          export PYTHONPATH="$GITHUB_WORKSPACE"
           python - <<'PY'
           import json
           from scripts.appworld_train_first_feedback_fork import task_roster,digest
@@ -115,8 +116,10 @@ jobs:
             sleep 2
           done
           curl -fsS http://127.0.0.1:8080/health >/dev/null
+          cd "$RUNNER_TEMP/appworld"
+          export PYTHONPATH="$GITHUB_WORKSPACE"
           python -m scripts.appworld_train_first_feedback_fork \
-            --task-index "$SHARD" --out "qwen-appworld-train-fork-$SHARD.json"
+            --task-index "$SHARD" --out "$GITHUB_WORKSPACE/qwen-appworld-train-fork-$SHARD.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: success()
         with:
