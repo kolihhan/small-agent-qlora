@@ -1,0 +1,138 @@
+name: Physical Qwen9B original-prefix non-GAIA fork pilot
+on:
+  push:
+    branches: [research/verified-prefix-fork-20261119]
+    paths:
+      - scripts/run_verified_prefix_fork_pilot.py
+      - src/gaia_small_agent/benchmark/fork_probe.py
+      - tests/test_fork_probe.py
+      - .github/workflows/physical-qwen9b-prefix-fork-pilot.yml
+permissions:
+  contents: read
+  actions: read
+env:
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA256: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_RELEASE_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_RELEASE_SHA256: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[dev,files,search]"
+      - run: python -m pytest -q tests/test_fork_probe.py
+      - run: python -m compileall -q scripts/run_verified_prefix_fork_pilot.py src/gaia_small_agent/benchmark/fork_probe.py
+  physical:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 170
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        group: [0, 1]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[search,files]"
+      - name: Validate unmodified search/read/inspect/python tool surface
+        run: |
+          python - <<'PY'
+          from gaia_small_agent.tools import check_default_tools
+          import tempfile
+          with tempfile.TemporaryDirectory() as tmp:
+              result=check_default_tools(tmp,live_search=False)
+          assert result["ready"],result
+          print("DEFAULT_TOOLS_CONFIRMED",result["tool_names"])
+          PY
+      - name: Fetch pinned base Qwen3.5-9B GGUF and llama-server
+        run: |
+          set -euo pipefail
+          mkdir -p model /tmp/llama-bin
+          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf
+          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
+          curl -fL --retry 5 --retry-delay 3 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+      - name: Start pinned original model
+        run: |
+          set -euo pipefail
+          "$LLAMA_SERVER" -m model/Qwen3.5-9B-Q4_K_M.gguf --alias qwen3.5-9b \
+            --host 127.0.0.1 --port 8080 --ctx-size 8192 --threads 4 \
+            --parallel 1 --jinja --reasoning-budget 0 --temperature 0 \
+            > "$RUNNER_TEMP/llama-server.log" 2>&1 &
+          for i in {1..180}; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+      - name: Run ORIGINAL model first, then same-prefix fork
+        env:
+          GROUP: ${{ matrix.group }}
+        run: |
+          set -euo pipefail
+          python -m scripts.run_verified_prefix_fork_pilot --group "$GROUP" --out "pilot-group-$GROUP"
+          python - <<'PY'
+          import glob,json
+          files=glob.glob("pilot-group-*/result.json")
+          assert len(files)==1
+          x=json.load(open(files[0]))
+          assert x["n_cases"]==2 and x["no_GAIA"] and x["no_training"]
+          assert x["same_model_tools_budgets"]
+          print("ORIGINAL_9B_REAL_FORK_GROUP",x["group"],x["n_forked"],"of",x["n_cases"],
+                "answer_now",x["answer_now_correct"],"continue",x["continue_tools_correct"],flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: physical-qwen9b-non-gaia-fork-${{ matrix.group }}
+          path: pilot-group-${{ matrix.group }}/result.json
+          if-no-files-found: warn
+          retention-days: 14
+  aggregate:
+    needs: physical
+    if: always() && needs.physical.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: physical-qwen9b-non-gaia-fork-*
+          path: physical-evidence
+      - name: Strict matched four-task tally
+        run: |
+          python - <<'PY'
+          import json,pathlib
+          files=sorted(pathlib.Path('physical-evidence').glob('*/result.json'))
+          if len(files)!=2: raise SystemExit('missing group')
+          groups=[json.loads(p.read_text()) for p in files]
+          if {g['group'] for g in groups}!={0,1}:raise SystemExit('wrong groups')
+          cases=[r for g in groups for r in g['cases']]
+          if len(cases)!=4 or len({x['id'] for x in cases})!=4: raise SystemExit('not four distinct cases')
+          attempted=[x for x in cases if x['status']=='FORK_COMPLETE']
+          summary={'status':'COMPLETE_ORIGINAL_QWEN9B_NON_GAIA_PHYSICAL_FORK_PILOT',
+                   'n':4,'n_forked':len(attempted),
+                   'answer_now_correct':sum(x['fork']['arms']['answer_now']['correct'] for x in attempted),
+                   'continue_tools_correct':sum(x['fork']['arms']['continue_tools']['correct'] for x in attempted),
+                   'rescues':sum(not x['fork']['arms']['answer_now']['correct'] and x['fork']['arms']['continue_tools']['correct'] for x in attempted),
+                   'regressions':sum(x['fork']['arms']['answer_now']['correct'] and not x['fork']['arms']['continue_tools']['correct'] for x in attempted),
+                   'no_GAIA':True,'no_training':True,'no_adapter':True,
+                   'limitation':'Synthetic toy tasks, mechanism only, not generalization or GAIA'}
+          pathlib.Path('physical-prefix-fork-summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+          print('PHYSICAL_PREFIX_FORK_FINAL',json.dumps(summary,sort_keys=True),flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: physical-qwen9b-non-gaia-fork-aggregate
+          path: physical-prefix-fork-summary.json
+          if-no-files-found: error
+          retention-days: 14
