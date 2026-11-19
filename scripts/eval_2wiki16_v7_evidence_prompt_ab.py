@@ -52,7 +52,7 @@ TREAT_PROMPT=(
 
 
 def h(x):
-    return sha256(json.dumps(x,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+    return sha256(json.dumps(x,sort_keys=True).encode()).hexdigest()
 
 
 def freeze(rows,linked,novel,prior16,prior48,prior8):
