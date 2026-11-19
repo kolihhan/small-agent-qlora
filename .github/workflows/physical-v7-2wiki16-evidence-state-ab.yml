@@ -4,8 +4,6 @@ on:
     branches: [research/verified-prefix-fork-20261119]
     paths:
       - scripts/eval_2wiki16_v7_evidence_prompt_ab.py
-      - tests/test_eval_2wiki16_v7_evidence_prompt_ab.py
-      - .github/workflows/physical-v7-2wiki16-evidence-state-ab.yml
 permissions:
   contents: read
   actions: read
@@ -14,7 +12,7 @@ env:
   MODEL_SHA: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
   LLAMA_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
   LLAMA_SHA: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
-  V7_SHA: 475f5fb59a553390a0dde9425d36b42ff85a0345bdd31b8465c22fd4dc02e2
+  V7_SHA: 475f5fb59a553390a0dde9425d36b42ff85a0345bdd31b8465c22fd4d2bc02e2
 jobs:
   freeze:
     runs-on: ubuntu-latest
