@@ -1,0 +1,45 @@
+{
+  "status": "COMPLETE_ORIGINAL_QWEN9B_PHYSICAL_SAME_PREFIX_FORK",
+  "protocol": "real-original-qwen9b-non-gaia-tool-fork-v1",
+  "actions_run": 44449552992,
+  "artifacts": {
+    "aggregate": 14495490801,
+    "group0": 14495116721,
+    "group1": 14493839510
+  },
+  "model": "Qwen3.5-9B Q4_K_M",
+  "base_gguf_sha256": "8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54",
+  "four_task_n": 4,
+  "actually_forked_n": 4,
+  "strict_answer_now_correct": 2,
+  "strict_continue_tools_correct": 2,
+  "strict_rescues": 2,
+  "strict_regressions": 2,
+  "net_strict_correct": 0,
+  "subset": {
+    "evidence_missing": {
+      "n": 2,
+      "answer_now_correct": 0,
+      "continue_correct": 2,
+      "postfork_read_calls": 2
+    },
+    "evidence_sufficient": {
+      "n": 2,
+      "answer_now_correct": 2,
+      "continue_correct": 0,
+      "postfork_read_calls": 0,
+      "continue_reason": "both continued arms finalized same fact but with a verbose answer, exact-answer formatting only"
+    }
+  },
+  "decisions": {
+    "verified_continue_tool_gain_on_missing_evidence": 2,
+    "verified_more_tool_calls_when_evidence_sufficient": 0,
+    "correctness_regressions_are_answer_serialization_not_wrong_facts": 2,
+    "training_ready": false
+  },
+  "no_gaia": true,
+  "no_adapter": true,
+  "no_qlora": true,
+  "not_generalization": true,
+  "limitations": "Synthetic local documents. Original model-generated first tool turn replayed identically in both workspaces; n=4. Distinguishes format error from tool policy, but cannot establish stable GAIA transfer or justify training without task-family-disjoint natural evidence."
+}

@@ -1,0 +1,53 @@
+{
+  "protocol": "source-only-gaia100-v7-failure-audit-v1",
+  "source_run_id": 43865621132,
+  "source_revision": "682dd723ee1e1697e00360edccf2366dc8418dd9",
+  "source_task_hash": "869e24fd53a0eeabc2598d952d0b5f893eca279584c96eb407a72906dccba45a",
+  "shards_verified": 20,
+  "distinct_tasks_verified": 100,
+  "gaia_answers_read": false,
+  "raw_tool_observations_in_artifacts": false,
+  "no_model_calls": true,
+  "not_causal": true,
+  "arms": {
+    "original": {
+      "n": 100,
+      "correct": 26,
+      "wrong": 74,
+      "wrong_stop_reasons": {
+        "final": 13,
+        "model_timeout": 2,
+        "invalid_final": 54,
+        "model_error": 5
+      },
+      "wrong_attachment_capability_flag": 6,
+      "wrong_with_tool_error": 29,
+      "wrong_with_duplicate_block": 26,
+      "wrong_invalid_final_without_tool_errors": 25,
+      "wrong_final_without_tool_errors": 13
+    },
+    "format_reminder": {
+      "n": 100,
+      "correct": 26,
+      "wrong": 74,
+      "wrong_stop_reasons": {
+        "final": 18,
+        "invalid_final": 40,
+        "model_error": 6,
+        "model_timeout": 10
+      },
+      "wrong_attachment_capability_flag": 6,
+      "wrong_with_tool_error": 38,
+      "wrong_with_duplicate_block": 18,
+      "wrong_invalid_final_without_tool_errors": 14,
+      "wrong_final_without_tool_errors": 14
+    }
+  },
+  "paired": {
+    "both_correct": 18,
+    "original_only": 8,
+    "format_only": 8,
+    "both_wrong": 66
+  },
+  "limits": "Stop reason, tool errors, duplicates and attachment type are proxies only. Source artifacts contain no delivered tool-observation text: inaccessible evidence, missed retrieval, and evidence-read-but-wrong cannot be causally separated. These are previously exposed GAIA dev tasks, not independent validation."
+}
