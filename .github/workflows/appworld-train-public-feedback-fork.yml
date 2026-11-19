@@ -1,8 +1,7 @@
 name: AppWorld TRAIN public-error identical-prefix fork
 
 on:
-  push:
-    branches: [research/owner-appworld-train-feedback-fork-20261119]
+  workflow_dispatch:
 
 permissions:
   contents: read
