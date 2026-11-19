@@ -55,7 +55,7 @@ def test_fork_rejects_multiple_feedback_or_nonfeedback_differences():
     recorder.complete(original, [])
     fork = ExactPrefixModel(FakeModel(), recorder.records, 1, " hint")
     fork.complete(initial, [])
-    with pytest.raises(ValueError, match="more than one"):
+    with pytest.raises(ValueError, match="tool prefix length diverged"):
         fork.complete(initial + [{"role": "tool", "content": "failure hint"},
                                  {"role": "tool", "content": "extra"}], [])
     assert digest(original) != digest(initial)
