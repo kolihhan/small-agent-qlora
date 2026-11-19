@@ -1,0 +1,187 @@
+name: Original Qwen9B Hotpot8 source-read affordance paired physical experiment
+on:
+  push:
+    branches: [research/verified-prefix-fork-20261119]
+    paths:
+      - scripts/run_hotpot_read_affordance8.py
+      - tests/test_hotpot_read_affordance8.py
+      - .github/workflows/hotpot8-read-affordance-original-qwen.yml
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  source-freeze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[eval,dev,files]"
+      - run: python -m pytest -q tests/test_hotpot_read_affordance8.py tests/test_hotpot_original_prefix_fork8.py
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44010234843
+          github-token: ${{ github.token }}
+          name: hotpot8-source-frozen-before-model
+          path: prior8
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44011715345
+          github-token: ${{ github.token }}
+          name: qwen9b-hotpot16-serializer-source-frozen
+          path: prior16
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44466377952
+          github-token: ${{ github.token }}
+          name: hotpot8-original-prefix-blind-source
+          path: previous
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44466377952
+          github-token: ${{ github.token }}
+          name: hotpot8-original-prefix-reference-not-for-model
+          path: previousrefs
+      - name: Freeze eight additional cases, exclude all previous 32 question+support IDs
+        run: |
+          set -euo pipefail
+          python -m scripts.run_hotpot_read_affordance8 freeze \
+            --old8 prior8/hotpot8-frozen.json \
+            --old16 prior16/new-hotpot16-frozen.json \
+            --prior previous/hotpot-blind.json \
+            --priorrefs previousrefs/hotpot-reference.json \
+            --out next-blind.json --reference next-reference.json
+          python - <<'PY'
+          import json
+          d=json.load(open("next-blind.json"))
+          r=json.load(open("next-reference.json"))
+          assert d['n']==8 and d['prior_32_questions_excluded']
+          assert d['cases_sha256']==r['cases_sha256']
+          assert len({x['id'] for x in d['cases']})==8
+          assert all('answer' not in x and 'support' not in x for x in d['cases'])
+          print('READ_AFFORDANCE_SOURCE_FROZEN_GOLD_BLIND',d['cases_sha256'],flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hotpot8-affordance-next-blind
+          path: next-blind.json
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hotpot8-affordance-next-reference-no-model-access
+          path: next-reference.json
+          if-no-files-found: error
+          retention-days: 30
+
+  physical:
+    needs: source-freeze
+    runs-on: ubuntu-latest
+    timeout-minutes: 220
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      OLLAMA_HOST: 127.0.0.1:11434
+      OLLAMA_CONTEXT_LENGTH: '8192'
+      OLLAMA_NUM_PARALLEL: '1'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[eval,files]"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: hotpot8-affordance-next-blind
+          path: blind
+      - name: Pull original Qwen3.5-9B q4_K_M only
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+          ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          for i in {1..60}; do
+            curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
+          ollama pull qwen3.5:9b-q4_K_M
+      - name: Run original search versus exact same search plus read affordance
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python -m scripts.run_hotpot_read_affordance8 infer \
+            --blind blind/next-blind.json --shard "$SHARD" \
+            --work "study-$SHARD" --out "affordance-$SHARD.json"
+          python - <<'PY'
+          import glob,json
+          files=glob.glob("affordance-*.json")
+          assert len(files)==1
+          d=json.load(open(files[0]))
+          assert d['n']==2 and d['status']=='BOTH_ARMS_SEALED_GOLD_UNAVAILABLE'
+          assert d['gold_never_loaded'] and d['model_digest']=='56671c2ab9385f9cfcb404638e32cd62d88e3501d44822208363c010179a3c90'
+          print('BOTH_SEARCH_ARMS_PHYSICAL_PREDICTIONS_SEALED',d['shard'],flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: hotpot8-affordance-physical-shard-${{ matrix.shard }}
+          path: affordance-*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  score:
+    needs: physical
+    if: always() && needs.physical.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[eval]"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: hotpot8-affordance-physical-shard-*
+          merge-multiple: true
+          path: predictions
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: hotpot8-affordance-next-blind
+          path: blind
+      - name: Only after sealed physical outputs retrieve publisher reference
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: hotpot8-affordance-next-reference-no-model-access
+          path: refs
+      - name: Compute strict matched tool activation, support coverage, exact correctness
+        run: |
+          set -euo pipefail
+          python -m scripts.run_hotpot_read_affordance8 score \
+            --blind blind/next-blind.json --reference refs/next-reference.json \
+            --parts predictions/affordance-0.json predictions/affordance-1.json \
+                    predictions/affordance-2.json predictions/affordance-3.json \
+            --out affordance-eight-scored.json
+          python - <<'PY'
+          import json
+          d=json.load(open('affordance-eight-scored.json'))
+          assert d['n']==8 and d['no_GAIA'] and d['no_qlora']
+          print('FINAL_ORIGINAL_QWEN_HOTPOT_AFFORDANCE',json.dumps({k:v for k,v in d.items() if k!='cases'},sort_keys=True),flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hotpot8-read-affordance-complete-physical
+          path: affordance-eight-scored.json
+          if-no-files-found: error
+          retention-days: 30
