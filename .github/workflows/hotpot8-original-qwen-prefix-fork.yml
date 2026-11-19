@@ -1,0 +1,177 @@
+name: Natural Hotpot8 Original Qwen9B first-read fork (source-disjoint)
+on:
+  push:
+    branches: [research/verified-prefix-fork-20261119]
+    paths:
+      - scripts/run_hotpot_original_prefix_fork8.py
+      - tests/test_hotpot_original_prefix_fork8.py
+      - .github/workflows/hotpot8-original-qwen-prefix-fork.yml
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  source-freeze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[eval,dev,files]"
+      - run: python -m pytest -q tests/test_hotpot_original_prefix_fork8.py tests/test_fork_probe.py
+      - name: Source original immutable Hotpot8
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44010234843
+          github-token: ${{ github.token }}
+          name: hotpot8-source-frozen-before-model
+          path: prior8
+      - name: Source original immutable Hotpot16
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44011715345
+          github-token: ${{ github.token }}
+          name: qwen9b-hotpot16-serializer-source-frozen
+          path: prior16
+      - name: Freeze new questions and gold IN SEPARATE artifacts before any model
+        run: |
+          set -euo pipefail
+          python -m scripts.run_hotpot_original_prefix_fork8 freeze \
+            --previous8 prior8/hotpot8-frozen.json \
+            --previous16 prior16/new-hotpot16-frozen.json \
+            --out hotpot-blind.json --refs hotpot-reference.json
+          python - <<'PY'
+          import json
+          d=json.load(open('hotpot-blind.json'))
+          r=json.load(open('hotpot-reference.json'))
+          assert d['n']==8 and d['prior_question_exclusions']==24 and d['prior_support_excluded']
+          assert d['cases_sha256']==r['cases_sha256']
+          assert set(x['type'] for x in d['cases'])=={'bridge','comparison'}
+          assert all('answer' not in x and 'support' not in x for x in d['cases'])
+          assert len({x['id'] for x in d['cases']})==8
+          print('HOT_POT_ORIGINAL_NEW8_GOLD_BLIND_FROZEN',d['cases_sha256'],flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hotpot8-original-prefix-blind-source
+          path: hotpot-blind.json
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hotpot8-original-prefix-reference-not-for-model
+          path: hotpot-reference.json
+          if-no-files-found: error
+          retention-days: 30
+
+  physical:
+    needs: source-freeze
+    runs-on: ubuntu-latest
+    timeout-minutes: 220
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      OLLAMA_HOST: 127.0.0.1:11434
+      OLLAMA_CONTEXT_LENGTH: '8192'
+      OLLAMA_NUM_PARALLEL: '1'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[eval,files]"
+      - name: Download ONLY blinded source (no publisher answer/reference)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: hotpot8-original-prefix-blind-source
+          path: blind
+      - name: Start original fixed Qwen3.5-9B (no train/adapter/teacher)
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 https://ollama.com/download/ollama-linux-amd64.tar.zst | sudo tar --zstd -x -C /usr
+          ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          for i in {1..60}; do
+            curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
+          ollama pull qwen3.5:9b-q4_K_M
+      - name: Run original model and both counterfactual tool branches
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          python -m scripts.run_hotpot_original_prefix_fork8 infer \
+            --blind blind/hotpot-blind.json --shard "$SHARD" \
+            --work "work-$SHARD" --out "hotpot-fork-$SHARD.json"
+          python - <<'PY'
+          import glob,json
+          results=glob.glob('hotpot-fork-*.json')
+          assert len(results)==1
+          d=json.load(open(results[0]))
+          assert d['status']=='SEALED_BEFORE_GOLD' and d['n']==2
+          assert d['no_gold_accessed'] and d['model_digest']=='56671c2ab9385f9cfcb404638e32cd62d88e3501d44822208363c010179a3c90'
+          print('HOT_POT_FORK_MODEL_PREDICTIONS_SEALED',d['shard'],
+                [x['status'] for x in d['cases']],flush=True)
+          PY
+      - name: Upload raw model decisions BEFORE downloading reference
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: hotpot8-original-prefix-model-${{ matrix.shard }}
+          path: hotpot-fork-*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  strict-aggregate:
+    if: always() && needs.physical.result == 'success'
+    needs: physical
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[eval]"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: hotpot8-original-prefix-model-*
+          merge-multiple: true
+          path: predictions
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: hotpot8-original-prefix-blind-source
+          path: blind
+      - name: ONLY NOW download official source labels for scoring
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: hotpot8-original-prefix-reference-not-for-model
+          path: refs
+      - name: Strict paired score and gold-blind output normalization
+        run: |
+          set -euo pipefail
+          python -m scripts.run_hotpot_original_prefix_fork8 score \
+            --blind blind/hotpot-blind.json --refs refs/hotpot-reference.json \
+            --shards predictions/hotpot-fork-0.json predictions/hotpot-fork-1.json \
+                     predictions/hotpot-fork-2.json predictions/hotpot-fork-3.json \
+            --out hotpot8-prefix-fork-scored.json
+          python - <<'PY'
+          import json
+          r=json.load(open('hotpot8-prefix-fork-scored.json'))
+          assert r['n']==8 and r['no_GAIA'] and r['no_training'] and r['no_adapter']
+          print('FINAL_NATURAL_HOTPOT8_FORK',json.dumps({k:v for k,v in r.items() if k!='cases'},sort_keys=True),flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hotpot8-original-prefix-physical-final
+          path: hotpot8-prefix-fork-scored.json
+          if-no-files-found: error
+          retention-days: 30
