@@ -144,6 +144,7 @@ class PublicFieldCallTool(AppWorldCallTool):
         self.eligible: list[dict] = []
         self.observed: list[dict] = []
         self.patched_count = 0
+        self.http_status_counts: dict[str, int] = {}
         self.recovered_original = False
         self._known_failures: list[dict] = []
 
