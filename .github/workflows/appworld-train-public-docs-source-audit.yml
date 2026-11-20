@@ -1,5 +1,5 @@
 name: AppWorld TRAIN8 informative public docs omissions source-only census (NO QWEN)
-# Corrected source-only counts: distinguish non-null/nonempty from routine empty doc keys.
+# Corrected source-only counts + 2k model-visible docs budget and scene-profile deduplication.
 # Fail-closed source and prefix tests corrected in head commit; do not count an incomplete workflow.
 on:
   push:
