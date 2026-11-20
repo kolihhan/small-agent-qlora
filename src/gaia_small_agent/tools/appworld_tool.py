@@ -197,6 +197,16 @@ class AppWorldCallTool(Tool):
                  official_supervisor_parity: bool = False):
         self.world = world
         self.official_supervisor_parity = official_supervisor_parity is True
+        if self.official_supervisor_parity:
+            # The *call* tool must advertise the same opt-in supervisor scope
+            # that appworld_docs exposes. Baseline description remains exact.
+            self.description = (
+                self.description
+                + " With Official Supervisor Parity enabled, supervisor.show_profile "
+                "and supervisor.show_account_passwords are also permitted for "
+                "authorized AppWorld application login. Inspect their public "
+                "parameter documentation with appworld_docs first."
+            )
         self.max_calls = max_calls
         self.report_http_failures = report_http_failures
         self.public_422_field_hint = public_422_field_hint
