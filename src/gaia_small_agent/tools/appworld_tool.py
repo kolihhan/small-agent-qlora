@@ -57,6 +57,36 @@ def _doc_info(doc: dict) -> dict:
     return out
 
 
+def _public_response_shape(example: Any, *, depth: int = 0) -> Any:
+    """Show ONLY documented response structure, never generated example values.
+
+    AppWorld public `response_schemas.success` contains generated *examples*,
+    which may look like credentials. They are NOT actual passwords. Expose
+    a bounded shape to the model instead of misleading fake examples.
+    """
+    if depth >= 4:
+        return {"type": "nested"}
+    if isinstance(example, dict):
+        return {"type": "object", "fields": {
+            str(k): _public_response_shape(v, depth=depth + 1)
+            for k, v in list(sorted(example.items()))[:20]
+        }}
+    if isinstance(example, list):
+        return {"type": "array", "items": (
+            _public_response_shape(example[0], depth=depth + 1)
+            if example else {"type": "unknown"}
+        )}
+    if isinstance(example, bool):
+        return {"type": "boolean"}
+    if isinstance(example, int):
+        return {"type": "integer"}
+    if isinstance(example, float):
+        return {"type": "number"}
+    if isinstance(example, str):
+        return {"type": "string"}
+    return {"type": "unknown"}
+
+
 class AppWorldDocsTool(Tool):
     name = "appworld_docs"
     description = (
@@ -108,8 +138,14 @@ class AppWorldDocsTool(Tool):
                 public = self.world.task.api_docs.get(app, {}).get(api)
                 if not isinstance(public, dict):
                     return ToolResult(False, "No public API by this name.", "API_NOT_FOUND")
+                info = _doc_info(public)
+                responses = public.get("response_schemas")
+                if isinstance(responses, dict) and "success" in responses:
+                    # Only the *shape* of the official public success example.
+                    # Do not deliver AppWorld's fabricated example credential values.
+                    info["response_shape"] = _public_response_shape(responses["success"])
                 return ToolResult(True, json.dumps({
-                    "app": app, "api": api, "public_api_doc": _doc_info(public),
+                    "app": app, "api": api, "public_api_doc": info,
                 }, ensure_ascii=False, sort_keys=True)[:_MAX_JSON_CHARS])
             apis = ["complete_task"]
             apis += sorted(
