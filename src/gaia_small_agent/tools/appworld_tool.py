@@ -17,6 +17,7 @@ from typing import Any
 from .base import Tool, ToolResult
 from .appworld_public_error_detail import documented_parameter_hint
 from .appworld_public_contract_audit import public_422_probe_category
+from .appworld_public_auth_observation import documented_auth_observation
 
 _TOOL_APPS_DENY = frozenset({"admin", "api_docs"})
 _SUPERVISOR_ALLOW = frozenset({"complete_task"})
@@ -110,12 +111,18 @@ class AppWorldCallTool(Tool):
 
     def __init__(self, world: Any, max_calls: int = 50, *, report_http_failures: bool = False,
                  public_422_field_hint: bool = False,
-                 capture_422_field_hint: bool = False):
+                 capture_422_field_hint: bool = False,
+                 public_401_auth_hint: bool = False,
+                 capture_401_auth_hint: bool = False):
         self.world = world
         self.max_calls = max_calls
         self.report_http_failures = report_http_failures
         self.public_422_field_hint = public_422_field_hint
         self.capture_422_field_hint = capture_422_field_hint
+        self.public_401_auth_hint = public_401_auth_hint
+        self.capture_401_auth_hint = capture_401_auth_hint
+        self.public_401_auth_candidates: list[dict] = []
+        self.auth_401_public_category_counts: dict[str,int] = {}
         self.public_422_candidates: list[dict] = []
         self.model_step_counter = None
         self.calls = 0
@@ -171,6 +178,26 @@ class AppWorldCallTool(Tool):
                             self.http_422_probe_outcomes.get(category, 0) + 1)
                     visible = ("AppWorld API rejected this request (HTTP " +
                                status.group(1) + "). Check the API documentation and parameters.")
+                    if status_key == "401":
+                        apis = self.world.task.api_docs.get(app, {})
+                        doc401 = apis.get(api, {}) if isinstance(apis, dict) else {}
+                        auth401 = documented_auth_observation(
+                            401, doc401, data,
+                            isinstance(apis, dict) and "login" in apis)
+                        if auth401 is not None:
+                            code, hint401 = auth401
+                            self.auth_401_public_category_counts[code] = (
+                                self.auth_401_public_category_counts.get(code, 0) + 1)
+                            if self.capture_401_auth_hint:
+                                counter = self.model_step_counter
+                                self.public_401_auth_candidates.append({
+                                    "api_call_index": self.calls,
+                                    "model_step": counter() if callable(counter) else None,
+                                    "safe_category": code,
+                                    "public_hint": hint401,
+                                })
+                            if self.public_401_auth_hint:
+                                visible += " " + hint401
                     if self.public_422_field_hint or self.capture_422_field_hint:
                         doc = self.world.task.api_docs.get(app, {}).get(api, {})
                         hint = documented_parameter_hint(str(exc), doc)

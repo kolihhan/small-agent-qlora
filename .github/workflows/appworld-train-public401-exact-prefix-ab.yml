@@ -1,0 +1,197 @@
+name: Original Qwen9B AppWorld TRAIN2 first HTTP401 safe-auth exact-prefix state fork
+# Fail-closed source and prefix tests corrected in head commit; do not count an incomplete workflow.
+on:
+  push:
+    branches: [research/appworld-public401-auth-feedback-gate-20261120]
+    paths: [.github/workflows/appworld-train-public401-exact-prefix-ab.yml]
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  train_source_lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Contract tests no AppWorld protected content
+        run: |
+          python -m pip install -e '.[dev,files,search]'
+          python -m pytest -q tests/test_appworld_public401_auth_feedback.py tests/test_appworld_public401_exact_prefix_state_fork.py tests/test_appworld_train_first_feedback_fork.py
+      - name: Install exact upstream AppWorld and freeze TRAIN scene-disjoint source IDs
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+          export APPWORLD_ROOT="$RUNNER_TEMP/appworld"
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json
+          from scripts.appworld_train_first_feedback_fork import task_roster,digest
+          from appworld import load_task_ids
+          picked=task_roster()
+          assert len(picked)==8 and len({s.split('_',1)[0] for s in picked})==8
+          print('APPWORLD_TRAIN_FIXED_8_SCENES_SOURCE_HASH_ONLY',digest(picked),
+                'task_count_total',len(load_task_ids('train')))
+          PY
+
+  physical_qwen4:
+    needs: train_source_lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        index: [0, 3]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Install original exact upstream TRAIN simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[eval,files]'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+      - name: Fetch SHA-pinned original Qwen3.5-9B GGUF and llama.cpp server
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 'https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true' -o base.gguf
+          echo '8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54  base.gguf' | sha256sum -c -
+          curl -fsSL --retry 5 'https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz' -o llama.tar.gz
+          echo '36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b  llama.tar.gz' | sha256sum -c -
+          mkdir -p llama
+          tar -xzf llama.tar.gz -C llama
+          server=$(find "$PWD/llama" -type f -name llama-server -print -quit)
+          test -x "$server"
+          echo "LLAMA_SERVER=$server" >> "$GITHUB_ENV"
+      - name: Original Qwen student and one-public-auth-hint autonomous replay with private DB state checks
+        shell: bash
+        env:
+          SHARD: ${{ matrix.index }}
+        run: |
+          set -euo pipefail
+          "$LLAMA_SERVER" -m base.gguf --alias qwen3.5-9b \
+            --host 127.0.0.1 --port 8080 --ctx-size 8192 \
+            --threads 4 --parallel 1 --jinja --reasoning-budget 0 \
+            --temperature 0 > "$RUNNER_TEMP/private-llama-server.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..180}; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+          export APPWORLD_ROOT="$RUNNER_TEMP/appworld"
+          cd "$GITHUB_WORKSPACE"
+          python -m scripts.appworld_train_public401_exact_prefix_state_fork \
+            --task-index "$SHARD" --out "$GITHUB_WORKSPACE/qwen-appworld-train-401-fork-$SHARD.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: success()
+        with:
+          name: appworld-train-qwen-401-fork-${{ matrix.index }}
+          path: qwen-appworld-train-401-fork-*.json
+          if-no-files-found: error
+          retention-days: 60
+
+  two_scene_safe_aggregate:
+    needs: physical_qwen4
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: appworld-train-qwen-401-fork-*
+          merge-multiple: true
+          path: source_safe
+      - name: Aggregate only physically matched exact-prefix and private state AB
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[json.loads(p.read_text()) for p in
+            sorted(Path('source_safe').glob('qwen-appworld-train-401-fork-*.json'))]
+          assert len(rows)==2 and {r['scene_index'] for r in rows}=={0,3}
+          assert all(r['protocol']=='APPWORLD-QWEN35-TRAIN-EXACT-PREFIX-SNAPSHOT-PUBLIC401-AUTH-V1' for r in rows)
+          assert len({r['task_sha256'] for r in rows})==2
+          assert len({r['roster_sha256'] for r in rows})==1
+          assert len({r['original_model_gguf_sha256'] for r in rows})==1
+          assert all(r['no_training'] and r['no_GAIA']
+                     and r['private_task_and_DB_state_never_exported'] for r in rows)
+          paired=[r for r in rows if r['same_snapshot_and_prefix_fork_completed']]
+          assert all(r['treatment']['same_private_state_snapshot_verified']
+                     and r['treatment']['same_model_visible_prefix_verified']
+                     and r['treatment']['exactly_one_public_401_hint_added']
+                     for r in paired)
+          result={
+            'protocol':'APPWORLD-TRAIN2-QWEN9B-PUBLIC401-SNAPSHOT-AB-AGGREGATE-V1',
+            'n_original_tasks':2,
+            'n_strictly_paired_snapshot_and_prefix':len(paired),
+            'original_official_success':sum(r['original']['official_task_success'] for r in rows),
+            'paired_original_success':sum(r['original']['official_task_success'] for r in paired),
+            'paired_treatment_success':sum(r['treatment']['official_task_success'] for r in paired),
+            'paired_task_rescues':sum(r['official_task_rescue'] for r in paired),
+            'paired_task_regressions':sum(r['official_task_regression'] for r in paired),
+            'n_missing_exposure_or_no_next_step':2-len(paired),
+            'per_task_safe_status':[
+                {'scene_index':r['scene_index'],'fork_status':r['treatment_status'],
+                 'original_official_success':r['original']['official_task_success'],
+                 'paired':r['same_snapshot_and_prefix_fork_completed'],
+                 'treatment_official_success':r.get('treatment',{}).get('official_task_success'),
+                 'auth_reason':r.get('first_401_public_reason_category')}
+                for r in rows],
+            'no_training':True,'no_model_switch':True,
+            'GAIA_not_evaluated':True,
+            'no_promotion_from_2_outcome_selected_tasks':True
+          }
+          Path('appworld-train2-public401-strict-aggregate.json').write_text(
+             json.dumps(result,sort_keys=True,indent=2)+'\n')
+          print('PHYSICAL_PUBLIC401_MATCHED_FORK',json.dumps({
+              k:result[k] for k in ('n_original_tasks',
+                'n_strictly_paired_snapshot_and_prefix','original_official_success',
+                'paired_treatment_success','paired_task_rescues','paired_task_regressions')
+          },sort_keys=True),flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: APPWORLD-TRAIN2-QWEN35-PUBLIC401-EXACT-PREFIX-STATE-FORK-AGGREGATE
+          path: appworld-train2-public401-strict-aggregate.json
+          if-no-files-found: error
+          retention-days: 60
