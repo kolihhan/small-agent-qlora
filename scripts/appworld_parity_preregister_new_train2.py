@@ -87,7 +87,7 @@ def freeze(train_ids:list[str],seen_pilot_ids:list[str])->dict:
         "safe_report_protocol":SAFE_REPORT_PROTOCOL,
         "no_Qwen_training_or_execution_in_this_freeze":True,
         "not_a_promotion_holdout":True,
-        "source_task_text_or_credentials_or_hashes_never_exported":True,
+        "no_task_text_credential_values_or_credential_hashes_exported":True,
     }
 
 
