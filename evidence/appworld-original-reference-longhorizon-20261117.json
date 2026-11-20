@@ -1,0 +1,71 @@
+{
+  "date": "2026-11-17",
+  "status": "COMPLETE_ORIGINAL_APPWORLD_CPU_REFERENCE_SOURCE_AND_COUNTERFACTUAL",
+  "upstream_repo": "StonyBrookNLP/appworld",
+  "upstream_commit_sha": "42b5bcf3cd334fee33f0c37c02070a9f5807add5",
+  "physical_github_actions_run": 44061132236,
+  "aggregate_artifact_id": 14318216596,
+  "source": {
+    "train": {
+      "tasks": 90,
+      "scenarios": 30,
+      "business_api_calls": 4393,
+      "tasks_6plus": 81,
+      "tasks_8plus": 75,
+      "tasks_12plus": 72,
+      "tasks_2plus_apps": 30
+    },
+    "dev": {
+      "tasks": 57,
+      "scenarios": 19,
+      "business_api_calls": 3021,
+      "tasks_6plus": 51,
+      "tasks_8plus": 49,
+      "tasks_12plus": 42,
+      "tasks_2plus_apps": 21
+    },
+    "source_task_hash_train": "c6a9f42f672b132098925592393e0f76f21393a6027839d57f8825ef683224ca",
+    "source_task_hash_dev": "d36670b383552f4c586baf1f84f0d53fcd3e05db5698b1532b2291ace23288a8",
+    "train_dev_scenarios_disjoint": true
+  },
+  "paired_8_train_pilot": {
+    "scenario_disjoint": true,
+    "selection_from_source_only": true,
+    "selected_task_set_sha256": "aecb6189275ea00c9f63e8f41b4b3ca45d6fa0937dcf0943dba4d46dcaa48f2e",
+    "min_business_calls": 12,
+    "min_business_apps": 2,
+    "official_reference_python_state_success": {
+      "tasks": 8,
+      "success": 8
+    },
+    "independent_recorded_request_replay": {
+      "tasks": 8,
+      "success": 8,
+      "request_calls": 604,
+      "official_state_tests": 48
+    },
+    "late_one_action_counterfactual": {
+      "method_class": "preselected late non-GET non-auth non-supervisor request >=6 prior request index",
+      "baseline_success": 8,
+      "state_failed_when_one_action_skipped": 7,
+      "still_passed": 1,
+      "lost_state_unit_tests": 11,
+      "comparison_tasks": 8,
+      "causal_claim_boundary": "Within a fixed original request program, deleting this request changes verified end state in 7 of 8 tasks. It can also disrupt dependent subsequent calls; cannot infer a unique optimal next-action policy."
+    }
+  },
+  "no_more_powerful_model_teacher": true,
+  "no_llm_inference": true,
+  "no_gpu": true,
+  "no_training": true,
+  "gaia_correctness_gain": 0,
+  "new_adapter_shas": [],
+  "confounding": [
+    "AppWorld API call count includes pagination, reads and repeated operations; it is NOT the same as model decision-turn horizon",
+    "Official reference task code and database test data cannot be redistributed in plaintext; aggregate-only reports in repository",
+    "AppWorld action vocabulary differs from current GAIA small-agent search/read/python tools",
+    "Future QLoRA source needs per-state prefix/tool response alignment, decontamination and source-independent autonomous task-family test",
+    "Even a failed skipped-action counterfactual does not establish the removed action is uniquely correct under alternate plans"
+  ],
+  "next_execution_gate": "Before GPU: determine which source-verified late actions are necessary and rendered by fixed Qwen chat template without truncation; do not train on all 604 raw calls. Then perform no-training closed-loop tool environment control on genuinely unseen AppWorld DEV scenarios; no stronger teacher/GAIA data."
+}
