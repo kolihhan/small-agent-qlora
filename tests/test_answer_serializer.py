@@ -40,3 +40,33 @@ def test_non_verbatim_candidate_keeps_original():
 def test_formatter_failure_keeps_original():
     original = "The answer is Moscow."
     assert serialize_answer("Which city?", original, StubModel(fail=True)) == (original, "model_error")
+
+
+def test_agent_optin_serializes_only_after_completed_original(tmp_path):
+    from gaia_small_agent.agent.loop import AgentRuntime
+
+    class TwoTurnModel:
+        def __init__(self):
+            self.calls = []
+
+        def complete(self, messages, tools):
+            self.calls.append((messages, tools))
+            if len(self.calls) == 1:
+                return AssistantTurn(content="The answer is Moscow.", tool_calls=[])
+            return AssistantTurn(content="Moscow", tool_calls=[])
+
+    model = TwoTurnModel()
+    result = AgentRuntime(model, [], max_steps=2, serialize_final=True).run("Which city?", tmp_path)
+    assert result.completed is True
+    assert result.answer == "Moscow"
+    assert len(model.calls) == 2
+    assert model.calls[1][1] == []
+
+
+def test_default_agent_does_not_call_serializer(tmp_path):
+    from gaia_small_agent.agent.loop import AgentRuntime
+
+    model = StubModel("The answer is Moscow.")
+    result = AgentRuntime(model, [], max_steps=2).run("Which city?", tmp_path)
+    assert result.answer == "The answer is Moscow."
+    assert result.completed is True
