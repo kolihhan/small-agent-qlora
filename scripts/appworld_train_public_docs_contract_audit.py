@@ -39,7 +39,13 @@ def run():
                           "default_fields_omitted":current.get(
                               "parameter_default_field_omitted",0),
                           "constraint_fields_omitted":current.get(
-                              "parameter_constraints_field_omitted",0)})
+                              "parameter_constraints_field_omitted",0),
+                          "non_null_defaults_omitted":current.get(
+                              "non_null_default_values_omitted",0),
+                          "nonempty_constraints_omitted":current.get(
+                              "nonempty_public_constraints_omitted",0),
+                          "response_examples_omitted":current.get(
+                              "public_response_schema_examples_omitted",0)})
     return {
         "protocol":PROTOCOL,
         "status":"REAL_PINNED_UPSTREAM_PUBLIC_DOC_SOURCE_COMPLETE",
@@ -48,6 +54,10 @@ def run():
         "upstream_appworld_sha":UPSTREAM_APPWORLD_REV,
         "qwen_model_sha_frozen_but_not_loaded":MODEL_GGUF_SHA,
         "aggregate_public_only_counts":dict(sorted(aggregate.items())),
+        # Eight scene rows may share exactly the same doc counts. Never cite the
+        # aggregate as eight independent API documentation catalogs.
+        "unique_per_scene_count_profiles":len({digest(s) for s in per_scene}),
+        "representative_one_scene_counts":per_scene[0],
         "scene_index_only_counts":per_scene,
         "no_Qwen_inference":True,
         "no_private_task_instruction_output":True,
@@ -83,6 +93,13 @@ def main():
             "parameter_default_field_omitted",0),
         "constraint_fields_not_shown":result["aggregate_public_only_counts"].get(
             "parameter_constraints_field_omitted",0),
+        "meaningful_non_null_defaults":result["representative_one_scene_counts"].get(
+            "non_null_defaults_omitted",0),
+        "meaningful_nonempty_constraints":result["representative_one_scene_counts"].get(
+            "nonempty_constraints_omitted",0),
+        "public_response_examples_omitted":result["representative_one_scene_counts"].get(
+            "response_examples_omitted",0),
+        "distinct_count_profiles":result["unique_per_scene_count_profiles"],
         "model_calls":0,
     },sort_keys=True))
 
