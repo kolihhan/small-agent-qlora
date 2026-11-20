@@ -37,14 +37,20 @@ def public_doc_visibility_audit(world: Any) -> dict[str, int]:
                 continue
             counts["public_parameters"] += len(params)
             counts["parameters_hidden_by_first24_cap"] += max(0, len(params) - 24)
+            if isinstance(doc.get("response_schemas"), dict) and doc["response_schemas"]:
+                counts["public_response_schema_examples_omitted"] += 1
             for p in params[:24]:
                 if not isinstance(p, dict):
                     counts["invalid_public_parameter"] += 1
                     continue
                 if "default" in p:
                     counts["parameter_default_field_omitted"] += 1
+                    if p["default"] is not None:
+                        counts["non_null_default_values_omitted"] += 1
                 if "constraints" in p:
                     counts["parameter_constraints_field_omitted"] += 1
+                    if isinstance(p["constraints"], (list, dict, str)) and p["constraints"]:
+                        counts["nonempty_public_constraints_omitted"] += 1
     return dict(sorted(counts.items()))
 
 
