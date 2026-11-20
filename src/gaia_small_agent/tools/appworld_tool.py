@@ -124,6 +124,8 @@ class AppWorldCallTool(Tool):
         # Safe aggregated diagnostic counters; never store raw exception text.
         self.http_status_counts: dict[str, int] = {}
         self.http_422_probe_outcomes: dict[str, int] = {}
+        # Strictly safe per-step telemetry; never retain API arguments or responses.
+        self.http_error_events: list[dict[str, int | None]] = []
 
     def run(self, arguments: dict, workspace: Path) -> ToolResult:
         app = arguments.get("app")
@@ -152,6 +154,14 @@ class AppWorldCallTool(Tool):
                 if status is not None:
                     self.http_errors += 1
                     status_key = status.group(1)
+                    # Capture only the upstream numeric HTTP status and model step;
+                    # the exception string and API values remain process-private.
+                    counter = self.model_step_counter
+                    self.http_error_events.append({
+                        "model_step":counter() if callable(counter) else None,
+                        "api_call_index":self.calls,
+                        "http_status":int(status_key),
+                    })
                     self.http_status_counts[status_key] = (
                         self.http_status_counts.get(status_key, 0) + 1)
                     if status_key == "422":
