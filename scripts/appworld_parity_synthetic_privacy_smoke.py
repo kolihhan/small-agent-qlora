@@ -112,7 +112,16 @@ def exercise_synthetic_private_workflow(workspace:Path,*,fail_after_password=Fal
     ],max_steps=20).run(
         "Fake sandbox task. No sensitive data may leave memory.",workspace/"private")
     assert any(_SYNTHETIC_PASSWORD in str(event.data) for event in result.trace)
-    assert any(_SYNTHETIC_PASSWORD in str(record["messages"]) for record in recorder.records)
+    # RecordingModel snapshots only successful delegate.complete(...) calls.
+    # A model exception after reading a secret prevents that particular
+    # snapshot; the raw AgentRuntime trace still holds the password.
+    if not fail_after_password:
+        assert any(_SYNTHETIC_PASSWORD in str(record["messages"])
+                   for record in recorder.records)
+    else:
+        assert not any(_SYNTHETIC_PASSWORD in str(record["messages"])
+                       for record in recorder.records)
+        assert any(event.kind=="model_error" for event in result.trace)
     report=aggregate_private_run(
         result=result,api_tool=api,
         arm="parity",scene_index=0,
