@@ -1,0 +1,194 @@
+name: Original fixed Qwen AppWorld TRAIN2 first401 token provenance and post401 login (NO TRAIN)
+# Fail-closed source and prefix tests corrected in head commit; do not count an incomplete workflow.
+on:
+  push:
+    branches: [research/appworld-token-provenance-and-recovery-20261120]
+    paths: [.github/workflows/appworld-train-token-provenance-post401.yml]
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  train_source_lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Contract tests no AppWorld protected content
+        run: |
+          python -m pip install -e '.[dev,files,search]'
+          python -m pytest -q tests/test_appworld_token_provenance_sourceonly.py tests/test_appworld_auth_chain_sourceonly.py
+      - name: Install exact upstream AppWorld and freeze TRAIN scene-disjoint source IDs
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+          export APPWORLD_ROOT="$RUNNER_TEMP/appworld"
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json
+          from scripts.appworld_train_first_feedback_fork import task_roster,digest
+          from appworld import load_task_ids
+          picked=task_roster()
+          assert len(picked)==8 and len({s.split('_',1)[0] for s in picked})==8
+          print('APPWORLD_TRAIN_FIXED_8_SCENES_SOURCE_HASH_ONLY',digest(picked),
+                'task_count_total',len(load_task_ids('train')))
+          PY
+
+  physical_qwen4:
+    needs: train_source_lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        index: [1, 2]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Install original exact upstream TRAIN simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[eval,files]'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+      - name: Fetch SHA-pinned original Qwen3.5-9B GGUF and llama.cpp server
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 'https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true' -o base.gguf
+          echo '8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54  base.gguf' | sha256sum -c -
+          curl -fsSL --retry 5 'https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz' -o llama.tar.gz
+          echo '36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b  llama.tar.gz' | sha256sum -c -
+          mkdir -p llama
+          tar -xzf llama.tar.gz -C llama
+          server=$(find "$PWD/llama" -type f -name llama-server -print -quit)
+          test -x "$server"
+          echo "LLAMA_SERVER=$server" >> "$GITHUB_ENV"
+      - name: Original Qwen student private token provenance + post401 authentication attempt (no model change)
+        shell: bash
+        env:
+          SHARD: ${{ matrix.index }}
+        run: |
+          set -euo pipefail
+          "$LLAMA_SERVER" -m base.gguf --alias qwen3.5-9b \
+            --host 127.0.0.1 --port 8080 --ctx-size 8192 \
+            --threads 4 --parallel 1 --jinja --reasoning-budget 0 \
+            --temperature 0 > "$RUNNER_TEMP/private-llama-server.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..180}; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+          export APPWORLD_ROOT="$RUNNER_TEMP/appworld"
+          cd "$GITHUB_WORKSPACE"
+          python -m scripts.appworld_train_token_provenance_post401 \
+            --task-index "$SHARD" --out "$GITHUB_WORKSPACE/qwen-appworld-train-token-provenance-$SHARD.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: success()
+        with:
+          name: appworld-train-qwen-token-provenance-${{ matrix.index }}
+          path: qwen-appworld-train-token-provenance-*.json
+          if-no-files-found: error
+          retention-days: 60
+
+  two_scene_safe_aggregate:
+    needs: physical_qwen4
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: appworld-train-qwen-token-provenance-*
+          merge-multiple: true
+          path: safe
+      - name: Verify safe provenance classification, one predeclared cohort
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          files=sorted(Path('safe').glob('qwen-appworld-train-token-provenance-*.json'))
+          assert len(files)==2
+          rows=[json.loads(f.read_text()) for f in files]
+          assert {r['scene_index'] for r in rows}=={1,2}
+          assert {r['protocol'] for r in rows}=={'APPWORLD-QWEN35-TRAIN2-TOKEN-PROVENANCE-AND-POST401-RECOVERY-V1'}
+          assert len({r['pinned_original_qwen_gguf_sha256'] for r in rows})==1
+          assert len({r['source_roster_sha256'] for r in rows})==1
+          assert all(r['no_new_model_facing_observation_or_prompt'] and r['new_adapter_training'] is False for r in rows)
+          sources={}
+          summaries=[]
+          for r in rows:
+              p=r['first_401_token_provenance_and_post_failure_recovery']
+              assert p['protocol']=='APPWORLD-FIRST401-TOKEN-ORIGIN-AND-RECOVERY-PRIVATE-BOOLEAN-V1'
+              assert p['token_value_or_hash_exported'] is False and p['task_or_API_name_exported'] is False
+              src=p['source_class'];sources[src]=sources.get(src,0)+1
+              summaries.append({
+                  'scene_index':r['scene_index'],
+                  'official_task_success':r['task_success_official'],
+                  'first401_source_class':src,
+                  'first401_eligible':p['eligible_for_provenance'],
+                  'task_contains_exact_token':p.get('exact_token_in_model_visible_task'),
+                  'previous_successful_API_returned_exact_token':p.get('exact_token_in_prior_successful_API_result'),
+                  'previous_successful_login_returned_exact_token':p.get('exact_token_in_prior_login_result'),
+                  'login_attempted_after_first401':p['post401_login_attempted'],
+                  'login_succeeded_after_first401':p['post401_login_succeeded'],
+                  'remaining_decision_steps':p.get('remaining_decision_steps'),
+                  'model_error_class':r['typed_model_error_category'],
+              })
+          result={
+              'protocol':'APPWORLD-TRAIN2-TOKEN-SOURCE-PRIVATE-ORIGIN-AND-RECOVERY-AGGREGATE-V1',
+              'n_original_tasks':2,'n_eligible':sum(x['first401_eligible'] for x in summaries),
+              'official_successes':sum(x['official_task_success'] for x in summaries),
+              'first401_source_classes':dict(sorted(sources.items())),
+              'per_scene':summaries,'no_new_model_policy':True,
+              'privacy_no_token_or_hash_exported':True,
+              'no_causal_or_QLoRA_claim':True,
+          }
+          Path('appworld-first401-token-origin-postrecovery-safe-aggregate.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          print('ORIGINAL_QWEN_TOKEN_PROVENANCE_ONLY',json.dumps(result,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: APPWORLD-TRAIN2-ORIGINAL-QWEN-TOKEN-SOURCE-POST401-RECOVERY-AGGREGATE
+          path: appworld-first401-token-origin-postrecovery-safe-aggregate.json
+          if-no-files-found: error
+          retention-days: 60
