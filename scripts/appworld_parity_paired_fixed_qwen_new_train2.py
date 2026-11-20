@@ -30,7 +30,7 @@ from scripts.appworld_parity_preregister_new_train2 import (
     require_frozen,PROTOCOL,ARMS,N_REPEATS,N_SCENES,MAX_STEPS,
     MAX_API_CALLS,MAX_MODEL_OUTPUT_TOKENS,MODEL_TEMPERATURE,
 )
-from scripts.appworld_train_first_feedback_fork import task_roster,prompt_for,
+from scripts.appworld_train_first_feedback_fork import task_roster,prompt_for
 
 
 PROTOCOL_RUN="APPWORLD-PARITY-FIXED-QWEN-NEW-TRAIN2-PAIRED-PILOT-SHARD-V1"
