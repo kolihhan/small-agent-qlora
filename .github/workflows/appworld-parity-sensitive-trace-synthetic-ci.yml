@@ -1,0 +1,54 @@
+name: Supervisor Parity synthetic trace privacy gate corrected model-error snapshot (NO QWEN)
+on:
+  push:
+    branches: [research/appworld-official-supervisor-parity-cpu-20261120]
+    paths: [.github/workflows/appworld-parity-sensitive-trace-synthetic-ci.yml]
+permissions:
+  contents: read
+jobs:
+  full_runtime_to_artifact_privacy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Install ordinary project Python tests only (no AppWorld download / no model)
+        run: python -m pip install -e '.[dev]'
+      - name: AgentRuntime + RecordingModel + fake-password + failure log redaction full tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest -q             tests/test_appworld_tool_bridge.py             tests/test_appworld_official_supervisor_parity.py             tests/test_appworld_parity_end_to_end_privacy.py
+      - name: Exercise fake private credentials through complete original runtime into safe artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p safe-artifact
+          python -m scripts.appworld_parity_synthetic_privacy_smoke             --out safe-artifact/synthetic-privacy-aggregate.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("safe-artifact/synthetic-privacy-aggregate.json")
+          obj=json.loads(p.read_text())
+          assert obj["n_synthetic_scenarios"]==2
+          assert len(obj["safe_agent_reports"])==2
+          assert all(x["raw_agent_trace_exported"] is False
+                     and x["raw_model_recording_exported"] is False
+                     and x["raw_task_or_credentials_or_access_tokens_exported"] is False
+                     and x["no_plaintext_or_secret_hashes_in_artifact"] is True
+                     for x in obj["safe_agent_reports"])
+          assert "SYNTHETIC-PASSWORD-PRIVATE-SENTINEL-" not in p.read_text()
+          assert "SYNTHETIC-TOKEN-PRIVATE-SENTINEL-" not in p.read_text()
+          assert "synthetic-private-sentinel" not in p.read_text()
+          assert list(Path("safe-artifact").iterdir())==[p]
+          print("SYNTHETIC_PRIVATE_FULL_RUNTIME_LOG_AND_UPLOAD_ALLOWLIST_PASS",
+                {"scenarios":2,"model_calls":0,"raw_traces_exported":0})
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: APPWORLD-PARITY-SYNTHETIC-PRIVATE-FULL-RUNTIME-SAFE-AGGREGATE-ONLY
+          path: safe-artifact/synthetic-privacy-aggregate.json
+          if-no-files-found: error
+          retention-days: 30
