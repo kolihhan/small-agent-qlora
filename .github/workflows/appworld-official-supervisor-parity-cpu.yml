@@ -1,4 +1,4 @@
-name: AppWorld TRAIN8 Official Supervisor Parity CPU source + privacy checks (NO QWEN)
+name: AppWorld TRAIN8 Official Supervisor Parity response-shape plus privacy CPU (NO QWEN)
 # Corrected source-only counts + 2k model-visible docs budget and scene-profile deduplication.
 # Fail-closed source and prefix tests corrected in head commit; do not count an incomplete workflow.
 on:
@@ -75,6 +75,9 @@ jobs:
                      and all(c['model_can_discover_by_listing']
                              and c['model_can_read_public_parameter_contract']
                              and c['api_name_survives_2000_char_tool_budget']
+                             and c['public_response_schema_documented']
+                             and c['model_can_read_public_success_response_shape_in_2000_chars']
+                             and c['public_response_examples_values_not_delivered']
                              for c in r['safe']['contract_checks_only'])
                      for r in d['source_only_safe_rows'])
           print('OFF_VS_ON_PARITY_SOURCE_ONLY',len(d['source_only_safe_rows']),
