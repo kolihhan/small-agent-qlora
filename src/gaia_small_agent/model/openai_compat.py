@@ -51,41 +51,47 @@ class OpenAICompatModel:
             response.raise_for_status()
             data = response.json()
         except requests.Timeout as exc:
-            raise ModelRuntimeError("model_timeout", f"Model request timed out: {exc}") from None
+            raise ModelRuntimeError("model_timeout", f"Model request timed out: {exc}", "MODEL_TIMEOUT") from None
         except requests.ConnectionError as exc:
-            raise ModelRuntimeError("model_unavailable", f"Model server is unavailable: {exc}") from None
+            raise ModelRuntimeError("model_unavailable", f"Model server is unavailable: {exc}", "MODEL_CONNECTION_ERROR") from None
         except requests.RequestException as exc:
-            raise ModelRuntimeError("model_error", f"Model request failed: {exc}") from None
+            raise ModelRuntimeError("model_error", f"Model request failed: {exc}", (
+                "MODEL_HTTP_5XX" if isinstance(exc, requests.HTTPError)
+                and getattr(exc.response, "status_code", 0) >= 500
+                else "MODEL_HTTP_4XX" if isinstance(exc, requests.HTTPError)
+                and 400 <= getattr(exc.response, "status_code", 0) < 500
+                else "MODEL_HTTP_OTHER" if isinstance(exc, requests.HTTPError)
+                else "MODEL_REQUEST_ERROR")) from None
         except ValueError as exc:
-            raise ModelRuntimeError("model_error", f"Model server returned invalid JSON: {exc}") from None
+            raise ModelRuntimeError("model_error", f"Model server returned invalid JSON: {exc}", "MODEL_INVALID_JSON") from None
 
         if not isinstance(data, dict):
-            raise ModelRuntimeError("model_error", "Model response must be a JSON object")
+            raise ModelRuntimeError("model_error", "Model response must be a JSON object", "MODEL_INVALID_RESPONSE_OBJECT")
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            raise ModelRuntimeError("model_error", "Model response is missing choices")
+            raise ModelRuntimeError("model_error", "Model response is missing choices", "MODEL_CHOICES_MALFORMED")
         message = choices[0].get("message")
         if not isinstance(message, dict):
-            raise ModelRuntimeError("model_error", "Model response is missing a valid message object")
+            raise ModelRuntimeError("model_error", "Model response is missing a valid message object", "MODEL_MESSAGE_MALFORMED")
 
         calls: list[ToolCall] = []
         raw_calls = message.get("tool_calls") or []
         if not isinstance(raw_calls, list):
-            raise ModelRuntimeError("model_error", "Model message tool_calls must be a list")
+            raise ModelRuntimeError("model_error", "Model message tool_calls must be a list", "MODEL_TOOL_CALLS_MALFORMED")
         for raw in raw_calls:
             if not isinstance(raw, dict):
-                raise ModelRuntimeError("model_error", "Model tool call must be an object")
+                raise ModelRuntimeError("model_error", "Model tool call must be an object", "MODEL_TOOL_CALL_MALFORMED")
             fn = raw.get("function") or {}
             if not isinstance(fn, dict):
-                raise ModelRuntimeError("model_error", "Model tool call function must be an object")
+                raise ModelRuntimeError("model_error", "Model tool call function must be an object", "MODEL_FUNCTION_MALFORMED")
             args: Any = fn.get("arguments") or {}
             if isinstance(args, str):
                 try:
                     args = json.loads(args)
                 except json.JSONDecodeError as exc:
-                    raise ModelRuntimeError("model_error", f"Invalid tool arguments JSON: {exc}") from None
+                    raise ModelRuntimeError("model_error", f"Invalid tool arguments JSON: {exc}", "MODEL_TOOL_ARGUMENTS_JSON_MALFORMED") from None
             if not isinstance(args, dict):
-                raise ModelRuntimeError("model_error", "Model tool arguments must decode to an object")
+                raise ModelRuntimeError("model_error", "Model tool arguments must decode to an object", "MODEL_TOOL_ARGUMENTS_TYPE_MALFORMED")
             calls.append(
                 ToolCall(
                     id=str(raw.get("id") or f"call-{next(self._ids)}"),
