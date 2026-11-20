@@ -47,8 +47,8 @@ def public_doc(parameters=(),response=None):
 def fake_world(*,allowed_supervisor=True,has_passwords=True):
     supervisor={
         "complete_task":public_doc(),
-        "show_profile":public_doc(response={"200":{"type":"object","properties":{"email":{"type":"string"}}}}),
-        "show_account_passwords":public_doc(response={"200":{"type":"array"}}),
+        "show_profile":public_doc(response={"success":{"email":"FAKE_DOC_EMAIL_DO_NOT_TREAT_AS_REAL","first_name":"Fake"}}),
+        "show_account_passwords":public_doc(response={"success":[{"account_name":"calendar","password":"FAKE_DOC_PASSWORD_DO_NOT_TREAT_AS_REAL"}]}),
         "unsafe_admin_reset":public_doc(),
     }
     if not has_passwords:
@@ -106,6 +106,15 @@ def test_opt_in_parity_exactly_three_documented_supervisor_APIs():
         assert item["api"]==api and item["app"]=="supervisor"
         assert "parameters" in item["public_api_doc"]
         assert "response_schemas" not in item["public_api_doc"]
+        shape=item["public_api_doc"]["response_shape"]
+        assert shape["type"] in ("object","array")
+        assert "FAKE_DOC_PASSWORD_DO_NOT_TREAT_AS_REAL" not in documented.content
+        assert "FAKE_DOC_EMAIL_DO_NOT_TREAT_AS_REAL" not in documented.content
+    password_shape=json.loads(docs.run(
+        {"app":"supervisor","api":"show_account_passwords"},Path(".")
+    ).content)["public_api_doc"]["response_shape"]
+    assert password_shape["type"]=="array"
+    assert password_shape["items"]["fields"]["password"]=={"type":"string"}
     assert "Supervisor" in docs.definition()["function"]["description"]
     for api in ("unsafe_admin_reset","__dict__","get_ground_truth","export_database"):
         assert not allowed_public_api(w,"supervisor",api,official_supervisor_parity=True)
