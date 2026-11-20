@@ -1,4 +1,4 @@
-name: Supervisor Parity sensitive trace end-to-end synthetic privacy gate (NO QWEN)
+name: Supervisor Parity synthetic trace privacy gate corrected model-error snapshot (NO QWEN)
 on:
   push:
     branches: [research/appworld-official-supervisor-parity-cpu-20261120]
