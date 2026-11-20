@@ -63,6 +63,9 @@ def audit_world(world):
                    and isinstance(p.get("required"),bool)
                    for p in params)
         bounded,_=docs_result.bounded_observation(MAX_TOOL_OBSERVATION_CHARS)
+        assert "response_shape" in shown["public_api_doc"]
+        assert '"response_shape"' in bounded, "documented success shape clipped by 2k cap"
+        assert shown["public_api_doc"]["response_shape"]["type"] in ("object","array")
         # Public API names must survive the exact original 2k observation
         # budget, not just be present in a longer unshown response.
         assert ('"api": "'+api+'"') in bounded
@@ -79,6 +82,8 @@ def audit_world(world):
             "api_name_survives_2000_char_tool_budget":True,
             "required_parameter_count":sum(p.get("required") is True for p in params),
             "public_response_schema_documented":isinstance(response_schemas,(list,dict)) and bool(response_schemas),
+            "model_can_read_public_success_response_shape_in_2000_chars":True,
+            "public_response_examples_values_not_delivered":True,
             "source_public_documented_method":isinstance(public_doc.get("method"),str),
             "source_public_documented_path":isinstance(public_doc.get("path"),str),
         })
