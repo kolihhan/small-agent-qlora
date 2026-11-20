@@ -50,9 +50,22 @@ def source_only_login_status(trace:list,world:Any,http_error_events:list[dict],
             and isinstance(x.get("required"),bool) for x in params)
         supplied=c["data"]
         fields=[x for x in params if x["required"]] if doc_valid else []
-        missing=sum(not isinstance(supplied.get(x["name"]),str)
-                    or not str(supplied.get(x["name"])).strip()
-                    for x in fields)
+        missing=sum(
+            x["name"] not in supplied or supplied[x["name"]] is None
+            or (isinstance(supplied[x["name"]],str) and not supplied[x["name"]].strip())
+            for x in fields)
+        type_mismatch=0
+        if doc_valid:
+            for x in fields:
+                value=supplied.get(x["name"])
+                typ=x.get("type")
+                if value is None:
+                    continue
+                if (typ=="string" and not isinstance(value,str)
+                    or typ=="integer" and (not isinstance(value,int) or isinstance(value,bool))
+                    or typ=="boolean" and not isinstance(value,bool)
+                    or typ=="number" and (not isinstance(value,(int,float)) or isinstance(value,bool))):
+                    type_mismatch+=1
         empty_sensitive=missing>0 if doc_valid else None
         visible_source_matches=0
         for x in fields:
@@ -62,10 +75,15 @@ def source_only_login_status(trace:list,world:Any,http_error_events:list[dict],
                 visible_source_matches+=1
         err=e.data.get("error_code")
         matching_status=statuses.get(e.step,[])
+        same_step_http_results=sum(
+            x.kind=="tool_result" and x.step==e.step
+            and x.data.get("name")=="appworld_call"
+            and x.data.get("error_code")=="HTTP_ERROR"
+            for x in trace)
         if e.data.get("ok"):
             category="SUCCESSFUL_API"
             http_status=None
-        elif err=="HTTP_ERROR" and len(matching_status)==1:
+        elif err=="HTTP_ERROR" and len(matching_status)==1 and same_step_http_results==1:
             category="EXACT_ONE_HTTP_PER_MODEL_STEP"
             http_status=matching_status[0]
         elif err=="HTTP_ERROR":
@@ -85,6 +103,7 @@ def source_only_login_status(trace:list,world:Any,http_error_events:list[dict],
             "public_login_doc_contract_known":doc_valid,
             "required_field_count":len(fields) if doc_valid else None,
             "missing_or_empty_required_field_count":missing if doc_valid else None,
+            "required_field_public_type_mismatch_count":type_mismatch if doc_valid else None,
             "supplied_required_values_matched_task_text_count":visible_source_matches,
             "required_values_from_other_context_undetermined":True,
             "credential_validity_unverified":True,
@@ -99,6 +118,8 @@ def source_only_login_status(trace:list,world:Any,http_error_events:list[dict],
                     if x["http_status"] is not None).items())),
         "login_contract_missing_or_empty_count":sum(
             x["missing_or_empty_required_field_count"] or 0 for x in records),
+        "login_public_contract_type_mismatches":sum(
+            x["required_field_public_type_mismatch_count"] or 0 for x in records),
         "ambiguous_login_http_link_count":sum(
             x["status_attribution"]=="AMBIGUOUS_OR_MISSING_CALL_HTTP_ID"
             for x in records),
