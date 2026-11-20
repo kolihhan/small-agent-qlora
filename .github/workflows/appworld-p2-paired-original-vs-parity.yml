@@ -1,0 +1,175 @@
+name: P2 fixed Qwen3.5-9B paired official Supervisor parity new TRAIN2 exploratory A/B
+on:
+  push:
+    branches: [research/appworld-supervisor-parity-paired-ab-preregister-20261120]
+    paths: [.github/workflows/appworld-p2-paired-original-vs-parity.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  real_paired_scenes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        scene: [0, 1]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Before expensive inference, verify synthetic privacy and exact matched cohort
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev,eval,files]'
+          python -m pytest -q tests/test_appworld_parity_paired_preregister.py tests/test_appworld_parity_end_to_end_privacy.py tests/test_appworld_official_supervisor_parity.py
+          python -m compileall -q scripts/appworld_parity_paired_fixed_qwen_new_train2.py
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44757273626
+          github-token: ${{ github.token }}
+          name: APPWORLD-P2-NEW-TRAIN2-SCENE-PREREGISTRATION-SAFE-ONLY-NO-QWEN
+          path: frozen
+      - name: Install exact original AppWorld and verify preregistered task source
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+          export APPWORLD_ROOT="$RUNNER_TEMP/appworld"
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json
+          from appworld import load_task_ids
+          from scripts.appworld_train_first_feedback_fork import task_roster
+          from scripts.appworld_parity_preregister_new_train2 import require_frozen
+          with open('frozen/new-train2-original-vs-parity-frozen.json') as fp:f=json.load(fp)
+          tasks=require_frozen(f,load_task_ids('train'),task_roster())
+          assert len(tasks)==2 and f['max_agent_steps']==20
+          assert f['max_model_new_tokens_each_turn']==384 and f['max_actual_api_calls']==48
+          print('PREREG_COHORT_CHECKED_NO_TASK_IDENTIFIERS_PRINTED')
+          PY
+      - name: Download SHA-verified fixed Qwen3.5-9B GGUF and llama server
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 'https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true' -o base.gguf
+          echo '8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54  base.gguf' | sha256sum -c -
+          curl -fsSL --retry 5 'https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz' -o llama.tar.gz
+          echo '36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b  llama.tar.gz' | sha256sum -c -
+          mkdir -p llama
+          tar -xzf llama.tar.gz -C llama
+          server=$(find "$PWD/llama" -type f -name llama-server -print -quit)
+          test -x "$server"
+          echo "LLAMA_SERVER=$server" >> "$GITHUB_ENV"
+      - name: Run four paired task episodes with no model/SDK/private task logs uploaded
+        shell: bash
+        env:
+          SCENE: ${{ matrix.scene }}
+        run: |
+          set -euo pipefail
+          "$LLAMA_SERVER" -m base.gguf --alias qwen3.5-9b --host 127.0.0.1 \
+            --port 8080 --ctx-size 8192 --threads 4 --parallel 1 --jinja \
+            --reasoning-budget 0 --temperature 0 > "$RUNNER_TEMP/private-llama.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for i in {1..180}; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+          export APPWORLD_ROOT="$RUNNER_TEMP/appworld"
+          cd "$GITHUB_WORKSPACE"
+          mkdir safe-outcome
+          if ! python -m scripts.appworld_parity_paired_fixed_qwen_new_train2 run \
+             --scene "$SCENE" \
+             --frozen frozen/new-train2-original-vs-parity-frozen.json \
+             --out "safe-outcome/scene-$SCENE.json" \
+             > "$RUNNER_TEMP/private-model-episode.log" 2>&1; then
+            echo 'PAIRED_EPISODE_FAILED_PRIVATE_LOG_NOT_PUBLISHED'
+            exit 1
+          fi
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          from gaia_small_agent.tools.appworld_parity_safe_export import validate_safe_report
+          n=int(os.environ['SCENE']);p=Path(f'safe-outcome/scene-{n}.json')
+          x=json.loads(p.read_text())
+          assert x['scene_index']==n and x['n_episodes']==4
+          assert x['no_recording_model_or_sensitive_traces_written']
+          assert x['no_private_task_or_password_or_token_or_hash_export']
+          assert len(list(Path('safe-outcome').iterdir()))==1
+          for r in x['episodes']:
+            validate_safe_report(r)
+            assert isinstance(r['official_task_success'],bool)
+          print('SAFE_REAL_FOUR_EPISODES_COMPLETE',n)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: APPWORLD-P2-SAFE-PAIRED-NEWTRAIN-SCENE-${{ matrix.scene }}
+          path: safe-outcome/scene-${{ matrix.scene }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  all_or_nothing_aggregate:
+    needs: real_paired_scenes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e '.[eval,files]'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44757273626
+          github-token: ${{ github.token }}
+          name: APPWORLD-P2-NEW-TRAIN2-SCENE-PREREGISTRATION-SAFE-ONLY-NO-QWEN
+          path: frozen
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: APPWORLD-P2-SAFE-PAIRED-NEWTRAIN-SCENE-*
+          merge-multiple: true
+          path: safe-shards
+      - name: Aggregate only full 2 tasks x 2 repeats x 2 arms
+        run: |
+          set -euo pipefail
+          test "$(find safe-shards -maxdepth 1 -name 'scene-*.json' | wc -l)" -eq 2
+          mkdir final-safe
+          python -m scripts.appworld_parity_paired_fixed_qwen_new_train2 aggregate \
+            --frozen frozen/new-train2-original-vs-parity-frozen.json \
+            --shard-dir safe-shards \
+            --out final-safe/p2-official-task-success.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('final-safe/p2-official-task-success.json');v=json.loads(p.read_text())
+          assert v['total_matched_pairs']==4 and v['n_unique_task_source_scenes']==2
+          assert v['repeats_per_arm_per_scene']==2
+          assert v['no_sensitive_task_trace_or_password_or_token_exported']
+          assert v['not_proof_of_generalization_or_GAIA_transfer']
+          assert len(list(Path('final-safe').iterdir()))==1
+          print('PAIRED_OFFICIAL_TASK_SUCCESS',{k:v[k] for k in ('official_task_success_count','rescues','regressions')})
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: APPWORLD-P2-FIXED-QWEN-SUPERVISOR-PARITY-SAFE-OFFICIAL-PAIRED-SCORE
+          path: final-safe/p2-official-task-success.json
+          if-no-files-found: error
+          retention-days: 60
