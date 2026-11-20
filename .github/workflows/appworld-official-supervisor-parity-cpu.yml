@@ -1,4 +1,4 @@
-name: AppWorld TRAIN8 Official Supervisor Parity response-shape plus privacy CPU (NO QWEN)
+name: AppWorld TRAIN8 official credential parity response-shape verified CPU (NO QWEN)
 # Corrected source-only counts + 2k model-visible docs budget and scene-profile deduplication.
 # Fail-closed source and prefix tests corrected in head commit; do not count an incomplete workflow.
 on:
