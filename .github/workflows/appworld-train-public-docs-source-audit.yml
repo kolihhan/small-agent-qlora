@@ -1,4 +1,5 @@
-name: AppWorld TRAIN8 public API docs omitted-fields source-only census (NO QWEN)
+name: AppWorld TRAIN8 informative public docs omissions source-only census (NO QWEN)
+# Corrected source-only counts: distinguish non-null/nonempty from routine empty doc keys.
 # Fail-closed source and prefix tests corrected in head commit; do not count an incomplete workflow.
 on:
   push:
