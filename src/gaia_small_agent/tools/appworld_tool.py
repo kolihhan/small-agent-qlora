@@ -16,6 +16,7 @@ from typing import Any
 
 from .base import Tool, ToolResult
 from .appworld_public_error_detail import documented_parameter_hint
+from .appworld_public_contract_audit import public_422_probe_category
 
 _TOOL_APPS_DENY = frozenset({"admin", "api_docs"})
 _SUPERVISOR_ALLOW = frozenset({"complete_task"})
@@ -120,6 +121,9 @@ class AppWorldCallTool(Tool):
         self.calls = 0
         self.errors = 0
         self.http_errors = 0
+        # Safe aggregated diagnostic counters; never store raw exception text.
+        self.http_status_counts: dict[str, int] = {}
+        self.http_422_probe_outcomes: dict[str, int] = {}
 
     def run(self, arguments: dict, workspace: Path) -> ToolResult:
         app = arguments.get("app")
@@ -147,6 +151,14 @@ class AppWorldCallTool(Tool):
                 status = re.search(r"(?:status code is|response status code is|status code)\s*(\d{3})",str(exc),re.I)
                 if status is not None:
                     self.http_errors += 1
+                    status_key = status.group(1)
+                    self.http_status_counts[status_key] = (
+                        self.http_status_counts.get(status_key, 0) + 1)
+                    if status_key == "422":
+                        public_doc = self.world.task.api_docs.get(app, {}).get(api, {})
+                        category = public_422_probe_category(str(exc), public_doc)
+                        self.http_422_probe_outcomes[category] = (
+                            self.http_422_probe_outcomes.get(category, 0) + 1)
                     visible = ("AppWorld API rejected this request (HTTP " +
                                status.group(1) + "). Check the API documentation and parameters.")
                     if self.public_422_field_hint or self.capture_422_field_hint:
