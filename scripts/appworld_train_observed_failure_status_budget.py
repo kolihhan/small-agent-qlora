@@ -14,7 +14,6 @@ from hashlib import sha256
 import json
 from pathlib import Path
 
-from appworld import AppWorld
 from gaia_small_agent.agent.loop import AgentRuntime
 from gaia_small_agent.tools.appworld_tool import AppWorldCallTool, AppWorldDocsTool
 from scripts.appworld_train_first_feedback_fork import (
@@ -90,6 +89,7 @@ def trajectory(trace,http_events,max_steps):
     }
 
 def evaluate_index(index,private_workspace):
+    from appworld import AppWorld
     roster=task_roster()
     tid=roster[index]
     t0=wall_ns()
