@@ -52,7 +52,7 @@ def public_http_status(exception_text: str) -> int | None:
     """Parse exact upstream Requester.raise_if_failure status prefix."""
     if not isinstance(exception_text, str):
         return None
-    match = re.match(r"^Response status code is ([45][0-9]{2}):\\n", exception_text)
+    match = re.match(r"^Response status code is ([45][0-9]{2}):\n", exception_text)
     return int(match.group(1)) if match else None
 
 
