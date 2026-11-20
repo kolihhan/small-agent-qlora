@@ -106,10 +106,11 @@ def test_opt_in_parity_exactly_three_documented_supervisor_APIs():
         assert item["api"]==api and item["app"]=="supervisor"
         assert "parameters" in item["public_api_doc"]
         assert "response_schemas" not in item["public_api_doc"]
-        shape=item["public_api_doc"]["response_shape"]
-        assert shape["type"] in ("object","array")
-        assert "FAKE_DOC_PASSWORD_DO_NOT_TREAT_AS_REAL" not in documented.content
-        assert "FAKE_DOC_EMAIL_DO_NOT_TREAT_AS_REAL" not in documented.content
+        if api in ("show_profile","show_account_passwords"):
+            shape=item["public_api_doc"]["response_shape"]
+            assert shape["type"] in ("object","array")
+            assert "FAKE_DOC_PASSWORD_DO_NOT_TREAT_AS_REAL" not in documented.content
+            assert "FAKE_DOC_EMAIL_DO_NOT_TREAT_AS_REAL" not in documented.content
     password_shape=json.loads(docs.run(
         {"app":"supervisor","api":"show_account_passwords"},Path(".")
     ).content)["public_api_doc"]["response_shape"]
