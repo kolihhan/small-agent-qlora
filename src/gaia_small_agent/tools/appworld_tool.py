@@ -21,16 +21,27 @@ from .appworld_public_auth_observation import documented_auth_observation
 
 _TOOL_APPS_DENY = frozenset({"admin", "api_docs"})
 _SUPERVISOR_ALLOW = frozenset({"complete_task"})
+# OFF by default. Parity is an explicit experiment-only tool *capability*
+# toggle, not a default model instruction and not an authentication shortcut.
+_SUPERVISOR_PARITY_APIS = frozenset({"show_profile", "show_account_passwords"})
 _MAX_JSON_CHARS = 10000
 
 
-def allowed_public_api(world: Any, app: str, api: str) -> bool:
+def allowed_public_api(world: Any, app: str, api: str, *, official_supervisor_parity: bool = False) -> bool:
     if (not isinstance(app, str) or not isinstance(api, str)
         or not app.isidentifier() or not api.isidentifier()
         or app in _TOOL_APPS_DENY or api.startswith("_")):
         return False
     if app == "supervisor":
-        return api in _SUPERVISOR_ALLOW
+        if api in _SUPERVISOR_ALLOW:
+            return True  # Preserve baseline supervisor.complete_task.
+        # Never expose any additional Supervisor API, even with parity enabled.
+        return (
+            official_supervisor_parity is True
+            and api in _SUPERVISOR_PARITY_APIS
+            and app in set(world.task.allowed_apps)
+            and api in world.task.api_docs.get(app, {})
+        )
     return app in set(world.task.allowed_apps) and api in world.task.api_docs.get(app, {})
 
 
@@ -61,8 +72,16 @@ class AppWorldDocsTool(Tool):
         "additionalProperties": False,
     }
 
-    def __init__(self, world: Any):
+    def __init__(self, world: Any, *, official_supervisor_parity: bool = False):
         self.world = world
+        self.official_supervisor_parity = official_supervisor_parity is True
+        if self.official_supervisor_parity:
+            # Public API *names* only; no profile/password/token values here.
+            self.description = (
+                self.description
+                + " Supervisor publicly documents show_profile and "
+                "show_account_passwords for legitimate account login."
+            )
 
     def run(self, arguments: dict, workspace: Path) -> ToolResult:
         app = arguments.get("app")
@@ -76,9 +95,34 @@ class AppWorldDocsTool(Tool):
         if not isinstance(app, str) or app in _TOOL_APPS_DENY:
             return ToolResult(False, "App unavailable for this task.", "APP_DENIED")
         if app == "supervisor":
+            # Byte-for-byte original behavior when the experiment is OFF.
+            if not self.official_supervisor_parity:
+                return ToolResult(True, json.dumps({
+                    "apis": ["complete_task"], "note": "Use after task work is complete."
+                }))
+            if api:
+                if not allowed_public_api(
+                    self.world, app, api, official_supervisor_parity=True
+                ):
+                    return ToolResult(False, "No public API by this name.", "API_NOT_FOUND")
+                public = self.world.task.api_docs.get(app, {}).get(api)
+                if not isinstance(public, dict):
+                    return ToolResult(False, "No public API by this name.", "API_NOT_FOUND")
+                return ToolResult(True, json.dumps({
+                    "app": app, "api": api, "public_api_doc": _doc_info(public),
+                }, ensure_ascii=False, sort_keys=True)[:_MAX_JSON_CHARS])
+            apis = ["complete_task"]
+            apis += sorted(
+                name for name in _SUPERVISOR_PARITY_APIS
+                if allowed_public_api(
+                    self.world, app, name, official_supervisor_parity=True
+                )
+            )
             return ToolResult(True, json.dumps({
-                "apis": ["complete_task"], "note": "Use after task work is complete."
-            }))
+                "apis": apis,
+                "note": "Use Supervisor public profile/password retrieval for authorized app login; "
+                        "complete_task only after task work is complete.",
+            }, sort_keys=True))
         if app not in set(self.world.task.allowed_apps):
             return ToolResult(False, "App unavailable for this task.", "APP_DENIED")
         docs = self.world.task.api_docs.get(app, {})
@@ -113,8 +157,10 @@ class AppWorldCallTool(Tool):
                  public_422_field_hint: bool = False,
                  capture_422_field_hint: bool = False,
                  public_401_auth_hint: bool = False,
-                 capture_401_auth_hint: bool = False):
+                 capture_401_auth_hint: bool = False,
+                 official_supervisor_parity: bool = False):
         self.world = world
+        self.official_supervisor_parity = official_supervisor_parity is True
         self.max_calls = max_calls
         self.report_http_failures = report_http_failures
         self.public_422_field_hint = public_422_field_hint
@@ -138,7 +184,10 @@ class AppWorldCallTool(Tool):
         app = arguments.get("app")
         api = arguments.get("api")
         data = arguments.get("arguments")
-        if not isinstance(data, dict) or not allowed_public_api(self.world, app, api):
+        if not isinstance(data, dict) or not allowed_public_api(
+            self.world, app, api,
+            official_supervisor_parity=self.official_supervisor_parity
+        ):
             return ToolResult(False, "API or arguments not available for this task.", "API_DENIED")
         if self.calls >= self.max_calls:
             return ToolResult(False, "AppWorld evaluation API call budget exhausted.", "CALL_LIMIT")
