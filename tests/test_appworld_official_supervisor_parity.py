@@ -88,6 +88,9 @@ def test_default_off_original_supervisor_semantics_and_descriptions():
     for api in ("show_profile","show_account_passwords","unsafe_admin_reset"):
         assert allowed_public_api(w,"supervisor",api) is False
         assert invoke(calls,api).error_code=="API_DENIED"
+    assert calls.definition()["function"]["description"] == AppWorldCallTool.description
+    assert "supervisor.show_account_passwords" not in calls.definition()["function"]["description"]
+    assert calls.definition()["function"]["parameters"] == AppWorldCallTool.schema
     assert calls.calls==0 and w.requester.calls==[]
     assert allowed_public_api(w,"supervisor","complete_task")
 
@@ -116,6 +119,12 @@ def test_opt_in_parity_exactly_three_documented_supervisor_APIs():
     ).content)["public_api_doc"]["response_shape"]
     assert password_shape["type"]=="array"
     assert password_shape["items"]["fields"]["password"]=={"type":"string"}
+    call_desc=call.definition()["function"]["description"]
+    assert "supervisor.show_profile" in call_desc
+    assert "supervisor.show_account_passwords" in call_desc
+    assert "appworld_docs" in call_desc
+    assert call_desc != AppWorldCallTool.description
+    assert call.definition()["function"]["parameters"] == AppWorldCallTool.schema
     assert "Supervisor" in docs.definition()["function"]["description"]
     for api in ("unsafe_admin_reset","__dict__","get_ground_truth","export_database"):
         assert not allowed_public_api(w,"supervisor",api,official_supervisor_parity=True)
