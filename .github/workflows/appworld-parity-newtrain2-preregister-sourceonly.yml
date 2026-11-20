@@ -1,0 +1,89 @@
+name: P2 preregister fresh TRAIN2 paired Supervisor parity source only (NO QWEN)
+# Corrected source-only counts + 2k model-visible docs budget and scene-profile deduplication.
+# Fail-closed source and prefix tests corrected in head commit; do not count an incomplete workflow.
+on:
+  push:
+    branches: [research/appworld-supervisor-parity-paired-ab-preregister-20261120]
+    paths: [.github/workflows/appworld-parity-newtrain2-preregister-sourceonly.yml]
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  train_source_lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Contract tests no AppWorld protected content
+        run: |
+          python -m pip install -e '.[dev]'
+          python -m pytest -q tests/test_appworld_parity_paired_preregister.py tests/test_appworld_parity_end_to_end_privacy.py tests/test_appworld_official_supervisor_parity.py
+      - name: Install pinned upstream AppWorld and freeze TRAIN8 source IDs
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+          export APPWORLD_ROOT="$RUNNER_TEMP/appworld"
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json
+          from scripts.appworld_train_first_feedback_fork import task_roster,digest
+          from appworld import load_task_ids
+          picked=task_roster()
+          assert len(picked)==8 and len({s.split('_',1)[0] for s in picked})==8
+          print('APPWORLD_TRAIN_FIXED_8_SCENES_SOURCE_HASH_ONLY',digest(picked),
+                'task_count_total',len(load_task_ids('train')))
+          PY
+
+      - name: Freeze new TRAIN task identities and model/arm/budget preregistration BEFORE any inference
+        shell: bash
+        run: |
+          set -euo pipefail
+          export APPWORLD_ROOT="$RUNNER_TEMP/appworld"
+          cd "$GITHUB_WORKSPACE"
+          python -m compileall -q scripts/appworld_parity_preregister_new_train2.py scripts/appworld_parity_paired_fixed_qwen_new_train2.py
+          python -m scripts.appworld_parity_preregister_new_train2 \
+            --out safe-prereg/new-train2-original-vs-parity-frozen.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("safe-prereg/new-train2-original-vs-parity-frozen.json")
+          f=json.loads(p.read_text())
+          assert f["selected_new_scene_count"]==2
+          assert f["previously_exposed_pilot_scenes_excluded"]==8
+          assert f["new_scenes_disjoint_from_original_train8"]
+          assert len(set(f["selected_scene_id_sha256"]))==2
+          assert len(f["selected_task_id_sha256"])==2
+          assert f["n_repeats_per_arm_per_scene"]==2
+          assert f["arms"]==["baseline","parity"]
+          assert f["max_agent_steps"]==20 and f["max_actual_api_calls"]==48
+          assert f["max_model_new_tokens_each_turn"]==384
+          assert f["no_Qwen_training_or_execution_in_this_freeze"]
+          assert f["no_task_text_credential_values_or_credential_hashes_exported"]
+          assert len(list(Path("safe-prereg").iterdir()))==1
+          print("APPWORLD_P2_NEW_SCENE_SOURCE_PRE_FROZEN_N2_REPEAT2_NO_QWEN")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: APPWORLD-P2-NEW-TRAIN2-SCENE-PREREGISTRATION-SAFE-ONLY-NO-QWEN
+          path: safe-prereg/new-train2-original-vs-parity-frozen.json
+          if-no-files-found: error
+          retention-days: 60
