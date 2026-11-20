@@ -82,6 +82,10 @@ def test_public_doc_omission_is_counted_but_model_presentation_stays_frozen():
     assert audit["parameters_hidden_by_first24_cap"] == 1
     assert audit["parameter_default_field_omitted"] == 24
     assert audit["parameter_constraints_field_omitted"] == 24
+    assert audit.get("non_null_default_values_omitted", 0) == 0
+    assert audit["nonempty_public_constraints_omitted"] == 24
+    world.task.api_docs["calendar"]["create_event"]["response_schemas"] = {"success": "public"}
+    assert public_doc_visibility_audit(world)["public_response_schema_examples_omitted"] == 1
     shown = AppWorldDocsTool(world).run(
         {"app": "calendar", "api": "create_event"}, Path("."))
     assert shown.ok
