@@ -1,0 +1,210 @@
+name: Original Qwen9B AppWorld TRAIN4 first real failure status and budget census (NO ADAPTER)
+# Fail-closed source and prefix tests corrected in head commit; do not count an incomplete workflow.
+on:
+  push:
+    branches: [research/appworld-train-first-failure-mechanisms-20261120]
+    paths: [.github/workflows/appworld-train-real-failure-status-budget.yml]
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  train_source_lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Contract tests no AppWorld protected content
+        run: |
+          python -m pip install -e '.[dev,files,search]'
+          python -m pytest -q tests/test_appworld_public_contract_audit.py tests/test_appworld_train_observed_failure_status_budget.py
+      - name: Install exact upstream AppWorld and freeze TRAIN scene-disjoint source IDs
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+          export APPWORLD_ROOT="$RUNNER_TEMP/appworld"
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json
+          from scripts.appworld_train_first_feedback_fork import task_roster,digest
+          from appworld import load_task_ids
+          picked=task_roster()
+          assert len(picked)==8 and len({s.split('_',1)[0] for s in picked})==8
+          print('APPWORLD_TRAIN_FIXED_8_SCENES_SOURCE_HASH_ONLY',digest(picked),
+                'task_count_total',len(load_task_ids('train')))
+          PY
+
+  physical_qwen4:
+    needs: train_source_lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        index: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Install original exact upstream TRAIN simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[eval,files]'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+      - name: Fetch SHA-pinned original Qwen3.5-9B GGUF and llama.cpp server
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 'https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true' -o base.gguf
+          echo '8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54  base.gguf' | sha256sum -c -
+          curl -fsSL --retry 5 'https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz' -o llama.tar.gz
+          echo '36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b  llama.tar.gz' | sha256sum -c -
+          mkdir -p llama
+          tar -xzf llama.tar.gz -C llama
+          server=$(find "$PWD/llama" -type f -name llama-server -print -quit)
+          test -x "$server"
+          echo "LLAMA_SERVER=$server" >> "$GITHUB_ENV"
+      - name: Original Qwen student anonymized HTTP status, tool errors and budget headroom
+        shell: bash
+        env:
+          SHARD: ${{ matrix.index }}
+        run: |
+          set -euo pipefail
+          "$LLAMA_SERVER" -m base.gguf --alias qwen3.5-9b \
+            --host 127.0.0.1 --port 8080 --ctx-size 8192 \
+            --threads 4 --parallel 1 --jinja --reasoning-budget 0 \
+            --temperature 0 > "$RUNNER_TEMP/private-llama-server.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..180}; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health >/dev/null
+          export APPWORLD_ROOT="$RUNNER_TEMP/appworld"
+          cd "$GITHUB_WORKSPACE"
+          python -m scripts.appworld_train_observed_failure_status_budget \
+            --task-index "$SHARD" --out "$GITHUB_WORKSPACE/qwen-appworld-train-first-error-status-$SHARD.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: success()
+        with:
+          name: appworld-train-qwen-first-error-status-${{ matrix.index }}
+          path: qwen-appworld-train-first-error-status-*.json
+          if-no-files-found: error
+          retention-days: 60
+
+  four_scene_safe_aggregate:
+    needs: physical_qwen4
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: appworld-train-qwen-first-error-status-*
+          merge-multiple: true
+          path: source_safe
+      - name: Aggregate official task scores and anonymized error statuses
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from collections import Counter
+          files=sorted(Path('source_safe').glob('qwen-appworld-train-first-error-status-*.json'))
+          assert len(files)==4
+          rows=[json.loads(p.read_text()) for p in files]
+          assert all(r['protocol']=='APPWORLD-QWEN35-TRAIN4-OBSERVED-FAILURE-STATUS-AND-BUDGET-V1' for r in rows)
+          assert {r['scene_index'] for r in rows}==set(range(4))
+          assert len({r['task_sha256'] for r in rows})==4
+          assert len({r['source_roster_sha256'] for r in rows})==1
+          assert len({r['pinned_original_qwen_gguf_sha256'] for r in rows})==1
+          assert all(r['max_agent_steps']==20 and r['model_max_new_tokens_per_turn']==384 for r in rows)
+          assert all(r['no_protected_task_or_raw_model_observation_export'] for r in rows)
+          status=Counter()
+          error=Counter()
+          for r in rows:
+              status.update(r['http_error_counts'])
+              error.update(r['observed_error_counts'])
+          result={
+            'protocol':'APPWORLD-QWEN35-TRAIN4-OBSERVED-FAILURE-STATUS-AGGREGATE-V1',
+            'completed_original_tasks':4,
+            'source_roster_sha256':rows[0]['source_roster_sha256'],
+            'official_task_success':sum(r['task_success_official'] for r in rows),
+            'nested_state_pass':sum(r['nested_state_tests'][0] for r in rows),
+            'nested_state_total':sum(r['nested_state_tests'][1] for r in rows),
+            'numeric_http_status_distribution':dict(sorted(status.items())),
+            'tool_error_code_distribution':dict(sorted(error.items())),
+            'first_error_categories':[
+              {'scene_index':r['scene_index'],
+               'first_failure':r['first_observed_tool_failure'],
+               'first_error_followed_by_any_successful_api':
+                   r['any_successful_API_after_first_error'],
+               'model_calls':r['model_calls'],
+               'forced_final_on_step20':r['last_model_call_forced_final_without_tools'],
+               'stop_reason':r['runner_stop_reason'],
+               'task_success_official':r['task_success_official'],
+               'http_status_distribution':r['http_error_counts']}
+              for r in rows],
+            'forced_last_final_count':sum(r['last_model_call_forced_final_without_tools'] for r in rows),
+            'tasks_with_20_model_calls':sum(r['model_calls']==20 for r in rows),
+            'llm_384_token_exhaustion_unknown':True,
+            'first_observed_error_not_proven_causal':True,
+            'original_Qwen_only':True,
+            'new_adapter_training':False,
+            'same_state_counterfactual_scored':False,
+            'gaia_not_evaluated':True,
+            'do_not_claim_performance_gain':True,
+          }
+          assert sum(status.values())==sum(r['actual_http_errors'] for r in rows)
+          Path('appworld-train4-anonymized-mechanism-aggregate.json').write_text(
+              json.dumps(result,indent=2,sort_keys=True)+'\n')
+          print('APPWORLD_TRAIN4_REAL_DIAGNOSTIC_AGGREGATE',json.dumps({
+            k:result[k] for k in (
+              'completed_original_tasks','official_task_success',
+              'numeric_http_status_distribution',
+              'forced_last_final_count','tasks_with_20_model_calls')},
+            sort_keys=True),flush=True)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: APPWORLD-TRAIN4-ORIGINAL-QWEN-FIRST-ERROR-STATUS-BUDGET-AGGREGATE
+          path: appworld-train4-anonymized-mechanism-aggregate.json
+          if-no-files-found: error
+          retention-days: 60
