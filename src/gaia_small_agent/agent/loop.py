@@ -70,7 +70,7 @@ class AgentRuntime:
                 trace.append(TraceEvent("model_capacity", step, {}))
                 return AgentResult("", False, "model_capacity", trace, metrics)
             except ModelRuntimeError as exc:
-                trace.append(TraceEvent("model_error", step, {"stop_reason": exc.stop_reason, "message": exc.message}))
+                trace.append(TraceEvent("model_error", step, {"stop_reason": exc.stop_reason, "message": exc.message, "diagnostic_code": exc.diagnostic_code}))
                 return AgentResult("", False, exc.stop_reason, trace, metrics)
 
             if not turn.tool_calls:
