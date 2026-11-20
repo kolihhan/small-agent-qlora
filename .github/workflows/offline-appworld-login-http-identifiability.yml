@@ -1,4 +1,4 @@
-name: Source-only old AppWorld login HTTP status sharp bounds (NO QWEN)
+name: Source-only AppWorld historical bounds plus future private login contract tests (NO QWEN)
 on:
   push:
     branches: [research/offline-login-status-identifiability-20261120]
@@ -18,7 +18,7 @@ jobs:
       - name: Synthetic offline identifiability tests
         run: |
           python -m pip install -e '.[dev]'
-          python -m pytest -q tests/test_appworld_old_login_status_identifiability.py
+          python -m pytest -q tests/test_appworld_old_login_status_identifiability.py tests/test_appworld_private_login_event_audit.py
       - name: Fetch immutable original Qwen SAFE scene1 JSON ONLY, no runner/task
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
