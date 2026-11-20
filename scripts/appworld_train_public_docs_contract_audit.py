@@ -45,7 +45,17 @@ def run():
                           "nonempty_constraints_omitted":current.get(
                               "nonempty_public_constraints_omitted",0),
                           "response_examples_omitted":current.get(
-                              "public_response_schema_examples_omitted",0)})
+                              "public_response_schema_examples_omitted",0),
+                          "current_docs_over_2000_chars":current.get(
+                              "current_public_docs_exceed_agent_2000_char_cap",0),
+                          "enriched_docs_over_2000_chars":current.get(
+                              "potential_public_docs_exceed_agent_2000_char_cap",0),
+                          "extra_docs_cross_2000_cap":current.get(
+                              "additional_docs_cross_2000_char_cap_if_enriched",0),
+                          "current_total_doc_chars":current.get(
+                              "current_doc_visible_string_chars",0),
+                          "enriched_total_doc_chars":current.get(
+                              "potential_nonempty_details_chars",0)})
     return {
         "protocol":PROTOCOL,
         "status":"REAL_PINNED_UPSTREAM_PUBLIC_DOC_SOURCE_COMPLETE",
@@ -56,7 +66,9 @@ def run():
         "aggregate_public_only_counts":dict(sorted(aggregate.items())),
         # Eight scene rows may share exactly the same doc counts. Never cite the
         # aggregate as eight independent API documentation catalogs.
-        "unique_per_scene_count_profiles":len({digest(s) for s in per_scene}),
+        "unique_per_scene_count_profiles":len({
+            digest({k:v for k,v in s.items() if k!="scene_index"})
+            for s in per_scene}),
         "representative_one_scene_counts":per_scene[0],
         "scene_index_only_counts":per_scene,
         "no_Qwen_inference":True,
@@ -100,6 +112,12 @@ def main():
         "public_response_examples_omitted":result["representative_one_scene_counts"].get(
             "response_examples_omitted",0),
         "distinct_count_profiles":result["unique_per_scene_count_profiles"],
+        "current_docs_truncated_at_2000":result["representative_one_scene_counts"].get(
+            "current_docs_over_2000_chars",0),
+        "enriched_docs_truncated_at_2000":result["representative_one_scene_counts"].get(
+            "enriched_docs_over_2000_chars",0),
+        "additional_docs_cross_2000":result["representative_one_scene_counts"].get(
+            "extra_docs_cross_2000_cap",0),
         "model_calls":0,
     },sort_keys=True))
 
