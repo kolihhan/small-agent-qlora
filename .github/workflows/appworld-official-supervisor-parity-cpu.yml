@@ -1,4 +1,4 @@
-name: AppWorld TRAIN8 official credential parity response-shape verified CPU (NO QWEN)
+name: AppWorld TRAIN8 Supervisor parity READ-ONLY private response contract CPU (NO QWEN)
 # Corrected source-only counts + 2k model-visible docs budget and scene-profile deduplication.
 # Fail-closed source and prefix tests corrected in head commit; do not count an incomplete workflow.
 on:
@@ -21,7 +21,7 @@ jobs:
       - name: Contract tests no AppWorld protected content
         run: |
           python -m pip install -e '.[dev]'
-          python -m pytest -q tests/test_appworld_tool_bridge.py tests/test_appworld_supervisor_credential_capability.py tests/test_appworld_official_supervisor_parity.py
+          python -m pytest -q tests/test_appworld_tool_bridge.py tests/test_appworld_supervisor_credential_capability.py tests/test_appworld_official_supervisor_parity.py tests/test_appworld_official_supervisor_parity_private_response_cpu.py
       - name: Install pinned upstream AppWorld and freeze TRAIN8 source IDs
         shell: bash
         run: |
@@ -83,6 +83,36 @@ jobs:
           print('OFF_VS_ON_PARITY_SOURCE_ONLY',len(d['source_only_safe_rows']),
                 'parity_enabled_two_lookups',True, 'model_loaded',False)
           PY
+      - name: Protected simulator read-only Supervisor response contract and privacy check (NO LOGIN)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export APPWORLD_ROOT="$RUNNER_TEMP/appworld"
+          cd "$GITHUB_WORKSPACE"
+          python -m scripts.appworld_official_supervisor_parity_private_response_cpu \
+            --out supervisor-protected-response-contract-safe.json
+          python - <<'PY'
+          import json
+          d=json.load(open("supervisor-protected-response-contract-safe.json"))
+          assert d["source_scenes"]==8 and d["no_Qwen_calls"]
+          assert d["all_lookups_success"] and d["no_task_or_credentials_or_hashes_exported"]
+          assert all(r["safe"]["official_lookup_read_only_calls"]==2
+                     and r["safe"]["no_app_login_or_supervisor_write_calls"]
+                     and r["safe"]["no_raw_responses_tasks_account_data_secrets_or_hashes_exported"]
+                     and all(x["raw_response_is_JSON_object_or_array"]
+                             and x["top_level_matches_official_public_example_shape"]
+                             and x["overlapping_official_public_fields_have_compatible_types"]
+                             and x["public_response_shape_matches_docs_projection"]
+                             for x in r["safe"]["private_response_contract_only"])
+                     for r in d["safe_scenes"])
+          print("PROTECTED_READ_ONLY_SUPERVISOR_RESPONSE_CONTRACT_TWO_APIS_PER_SCENE", 8)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: APPWORLD-TRAIN8-OFFICIAL-SUPERVISOR-PRIVATE-LOOKUP-RESPONSE-SHAPE-ONLY
+          path: supervisor-protected-response-contract-safe.json
+          if-no-files-found: error
+          retention-days: 60
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: APPWORLD-TRAIN8-OFFICIAL-SUPERVISOR-PARITY-CONTROLS-CPU-NO-QWEN
