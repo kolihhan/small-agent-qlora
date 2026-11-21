@@ -31,8 +31,9 @@ def test_final30_resumes_full_optimizer_state_without_training_gaia():
     assert 'audit.get("no_gaia_training") is not True' in code
     assert "lora_target_modules=\"all-linear\"" in code
     assert '"checkpoint-100"' in code
-    assert '"full_v8_completed": True' in code
-    assert '"gaia_evaluated": False' in code
+    acceptance=getsource(r.export_stage100_checkpoint)
+    assert '"full_v8_completed": verified' in acceptance
+    assert '"gaia_evaluated": False' in acceptance
 
 
 def test_stage70_restore_checks_physical_optimizer_scheduler_rng():
@@ -70,6 +71,7 @@ def _toy_checkpoint100(tmp_path, monkeypatch):
         (ckpt / name).write_bytes(("toy-" + name).encode())
     (ckpt / "trainer_state.json").write_text(json.dumps({"global_step": 100, "max_steps": 100}))
     cfg = {
+        "model": r.MODEL,
         "max_steps": 100, "pause_at_step": None, "save_steps": 10,
         "training_examples": 798,
         "resume_from_checkpoint": str(r.OUT / "checkpoint-70"),
