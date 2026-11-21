@@ -174,3 +174,55 @@ def test_kaggle_unpacked_ambiguous_checkpoints_fails_closed(tmp_path, monkeypatc
     (other / "trainer_state.json").write_text("{}")
     with pytest.raises(FileNotFoundError, match="ambiguous"):
         k.verify_and_restore()
+
+
+def _toy_checkpoint100(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr(k, "OUT", tmp_path / "trainer")
+    monkeypatch.setattr(k, "ARCHIVE", tmp_path / "working" / "verified.zip")
+    monkeypatch.setattr(k, "QUARANTINE_ARCHIVE", tmp_path / "working" / "unverified.zip")
+    ckpt = k.OUT / "checkpoint-100"
+    ckpt.mkdir(parents=True)
+    for name in ("adapter_model.safetensors", "adapter_config.json",
+                 "optimizer.pt", "scheduler.pt", "rng_state.pth"):
+        (ckpt / name).write_bytes(("toy-" + name).encode())
+    (ckpt / "trainer_state.json").write_text(
+        json.dumps({"global_step": 100, "max_steps": 100}))
+    config = {
+        "max_steps": 100, "pause_at_step": None, "save_steps": 10,
+        "training_examples": 798, "compute_dtype": "torch.float16",
+        "resume_from_checkpoint": str((k.OUT / "checkpoint-70").resolve()),
+    }
+    (k.OUT / "run_config.json").write_text(json.dumps(config))
+    return config
+
+
+def test_final_gate_mismatch_does_not_lose_optimizer_checkpoint(tmp_path, monkeypatch):
+    """This FAILED in v3: an opaque gate exception lost /kaggle/temp weights."""
+    import json
+    import zipfile
+
+    config = _toy_checkpoint100(tmp_path, monkeypatch)
+    config["compute_dtype"] = "torch.bfloat16"
+    (k.OUT / "run_config.json").write_text(json.dumps(config))
+
+    report = k.finalize_stage100(gpu_name="Tesla T4", duration_s=0.0)
+
+    assert report["full_v8_completed"] is False
+    assert report["failed_checks"] == ["compute_dtype"]
+    assert not k.ARCHIVE.exists()
+    assert k.QUARANTINE_ARCHIVE.exists()
+    with zipfile.ZipFile(k.QUARANTINE_ARCHIVE) as z:
+        assert "checkpoint-100/optimizer.pt" in z.namelist()
+        assert "checkpoint-100/scheduler.pt" in z.namelist()
+        assert "checkpoint-100/rng_state.pth" in z.namelist()
+        assert json.loads(z.read("stage100-verified-report.json"))["full_v8_completed"] is False
+
+
+def test_final_gate_verified_path_requires_all_fields(tmp_path, monkeypatch):
+    _toy_checkpoint100(tmp_path, monkeypatch)
+    report = k.finalize_stage100(gpu_name="Tesla T4", duration_s=0.0)
+    assert report["full_v8_completed"] is True
+    assert report["failed_checks"] == []
+    assert k.ARCHIVE.exists()
+    assert not k.QUARANTINE_ARCHIVE.exists()
