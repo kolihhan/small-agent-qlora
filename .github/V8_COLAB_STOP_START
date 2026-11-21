@@ -1,0 +1,1 @@
+Owner explicitly authorized stopping the one active Colab backend assignment before one bounded T4 QLoRA 70-to100 continuation. Verify zero active after termination. No secrets in logs.
