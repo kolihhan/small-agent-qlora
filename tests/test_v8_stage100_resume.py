@@ -20,7 +20,7 @@ def test_original_model_source_and_verified_step70_unchanged():
 
 
 def test_final30_resumes_full_optimizer_state_without_training_gaia():
-    code=getsource(r.main)
+    code=getsource(r.main) + getsource(r.export_stage100_checkpoint)
     assert "restore_verified_step70()" in code
     assert 'resume_from_checkpoint=OUT / "checkpoint-70"' in code
     assert "pause_at_step=None" in code
