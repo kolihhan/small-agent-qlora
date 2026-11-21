@@ -46,7 +46,7 @@ jobs:
           repository: kolihhan/small-agent-qlora
           run-id: 44861054303
           github-token: ${{ github.token }}
-          name: qlora-v8-stage100-full-state-if-trained
+          name: qlora-v8-stage70-full-state-if-trained
           path: original-stage70
       - name: Validate stage70 and split original full-state archive into retry-safe transport
         run: |
@@ -197,7 +197,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: qlora-v8-stage70-full-state-if-trained
+          name: qlora-v8-stage100-full-state-if-trained
           path: exported/
           if-no-files-found: warn
           retention-days: 30
