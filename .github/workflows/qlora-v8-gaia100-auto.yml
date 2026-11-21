@@ -1,0 +1,250 @@
+name: Automatic verified QLoRA v8 step100 matched GAIA100
+
+on:
+  push:
+    branches: [research/v8-stage100-resume-20261121]
+    paths: [.github/V8_GAIA_EVAL_START]
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  FROZEN_EVAL_COMMIT: "08fbcaa5ed82c5238188c45d5748993bae9bf1e1"
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA256: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_RELEASE_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_RELEASE_SHA256: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  MODEL_ALIAS: qwen3.5-9b
+
+jobs:
+  verify-convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout v8 physical checkpoint gate
+        uses: actions/checkout@v4
+      - name: Reject failed or substituted training run before any eval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request
+          url = "https://api.github.com/repos/kolihhan/small-agent-qlora/actions/runs/44925307580"
+          req = urllib.request.Request(url, headers={
+              "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+              "Accept": "application/vnd.github+json",
+          })
+          with urllib.request.urlopen(req, timeout=30) as response:
+              run=json.load(response)
+          assert run["status"]=="completed" and run["conclusion"]=="success", "TRAINING_NOT_SUCCESSFUL"
+          assert run["head_sha"]=="4121d87e485fbbb8c0775a26b8975399b2e2cef4", "TRAINING_COMMIT_DRIFT"
+          assert run["head_branch"]=="research/v8-stage100-resume-20261121"
+          assert run["name"]=="Resume same Qwen9B v8 QLoRA from verified checkpoint70 to full step100"
+          print("V8_TRAINING_SUCCESS_VERIFIED",run["id"])
+          PY
+      - name: Download original step100 artifact from frozen Colab run
+        uses: actions/download-artifact@v4
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44925307580
+          github-token: ${{ github.token }}
+          name: qlora-v8-stage100-full-state-if-trained
+          path: source
+      - name: Verify all physical stage100 weights and optimizer/scheduler/RNG
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e source/qlora-v8-stage100-UNVERIFIED.zip
+          test -s source/qlora-v8-stage100-checkpoint.zip
+          python scripts/gaia_v8_stage100_gate.py source/qlora-v8-stage100-checkpoint.zip --extract-adapter adapter --output-report stage100-report.json
+          test "$(stat -c%s adapter/adapter_model.safetensors)" -gt 1000000
+      - name: Convert verified Qwen3.5-9B PEFT LoRA to GGUF with frozen llama.cpp
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo HF_TOKEN_REQUIRED; exit 42; }
+          git clone -q --depth 1 --branch b11541 https://github.com/ggml-org/llama.cpp.git /tmp/llama-convert
+          test "$(git -C /tmp/llama-convert rev-parse HEAD)" = "f2918cabbffe8abf8e2a90c1c089085fa116c2cf"
+          python -m pip install -q -r /tmp/llama-convert/requirements/requirements-convert_lora_to_gguf.txt
+          python /tmp/llama-convert/convert_lora_to_gguf.py --base-model-id Qwen/Qwen3.5-9B --outtype f16 --outfile v8-qlora-adapter.gguf adapter
+          test "$(stat -c%s v8-qlora-adapter.gguf)" -gt 1000000
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          p=Path("v8-qlora-adapter.gguf")
+          source=json.loads(Path("stage100-report.json").read_text())
+          out={"training_run_id":44925307580,
+               "source_adapter_sha256":source["adapter_sha256"],
+               "gguf_adapter_sha256":hashlib.sha256(p.read_bytes()).hexdigest(),
+               "model":"Qwen/Qwen3.5-9B","training_steps":100,
+               "llama_converter_sha":"f2918cabbffe8abf8e2a90c1c089085fa116c2cf"}
+          Path("gguf-conversion-manifest.json").write_text(json.dumps(out,sort_keys=True,indent=2)+"\n")
+          print("V8_VERIFIED_CONVERSION_SHA256",out["gguf_adapter_sha256"])
+          PY
+      - name: Upload verified model adapter for all 20 independent shards
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaia-v8-verified-gguf
+          path: |
+            v8-qlora-adapter.gguf
+            gguf-conversion-manifest.json
+            stage100-report.json
+          if-no-files-found: error
+          retention-days: 30
+
+  paired-eval:
+    needs: verify-convert
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - name: Checkout frozen Runtime v2 evaluator
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_EVAL_COMMIT }}
+
+      - name: Install evaluation dependencies
+        run: python -m pip install --quiet -e '.[search,files,eval]'
+
+      - name: Verify GAIA credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN_NOT_CONFIGURED"; exit 42; }
+
+      - name: Download and verify frozen base GGUF
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model matched-input/v3b matched-input/v3d /tmp/llama-bin
+          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf
+          echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
+          curl -fL --retry 5 --retry-delay 3 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
+          echo "$LLAMA_RELEASE_SHA256  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER="$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -1)"
+          test -n "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+
+      - name: Download verified v8 adapter produced after step100 gate
+        uses: actions/download-artifact@v4
+        with:
+          name: gaia-v8-verified-gguf
+          path: matched-input/v8
+      - name: Reverify transformed adapter SHA against its manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          p=Path("matched-input/v8/v8-qlora-adapter.gguf")
+          m=json.loads(Path("matched-input/v8/gguf-conversion-manifest.json").read_text())
+          assert m["training_run_id"]==44925307580 and m["training_steps"]==100
+          assert m["model"]=="Qwen/Qwen3.5-9B"
+          assert hashlib.sha256(p.read_bytes()).hexdigest()==m["gguf_adapter_sha256"]
+          PY
+
+      - name: Run matched Base then physically verified v8 on same runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          shard="${{ matrix.shard }}"
+
+          run_arm() {
+            arm="$1"
+            out="runs/${arm}/shard-${shard}"
+            mkdir -p "$out"
+            extra=()
+            if [ "$arm" = "qlora-v8" ]; then
+              extra=(--lora matched-input/v8/v8-qlora-adapter.gguf)
+            fi
+
+            "$LLAMA_SERVER" \
+              -m model/Qwen3.5-9B-Q4_K_M.gguf \
+              "${extra[@]}" \
+              --alias "$MODEL_ALIAS" \
+              --host 127.0.0.1 --port 8080 \
+              --ctx-size 16384 --threads 4 --parallel 1 \
+              --jinja --reasoning-budget 0 --temperature 0 \
+              > "$out/llama-server.log" 2>&1 &
+            pid=$!
+            echo "$pid" > "$out/llama-server.pid"
+            cleanup() {
+              kill "$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+            }
+            trap cleanup RETURN
+
+            for i in {1..180}; do
+              if curl -fsS http://127.0.0.1:8080/health >/dev/null; then break; fi
+              sleep 2
+            done
+            curl -fsS http://127.0.0.1:8080/health >/dev/null
+
+            python scripts/run_gaia_eval_shard.py \
+              --backend openai_compat \
+              --model "$MODEL_ALIAS" \
+              --openai-base-url http://127.0.0.1:8080 \
+              --hf-token "$HF_TOKEN" \
+              --shard-index "$shard" \
+              --shard-count 20 \
+              --work-root "$out" \
+              --output "$out/shard.json"
+
+            cleanup
+            trap - RETURN
+            sleep 2
+          }
+
+          run_arm base
+          run_arm qlora-v8
+
+      - name: Upload paired shard evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaia-v8-paired-shard-${{ matrix.shard }}
+          path: runs
+          if-no-files-found: error
+          retention-days: 14
+
+
+  summarize:
+    needs: paired-eval
+    if: ${{ always() && needs.paired-eval.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout frozen Runtime v2 GAIA scorer
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_EVAL_COMMIT }}
+      - name: Checkout new strict v8 aggregator without changing frozen evaluator
+        uses: actions/checkout@v4
+        with:
+          ref: research/v8-stage100-resume-20261121
+          path: current
+      - name: Install frozen scoring module
+        run: python -m pip install -q -e .
+      - name: Download all Base vs v8 matched 5-task shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: gaia-v8-paired-shard-*
+          path: evidence
+      - name: Require exactly 100 matched task identities and strict scoring
+        run: python current/scripts/gaia_v8_aggregate.py
+      - name: Save genuine 100-task matched score
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaia-v8-matched-summary
+          path: gaia-v8-matched-summary.json
+          if-no-files-found: error
+          retention-days: 30
