@@ -71,7 +71,7 @@ def _toy_checkpoint100(tmp_path, monkeypatch):
         (ckpt / name).write_bytes(("toy-" + name).encode())
     (ckpt / "trainer_state.json").write_text(json.dumps({"global_step": 100, "max_steps": 100}))
     cfg = {
-        "model": r.MODEL,
+        "model": r.MODEL, "compute_dtype": "torch.float16",
         "max_steps": 100, "pause_at_step": None, "save_steps": 10,
         "training_examples": 798,
         "resume_from_checkpoint": str(r.OUT / "checkpoint-70"),
