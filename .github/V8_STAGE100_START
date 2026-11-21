@@ -1,0 +1,1 @@
+Owner-authorized continuation of original Qwen/Qwen3.5-9B v8 QLoRA from verified real stage70 artifact 14693522324 to original step100. One Colab T4 after zero-active-assignment guard; preserve full optimizer/scheduler/RNG; no GAIA training, no model change. Training alone is not a GAIA improvement claim.

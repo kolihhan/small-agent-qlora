@@ -1,0 +1,47 @@
+name: CPU feasibility gate for exact Qwen9B QLoRA stage70 to 100 (no training if insufficient)
+on:
+  push:
+    branches: [research/v8-stage100-resume-20261121]
+    paths: [.github/V8_CPU_RESUME_RESOURCE_PROBE_START]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: small-agent-original-v8-cpu-feasibility
+  cancel-in-progress: false
+jobs:
+  cpu-preflight:
+    name: Verify physical GitHub CPU runner RAM/disk against original 9B source
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # checkout v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # setup python v6
+        with:
+          python-version: '3.11'
+      - name: CPU-only resource contract tests
+        run: |
+          set -euo pipefail
+          python -m pip install -q 'pytest>=8,<10'
+          python -m pytest -q tests/test_cpu_v8_9b_resource_gate.py
+      - name: Measure actual runner and query source tensor metadata only
+        run: |
+          set -euo pipefail
+          python -m scripts.cpu_v8_stage70_to100_resource_gate
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('cpu-v8-feasibility.json').read_text())
+          assert d['protocol']=='QWEN9B_V8_CPU_STAGE70_TO100_HOST_GATE_V1'
+          assert d['checkpoint_provenance']['verified_train_step']==70
+          assert d['checkpoint_provenance']['target_step']==100
+          assert d['evaluation']['training_performed'] is False
+          assert d['evaluation']['cross_device_exact_optimizer_continuation_not_proven'] is True
+          print('CPU_RESOURCE_REPORT_VALID_NO_MODEL_TRAINING', d['evaluation']['resource_gate'])
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qwen9b-original-v8-stage70-to100-github-cpu-feasibility
+          path: cpu-v8-feasibility.json
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,1 @@
+Owner requested switch Small Agent original v8 Qwen3.5-9B stage70→100 training from Colab to Kaggle. Check whether Kaggle API token is scoped to THIS repo before executing GPU/data actions. Never print credentials or create GPU session during auth probe.
