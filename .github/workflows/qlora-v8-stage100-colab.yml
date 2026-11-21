@@ -158,7 +158,7 @@ jobs:
           mkdir -p exported
           cleanup() { colab --auth=adc stop -s "$session" >/dev/null 2>&1 || true; }
           trap cleanup EXIT
-          colab --auth=adc new -s "$session" --gpu T4
+          COLAB_CLI_ASSIGN_RETRIES=0 COLAB_CLI_RETRY_BACKOFF=0 timeout 125 colab --auth=adc new -s "$session" --gpu T4
           colab --auth=adc upload -s "$session" inputs/qlora-v8-train.jsonl /content/qlora-v8-train.jsonl
           colab --auth=adc upload -s "$session" inputs/qlora-v8-audit.json /content/qlora-v8-audit.json
           colab --auth=adc upload -s "$session" inputs/stage70-manifest.json /content/stage70-manifest.json
@@ -170,6 +170,7 @@ jobs:
           code=${PIPESTATUS[0]}
           set -e
           colab --auth=adc download -s "$session" /content/qlora-v8-stage100-checkpoint.zip exported/qlora-v8-stage100-checkpoint.zip || true
+          colab --auth=adc download -s "$session" /content/qlora-v8-stage100-UNVERIFIED.zip exported/qlora-v8-stage100-UNVERIFIED.zip || true
           if [ "$code" -ne 0 ]; then exit "$code"; fi
           python - <<'PY'
           import hashlib,json,zipfile
