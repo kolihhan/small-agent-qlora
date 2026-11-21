@@ -52,81 +52,147 @@ def checked(*cmd: str) -> None:
 
 
 def verify_and_restore() -> dict:
+    """Restore a hash-verified stage70 from ZIP OR Kaggle's auto-extracted files.
+
+    Kaggle unpacks uploaded dataset ZIPs; the archive itself is not mounted.
+    Never relax the four source tensor hashes or original train-data provenance.
+    """
+    import shutil
+
     if OUT.exists() or ARCHIVE.exists():
         raise FileExistsError("refuse reused Kaggle checkpoint workspace")
-    if not all(p.is_file() for p in (TRAIN,AUDIT,BUNDLE,SOURCE_MANIFEST)):
+    if not all(p.is_file() for p in (TRAIN, AUDIT, SOURCE_MANIFEST)):
         raise FileNotFoundError("private Kaggle stage70 dataset is incomplete")
-    manifest=json.loads(SOURCE_MANIFEST.read_text())
-    if (manifest.get("protocol")!="private-kaggle-original-qlora-v8-step70-v1"
-        or manifest.get("stage70_artifact")!=STAGE70_ARTIFACT
-        or manifest.get("stage70_source_run")!=STAGE70_RUN
-        or manifest.get("dataset_id")!=DATASET_ID
-        or manifest.get("stage70_zip_bytes")!=STAGE70_FILE_SIZE
-        or sha_file(BUNDLE)!=manifest.get("stage70_zip_sha256")):
-        raise ValueError("transport ZIP source identity mismatch")
-    audit=json.loads(AUDIT.read_text())
-    if (sha_file(TRAIN)!=TRAIN_SHA
-        or audit.get("train_sha256")!=TRAIN_SHA
-        or audit.get("train_actions")!=798
-        or audit.get("train_parents")!=304
-        or audit.get("validation_parents")!=35
-        or audit.get("protected_question_hashes_loaded")!=165
+    manifest = json.loads(SOURCE_MANIFEST.read_text())
+    if (manifest.get("protocol") != "private-kaggle-original-qlora-v8-step70-v1"
+        or manifest.get("stage70_artifact") != STAGE70_ARTIFACT
+        or manifest.get("stage70_source_run") != STAGE70_RUN
+        or manifest.get("dataset_id") != DATASET_ID
+        or manifest.get("stage70_zip_bytes") != STAGE70_FILE_SIZE
+        or not isinstance(manifest.get("stage70_zip_sha256"), str)
+        or len(manifest["stage70_zip_sha256"]) != 64):
+        raise ValueError("transport source identity mismatch")
+
+    audit = json.loads(AUDIT.read_text())
+    if (sha_file(TRAIN) != TRAIN_SHA
+        or audit.get("train_sha256") != TRAIN_SHA
+        or audit.get("train_actions") != 798
+        or audit.get("train_parents") != 304
+        or audit.get("validation_parents") != 35
+        or audit.get("protected_question_hashes_loaded") != 165
         or audit.get("training_ready_no_gpu_yet") is not True
         or audit.get("no_gaia_training") is not True):
         raise ValueError("frozen training data or protected GAIA source drift")
-    if BUNDLE.stat().st_size!=STAGE70_FILE_SIZE:
-        raise ValueError("checkpoint zip byte length mismatch")
-    with zipfile.ZipFile(BUNDLE) as z:
-        names=set(z.namelist())
-        required={
-            "checkpoint-70/adapter_model.safetensors",
-            "checkpoint-70/adapter_config.json",
-            "checkpoint-70/optimizer.pt",
-            "checkpoint-70/scheduler.pt",
-            "checkpoint-70/rng_state.pth",
-            "checkpoint-70/trainer_state.json",
-            "run_config.json", "stage70-verified-report.json",
+
+    required = {
+        "checkpoint-70/adapter_model.safetensors",
+        "checkpoint-70/adapter_config.json",
+        "checkpoint-70/optimizer.pt",
+        "checkpoint-70/scheduler.pt",
+        "checkpoint-70/rng_state.pth",
+        "checkpoint-70/trainer_state.json",
+        "run_config.json",
+        "stage70-verified-report.json",
+    }
+    if BUNDLE.is_file():
+        if BUNDLE.stat().st_size != STAGE70_FILE_SIZE or sha_file(BUNDLE) != manifest["stage70_zip_sha256"]:
+            raise ValueError("transport ZIP bytes/hash mismatch")
+        with zipfile.ZipFile(BUNDLE) as z:
+            names = set(z.namelist())
+            if not required.issubset(names) or any(
+                name.startswith("/") or ".." in Path(name).parts for name in names
+            ):
+                raise ValueError("archive missing optimizer state or unsafe paths")
+            proof = json.loads(z.read("stage70-verified-report.json"))
+            cfg = json.loads(z.read("run_config.json"))
+            state = json.loads(z.read("checkpoint-70/trainer_state.json"))
+            tensor_hashes = {
+                name: hashlib.sha256(z.read("checkpoint-70/" + name)).hexdigest()
+                for name in ("adapter_model.safetensors", "optimizer.pt", "scheduler.pt", "rng_state.pth")
+            }
+            # Original names are constant and validated; ZIP extraction never traverses unknown members.
+            OUT.mkdir(parents=True, exist_ok=False)
+            for name in sorted(required):
+                if not name.startswith("checkpoint-70/"):
+                    continue
+                target = OUT / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(name) as source, target.open("xb") as dest:
+                    shutil.copyfileobj(source, dest, length=4 * 1024 * 1024)
+        mode = "original_zip"
+    else:
+        # Kaggle dataset uploads automatically extract ZIP. Locate only a unique
+        # original checkpoint-70 directory (preserving the ZIP's internal tree).
+        candidates = sorted({
+            state_path.parent for state_path in DATASET_ROOT.rglob("checkpoint-70/trainer_state.json")
+            if state_path.is_file() and not state_path.is_symlink()
+        })
+        if len(candidates) != 1:
+            raise FileNotFoundError("private Kaggle stage70 dataset is incomplete or ambiguous")
+        source_checkpoint = candidates[0]
+        source_root = source_checkpoint.parent
+        if source_checkpoint.name != "checkpoint-70":
+            raise ValueError("unpacked checkpoint path is not stage70")
+        sources = {
+            name: source_root / name for name in required
         }
-        if not required.issubset(names) or any(
-            n.startswith("/") or ".." in Path(n).parts for n in names
-        ):
-            raise ValueError("archive missing optimizer state or unsafe paths")
-        proof=json.loads(z.read("stage70-verified-report.json"))
-        cfg=json.loads(z.read("run_config.json"))
-        state=json.loads(z.read("checkpoint-70/trainer_state.json"))
-        expected=(
-            (proof.get("protocol")=="qwen9b-v8-continued-step35-to70-original100-scheduler-v1"),
-            (proof.get("model")==MODEL),
-            (proof.get("original_training_code_sha")==SOURCE_SHA),
-            (proof.get("train_sha256")==TRAIN_SHA),
-            (proof.get("original_stage35_run")==44781908112),
-            (proof.get("trained_step_start")==35),
-            (proof.get("trained_step_end")==70),
-            (proof.get("scheduler_max_steps")==MAX_STEPS),
-            (proof.get("full_v8_completed") is False),
-            (proof.get("gaia_evaluated") is False),
-            (cfg.get("max_steps")==MAX_STEPS),
-            (cfg.get("pause_at_step")==70),
-            (cfg.get("max_length")==3200),
-            (cfg.get("training_examples")==798),
-            (state.get("global_step")==70),
-            (state.get("max_steps")==MAX_STEPS),
-        )
-        if not all(expected):
-            raise ValueError("original verified 70-step full-state training contract drift")
-        for name, expected_hash in (
-            ("adapter_model.safetensors",STAGE70_WEIGHTS_SHA),
-            ("optimizer.pt",STAGE70_OPTIM_SHA),
-            ("scheduler.pt",STAGE70_SCHED_SHA),
-            ("rng_state.pth",STAGE70_RNG_SHA),
-        ):
-            if hashlib.sha256(z.read("checkpoint-70/"+name)).hexdigest()!=expected_hash:
-                raise ValueError("actual stage70 tensor state SHA mismatch for "+name)
-        OUT.mkdir(parents=True,exist_ok=False)
-        for entry in z.infolist():
-            if entry.filename.startswith("checkpoint-70/"):
-                z.extract(entry,OUT)
-    print("KAGGLE_STAGE70_SOURCE_OPTIMIZER_SCHEDULER_RNG_INTACT",flush=True)
+        if any(not p.is_file() or p.is_symlink() for p in sources.values()):
+            raise FileNotFoundError("private Kaggle stage70 dataset is incomplete")
+        proof = json.loads(sources["stage70-verified-report.json"].read_text())
+        cfg = json.loads(sources["run_config.json"].read_text())
+        state = json.loads(sources["checkpoint-70/trainer_state.json"].read_text())
+        tensor_hashes = {
+            name: sha_file(sources["checkpoint-70/" + name])
+            for name in ("adapter_model.safetensors", "optimizer.pt", "scheduler.pt", "rng_state.pth")
+        }
+        mode = "kaggle_auto_extracted"
+
+    expected = (
+        proof.get("protocol") == "qwen9b-v8-continued-step35-to70-original100-scheduler-v1",
+        proof.get("model") == MODEL,
+        proof.get("original_training_code_sha") == SOURCE_SHA,
+        proof.get("train_sha256") == TRAIN_SHA,
+        proof.get("original_stage35_run") == 44781908112,
+        proof.get("trained_step_start") == 35,
+        proof.get("trained_step_end") == 70,
+        proof.get("scheduler_max_steps") == MAX_STEPS,
+        proof.get("full_v8_completed") is False,
+        proof.get("gaia_evaluated") is False,
+        cfg.get("max_steps") == MAX_STEPS,
+        cfg.get("pause_at_step") == 70,
+        cfg.get("max_length") == 3200,
+        cfg.get("training_examples") == 798,
+        state.get("global_step") == 70,
+        state.get("max_steps") == MAX_STEPS,
+    )
+    if not all(expected):
+        raise ValueError("original verified 70-step full-state training contract drift")
+
+    hashes = (
+        ("adapter_model.safetensors", STAGE70_WEIGHTS_SHA),
+        ("optimizer.pt", STAGE70_OPTIM_SHA),
+        ("scheduler.pt", STAGE70_SCHED_SHA),
+        ("rng_state.pth", STAGE70_RNG_SHA),
+    )
+    for name, expected_hash in hashes:
+        if tensor_hashes[name] != expected_hash:
+            raise ValueError("actual stage70 tensor state SHA mismatch for " + name)
+
+    if mode == "kaggle_auto_extracted":
+        OUT.mkdir(parents=True, exist_ok=False)
+        dest = OUT / "checkpoint-70"
+        dest.mkdir(parents=True, exist_ok=False)
+        for name in sorted(required):
+            if name.startswith("checkpoint-70/"):
+                source = sources[name]
+                with source.open("rb") as inp, (dest / Path(name).name).open("xb") as out:
+                    shutil.copyfileobj(inp, out, length=4 * 1024 * 1024)
+    # Defense-in-depth: compare restored tensors, not only read-only dataset sources.
+    for name, expected_hash in hashes:
+        if sha_file(OUT / "checkpoint-70" / name) != expected_hash:
+            raise ValueError("restored stage70 tensor state hash mismatch: " + name)
+    print("KAGGLE_STAGE70_SOURCE_OPTIMIZER_SCHEDULER_RNG_INTACT",
+          json.dumps({"input_mode": mode, "global_step": 70, "hashes_verified": 4}), flush=True)
     return proof
 
 
