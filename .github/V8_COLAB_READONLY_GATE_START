@@ -1,1 +1,1 @@
-Owner-authorized return-to-Colab read-only GPU quota and session preflight, 2026-11-22. No training or allocation from this workflow.
+Owner-authorized read-only Colab GPU session count while one bounded stage70->100 run #44925307580 is active. Do not change GPU sessions, quota, artifacts, or training. 2026-11-22 MYT.
