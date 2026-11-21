@@ -1,0 +1,43 @@
+name: Small Agent Kaggle API auth only no GPU
+on:
+  push:
+    branches: [research/v8-stage100-resume-20261121]
+    paths: [.github/V8_KAGGLE_AUTH_PROBE_START]
+permissions:
+  contents: read
+concurrency:
+  group: small-agent-kaggle-auth-probe
+  cancel-in-progress: false
+jobs:
+  auth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.12'}
+      - name: Check token presence without printing or uploading secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${KAGGLE_API_TOKEN:-}" ]; then
+            echo "SMALL_AGENT_KAGGLE_REPO_TOKEN_MISSING"
+            exit 52
+          fi
+          echo "SMALL_AGENT_KAGGLE_REPO_TOKEN_PRESENT"
+      - name: Authenticate account via read-only Kaggle API
+        run: |
+          set -euo pipefail
+          python -m pip install -q 'kaggle==2.2.5' 'six==1.17.0'
+          python - <<'PY'
+          from kaggle.api.kaggle_api_extended import KaggleApi
+          api=KaggleApi()
+          api.authenticate()
+          account = api.get_config_value("username")
+          if account and account != "kolihhan":
+              raise RuntimeError("Unexpected Kaggle account")
+          api.kernels_list(mine=True,page=1,page_size=1)
+          print("SMALL_AGENT_KAGGLE_REPO_API_READ_ONLY_PASS")
+          PY
