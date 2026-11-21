@@ -124,7 +124,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p model matched-input/v3b matched-input/v3d /tmp/llama-bin
+          mkdir -p model matched-input/v8 /tmp/llama-bin
           curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/Qwen3.5-9B-Q4_K_M.gguf
           echo "$MODEL_SHA256  model/Qwen3.5-9B-Q4_K_M.gguf" | sha256sum -c -
           curl -fL --retry 5 --retry-delay 3 "$LLAMA_RELEASE_URL" -o /tmp/llama.tar.gz
@@ -230,7 +230,7 @@ jobs:
       - name: Checkout new strict v8 aggregator without changing frozen evaluator
         uses: actions/checkout@v4
         with:
-          ref: research/v8-stage100-resume-20261121
+          ref: ${{ github.sha }}
           path: current
       - name: Install frozen scoring module
         run: python -m pip install -q -e .
