@@ -1,0 +1,75 @@
+name: Close exactly one Colab backend assignment - owner authorized
+on:
+  push:
+    branches: [research/v8-stage100-resume-20261121]
+    paths: [.github/V8_COLAB_STOP_START]
+permissions:
+  contents: read
+concurrency:
+  group: qlora-v8-colab-stop-one-20261122
+  cancel-in-progress: false
+jobs:
+  stop-one:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
+      COLAB_OAUTH_JSON: ${{ secrets.COLAB_OAUTH_JSON }}
+      COLAB_AUTH_JSON: ${{ secrets.COLAB_AUTH_JSON }}
+      COLAB_CREDENTIALS_JSON: ${{ secrets.COLAB_CREDENTIALS_JSON }}
+      GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+      GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+      GOOGLE_COLAB_CREDENTIALS: ${{ secrets.GOOGLE_COLAB_CREDENTIALS }}
+      COLAB_TOKEN: ${{ secrets.COLAB_TOKEN }}
+      COLAB_CLI_TOKEN: ${{ secrets.COLAB_CLI_TOKEN }}
+      GOOGLE_COLAB_TOKEN: ${{ secrets.GOOGLE_COLAB_TOKEN }}
+      COLAB_ACCESS_TOKEN: ${{ secrets.COLAB_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.12'}
+      - name: Release only the single active backend session and verify zero remaining
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -q 'google-auth>=2.20' 'google-colab-cli==0.8.0'
+          python - <<'PY'
+          import json,os,pathlib
+          names=["COLAB_ADC_JSON","COLAB_OAUTH_JSON","COLAB_AUTH_JSON","COLAB_CREDENTIALS_JSON","GOOGLE_APPLICATION_CREDENTIALS_JSON","GOOGLE_CREDENTIALS_JSON","GOOGLE_COLAB_CREDENTIALS","COLAB_TOKEN","COLAB_CLI_TOKEN","GOOGLE_COLAB_TOKEN","COLAB_ACCESS_TOKEN"]
+          creds=None
+          for name in names:
+              raw=os.environ.get(name,'').strip()
+              if not raw: continue
+              try: d=json.loads(raw)
+              except (ValueError,TypeError): continue
+              if isinstance(d,dict) and all(d.get(k) for k in ('client_id','client_secret','refresh_token')):
+                  creds={**d,'type':'authorized_user'}
+                  break
+          if creds is None:
+              print('COLAB_STOP=BLOCKED_ADC_UNAVAILABLE')
+              raise SystemExit(40)
+          target=pathlib.Path(os.environ['RUNNER_TEMP'])/'colab-stop-adc.json'
+          target.write_text(json.dumps(creds))
+          target.chmod(0o600)
+          os.environ['GOOGLE_APPLICATION_CREDENTIALS']=str(target)
+          try:
+              from colab_cli.common import state
+              from colab_cli.auth import AuthProvider
+              state.auth_provider=AuthProvider.ADC
+              assignments=state.client.list_assignments()
+              print('COLAB_STOP_BEFORE_COUNT',len(assignments),flush=True)
+              if len(assignments)>1:
+                  print('COLAB_STOP=BLOCKED_MORE_THAN_ONE_ASSIGNMENT')
+                  raise SystemExit(41)
+              if len(assignments)==1:
+                  state.client.unassign(assignments[0].endpoint)
+                  print('COLAB_STOP_ACTION=BACKEND_UNASSIGN_ACCEPTED',flush=True)
+              remaining=state.client.list_assignments()
+              print('COLAB_STOP_AFTER_COUNT',len(remaining),flush=True)
+              if remaining:
+                  print('COLAB_STOP=BLOCKED_NOT_RELEASED')
+                  raise SystemExit(42)
+              print('COLAB_STOP=VERIFIED_ZERO_ACTIVE',flush=True)
+          finally:
+              target.unlink(missing_ok=True)
+          PY
