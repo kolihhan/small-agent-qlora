@@ -24,10 +24,12 @@ def test_v8_kaggle_single_t4_original_state_hashes_and_training_source():
 
 def test_kaggle_private_input_and_saved_output_never_enter_training_source():
     assert k.DATASET_ID == "kolihhan/qlora-v8-stage70-verified-20261121"
-    assert str(k.BUNDLE).startswith("/kaggle/input/")
-    assert str(k.TRAIN).startswith("/kaggle/input/")
-    assert str(k.OUT).startswith("/kaggle/temp/")
-    assert str(k.ARCHIVE).startswith("/kaggle/working/")
+    # Windows runners render POSIX paths with backslashes; normalize only for assertions.
+    slash = lambda p: str(p).replace(chr(92), "/")
+    assert slash(k.BUNDLE).startswith("/kaggle/input/")
+    assert slash(k.TRAIN).startswith("/kaggle/input/")
+    assert slash(k.OUT).startswith("/kaggle/temp/")
+    assert slash(k.ARCHIVE).startswith("/kaggle/working/")
     assert not k.ARCHIVE.exists()
 
 
