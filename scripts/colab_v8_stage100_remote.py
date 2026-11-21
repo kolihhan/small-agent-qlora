@@ -31,6 +31,7 @@ PARTS_MANIFEST = Path("/content/stage70-manifest.json")
 OUT = Path("/content/qlora-v8-adapter")
 BUNDLE = Path("/content/qlora-v8-stage70-checkpoint.zip")
 ARCHIVE = Path("/content/qlora-v8-stage100-checkpoint.zip")
+QUARANTINE_ARCHIVE = Path("/content/qlora-v8-stage100-UNVERIFIED.zip")
 MAX_STEPS = 100
 
 
@@ -121,11 +122,102 @@ def restore_verified_step70() -> dict:
     return proof
 
 
+
+def export_stage100_checkpoint(*, training_returned: bool, duration_s: float) -> dict:
+    """Preserve full optimizer state even if the final proof fails.
+
+    A mismatch must never produce a VERIFIED artifact. This routine is CPU
+    testable and may be called while an earlier training exception unwinds.
+    """
+    candidates = [
+        p for p in OUT.glob("checkpoint-*")
+        if p.is_dir() and p.name[len("checkpoint-"):].isdigit()
+        and int(p.name[len("checkpoint-"):]) > 70
+        and (p / "trainer_state.json").is_file()
+    ]
+    if not candidates:
+        raise RuntimeError("no post-step70 checkpoint to preserve")
+    checkpoint = max(candidates, key=lambda p: int(p.name.split("-")[-1]))
+    state = json.loads((checkpoint / "trainer_state.json").read_text())
+    cfg_path = OUT / "run_config.json"
+    cfg = json.loads(cfg_path.read_text()) if cfg_path.is_file() else {}
+
+    required = (
+        "adapter_model.safetensors", "adapter_config.json",
+        "optimizer.pt", "scheduler.pt", "rng_state.pth", "trainer_state.json",
+    )
+    checks = {
+        "training_returned": training_returned is True,
+        "checkpoint_number": checkpoint.name == "checkpoint-100",
+        "global_step": state.get("global_step") == MAX_STEPS,
+        "state_max_steps": state.get("max_steps") == MAX_STEPS,
+        "config_max_steps": cfg.get("max_steps") == MAX_STEPS,
+        "pause_at_step": cfg.get("pause_at_step") is None,
+        "save_steps": cfg.get("save_steps") == 10,
+        "training_examples": cfg.get("training_examples") == 798,
+        "resume_from_checkpoint": cfg.get("resume_from_checkpoint") == str(OUT / "checkpoint-70"),
+        "compute_dtype": cfg.get("compute_dtype") == "torch.float16",
+        "source_model": cfg.get("model") == MODEL,
+    }
+    failed_checks = [key for key, passes in checks.items() if not passes]
+    failed_checks.extend("missing_" + x for x in required if not (checkpoint / x).is_file())
+
+    # Adapter weights without optimizer/RNG are not a true resumable checkpoint.
+    # Do not promote on any failure, even when trainer reported 100%.
+    verified = not failed_checks
+    report = {
+        "protocol": "qwen9b-v8-stage70-to100-original100-scheduler-v1",
+        "stage70_source_run": STAGE70_RUN,
+        "stage70_artifact": STAGE70_ARTIFACT,
+        "stage70_adapter_sha256": STAGE70_WEIGHTS_SHA,
+        "original_training_code_sha": SOURCE_SHA,
+        "model": MODEL,
+        "train_sha256": TRAIN_SHA,
+        "trained_step_start": 70,
+        "trained_step_end": state.get("global_step"),
+        "scheduler_max_steps": MAX_STEPS,
+        "failed_checks": failed_checks,
+        "compute_dtype": cfg.get("compute_dtype"),
+        "duration_s": round(duration_s, 2),
+        "full_v8_completed": verified,
+        "gaia_evaluated": False,
+    }
+    for file_name, field in (
+        ("adapter_model.safetensors", "adapter_sha256"),
+        ("optimizer.pt", "optimizer_sha256"),
+        ("scheduler.pt", "scheduler_sha256"),
+        ("rng_state.pth", "rng_sha256"),
+    ):
+        target = checkpoint / file_name
+        report[field] = sha256(target.read_bytes()).hexdigest() if target.is_file() else None
+    report_path = OUT / "stage100-verified-report.json"
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    export = ARCHIVE if verified else QUARANTINE_ARCHIVE
+    with zipfile.ZipFile(export, "x", compression=zipfile.ZIP_STORED) as z:
+        for item in sorted(checkpoint.rglob("*")):
+            if item.is_file():
+                z.write(item, arcname=str(item.relative_to(OUT)))
+        if cfg_path.is_file():
+            z.write(cfg_path, arcname="run_config.json")
+        z.write(report_path, arcname="stage100-verified-report.json")
+
+    if verified:
+        print("QLORA_V8_STAGE100_VERIFIED", json.dumps(report, sort_keys=True), flush=True)
+    else:
+        print("QLORA_V8_STAGE100_UNVERIFIED_PRESERVED",
+              json.dumps({"failed_checks": failed_checks,
+                          "export_name": export.name,
+                          "global_step": state.get("global_step")}), flush=True)
+    return report
+
+
 def main() -> None:
     import torch
-    if (not torch.cuda.is_available()
+    if (not torch.cuda.is_available() or torch.cuda.device_count() != 1
+        or torch.cuda.get_device_capability(0) != (7, 5)
+        or "T4" not in torch.cuda.get_device_name(0).upper()
         or torch.cuda.get_device_properties(0).total_memory < 14 * 2**30):
-        raise RuntimeError("requires actual >=14GiB CUDA GPU")
+        raise RuntimeError("requires one visible Tesla T4 with >=14GiB VRAM")
     audit = json.loads(AUDIT.read_text())
     if (sha256(TRAIN.read_bytes()).hexdigest() != TRAIN_SHA
         or audit.get("train_sha256") != TRAIN_SHA
@@ -177,66 +269,32 @@ def main() -> None:
 
     # Pause must be None at max_steps=100 (frozen trainer validates pause < max).
     # Save every 10 steps solely to guarantee durable optimizer state at 100.
-    train_qlora(
-        data_path=TRAIN, output_dir=OUT, model_name=MODEL,
-        max_length=3200, epochs=1.0, learning_rate=2e-5,
-        lora_r=16, lora_alpha=32, lora_dropout=0.05,
-        max_steps=MAX_STEPS, save_steps=10, gradient_accumulation_steps=8,
-        lora_target_modules="all-linear", exposure_count=None,
-        require_full_prompt=True, preserve_large_half_parameters=True,
-        pause_at_step=None, resume_from_checkpoint=OUT / "checkpoint-70",
-    )
-
-    checkpoint = OUT / "checkpoint-100"
-    state_path = checkpoint / "trainer_state.json"
-    if not state_path.exists():
-        raise RuntimeError("final checkpoint-100 absent; cannot claim completed training")
-    state = json.loads(state_path.read_text())
-    cfg = json.loads((OUT / "run_config.json").read_text())
-    if (state.get("global_step") != 100 or state.get("max_steps") != 100
-        or cfg.get("max_steps") != 100 or cfg.get("pause_at_step") is not None
-        or cfg.get("save_steps") != 10 or cfg.get("training_examples") != 798
-        or cfg.get("resume_from_checkpoint") != str(OUT / "checkpoint-70")):
-        raise RuntimeError("final optimizer-step count or continuation config drift")
-    required = (
-        "adapter_model.safetensors", "adapter_config.json",
-        "optimizer.pt", "scheduler.pt", "rng_state.pth", "trainer_state.json",
-    )
-    if any(not (checkpoint / p).is_file() for p in required):
-        raise RuntimeError("final full-state checkpoint incomplete")
-    def digest(name: str) -> str:
-        return sha256((checkpoint / name).read_bytes()).hexdigest()
-
-    report = {
-        "protocol": "qwen9b-v8-stage70-to100-original100-scheduler-v1",
-        "stage70_source_run": STAGE70_RUN,
-        "stage70_artifact": STAGE70_ARTIFACT,
-        "stage70_adapter_sha256": STAGE70_WEIGHTS_SHA,
-        "original_training_code_sha": SOURCE_SHA,
-        "model": MODEL,
-        "train_sha256": TRAIN_SHA,
-        "trained_step_start": 70,
-        "trained_step_end": 100,
-        "scheduler_max_steps": MAX_STEPS,
-        "adapter_sha256": digest("adapter_model.safetensors"),
-        "optimizer_sha256": digest("optimizer.pt"),
-        "scheduler_sha256": digest("scheduler.pt"),
-        "rng_sha256": digest("rng_state.pth"),
-        "duration_s": round(time.monotonic() - started),
-        "full_v8_completed": True,
-        "gaia_evaluated": False,
-    }
-    (OUT / "stage100-verified-report.json").write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n"
-    )
-    with zipfile.ZipFile(ARCHIVE, "x", compression=zipfile.ZIP_STORED) as z:
-        for item in sorted(checkpoint.rglob("*")):
-            if item.is_file():
-                z.write(item, arcname=str(item.relative_to(OUT)))
-        z.write(OUT / "run_config.json", arcname="run_config.json")
-        z.write(OUT / "stage100-verified-report.json",
-                arcname="stage100-verified-report.json")
-    print("QLORA_V8_STAGE100_VERIFIED", json.dumps(report,sort_keys=True),flush=True)
+    training_returned = False
+    started_export = False
+    try:
+        train_qlora(
+            data_path=TRAIN, output_dir=OUT, model_name=MODEL,
+            max_length=3200, epochs=1.0, learning_rate=2e-5,
+            lora_r=16, lora_alpha=32, lora_dropout=0.05,
+            max_steps=MAX_STEPS, save_steps=10, gradient_accumulation_steps=8,
+            lora_target_modules="all-linear", exposure_count=None,
+            require_full_prompt=True, preserve_large_half_parameters=True,
+            pause_at_step=None, resume_from_checkpoint=OUT / "checkpoint-70",
+        )
+        training_returned = True
+    finally:
+        if any(OUT.glob("checkpoint-100/trainer_state.json")) or any(
+            OUT.glob("checkpoint-90/trainer_state.json")
+        ) or any(OUT.glob("checkpoint-80/trainer_state.json")):
+            started_export = True
+            report = export_stage100_checkpoint(
+                training_returned=training_returned,
+                duration_s=time.monotonic() - started,
+            )
+    if not started_export:
+        raise RuntimeError("NO_STEP100_OUTPUT_CANNOT_CLAIM_COMPLETED")
+    if not report["full_v8_completed"]:
+        raise RuntimeError("UNVERIFIED_STEP100_EXPORTED_DO_NOT_PROMOTE")
 
 
 if __name__ == "__main__":
