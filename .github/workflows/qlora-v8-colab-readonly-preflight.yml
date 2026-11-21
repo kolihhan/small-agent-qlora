@@ -65,8 +65,8 @@ jobs:
                   print('COLAB_GATE=BLOCKED_USAGE_ERROR','exit',proc.returncode)
                   raise SystemExit(31)
               usage=proc.stdout
-              balance=re.search(r'Current balance:\\s*([0-9]+(?:\\.[0-9]+)?)\\s*compute units',usage,re.I)
-              assigned=re.search(r'Active assignments:\\s*(\\d+)',usage,re.I)
+              balance=re.search(r'Current balance:\s*([0-9]+(?:\.[0-9]+)?)\s*compute units',usage,re.I)
+              assigned=re.search(r'Active assignments:\s*(\d+)',usage,re.I)
               print('COLAB_GATE_BALANCE_CU='+balance.group(1) if balance else 'COLAB_GATE_BALANCE_CU=UNKNOWN')
               print('COLAB_GATE_ACTIVE_ASSIGNMENTS='+assigned.group(1) if assigned else 'COLAB_GATE_ACTIVE_ASSIGNMENTS=UNKNOWN')
               if not assigned or int(assigned.group(1))!=0:
