@@ -1,0 +1,53 @@
+name: V8 GAIA CPU-only llama.cpp LoRA compatibility smoke
+on:
+  push:
+    branches: [research/v8-stage100-resume-20261121]
+    paths: [.github/V8_GAIA_CONVERT_SMOKE_START]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch verified stage70 real adapter before spending GPU
+        uses: actions/download-artifact@v4
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44861054303
+          github-token: ${{ github.token }}
+          name: qlora-v8-stage70-full-state-if-trained
+          path: stage70
+      - name: Hash-check real original adapter and extract two PEFT files
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,zipfile
+          from pathlib import Path
+          p=Path("stage70/qlora-v8-stage70-checkpoint.zip")
+          assert p.is_file() and p.stat().st_size==539885434
+          with zipfile.ZipFile(p) as z:
+              proof=json.loads(z.read("stage70-verified-report.json"))
+              assert proof["trained_step_end"]==70
+              assert proof["original_training_code_sha"]=="3eac23cca117a41855f4998399f79a5d9d5f4369"
+              assert proof["model"]=="Qwen/Qwen3.5-9B"
+              Path("adapter").mkdir()
+              weights=z.read("checkpoint-70/adapter_model.safetensors")
+              assert hashlib.sha256(weights).hexdigest()==proof["adapter_sha256"]
+              Path("adapter/adapter_model.safetensors").write_bytes(weights)
+              Path("adapter/adapter_config.json").write_bytes(z.read("checkpoint-70/adapter_config.json"))
+          print("V8_STAGE70_CONVERTER_INPUT_PHYSICALLY_VERIFIED")
+          PY
+      - name: Check pinned llama.cpp LoRA compatibility (CPU only)
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 --branch b11541 https://github.com/ggml-org/llama.cpp.git /tmp/llama-convert
+          test "$(git -C /tmp/llama-convert rev-parse HEAD)" = "f2918cabbffe8abf8e2a90c1c089085fa116c2cf"
+          python -m pip install -q -r /tmp/llama-convert/requirements/requirements-convert_lora_to_gguf.txt
+          python /tmp/llama-convert/convert_lora_to_gguf.py --base-model-id Qwen/Qwen3.5-9B --outtype f16 --outfile /tmp/v8-stage70-smoke.gguf adapter
+          test "$(stat -c%s /tmp/v8-stage70-smoke.gguf)" -gt 1000000
+          echo "V8_STAGE70_LORA_CONVERTER_ACCEPTED_CPU"
