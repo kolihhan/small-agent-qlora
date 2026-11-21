@@ -60,3 +60,117 @@ def test_missing_private_kaggle_dataset_fails_closed(tmp_path,monkeypatch):
         assert "private Kaggle stage70 dataset" in str(err)
     else:
         raise AssertionError("missing checkpoint must not proceed")
+
+
+def _synthetic_stage70(tmp_path, monkeypatch, *, zipped=False):
+    """Build isolated toy bytes; do not download the real private model."""
+    import hashlib
+    import json
+    import zipfile
+    root = tmp_path / "kaggle-input"
+    root.mkdir()
+    monkeypatch.setattr(k, "DATASET_ROOT", root)
+    monkeypatch.setattr(k, "TRAIN", root / "qlora-v8-train.jsonl")
+    monkeypatch.setattr(k, "AUDIT", root / "qlora-v8-audit.json")
+    monkeypatch.setattr(k, "SOURCE_MANIFEST", root / "stage70-kaggle-transport-manifest.json")
+    monkeypatch.setattr(k, "BUNDLE", root / "qlora-v8-stage70-checkpoint.zip")
+    monkeypatch.setattr(k, "OUT", tmp_path / "work" / "qlora-v8-adapter")
+    monkeypatch.setattr(k, "ARCHIVE", tmp_path / "work" / "unused-output.zip")
+    k.TRAIN.write_bytes(b'{"toy":"training"}\\n')
+    monkeypatch.setattr(k, "TRAIN_SHA", hashlib.sha256(k.TRAIN.read_bytes()).hexdigest())
+    audit = {
+        "train_sha256": k.TRAIN_SHA, "train_actions": 798,
+        "train_parents": 304, "validation_parents": 35,
+        "protected_question_hashes_loaded": 165,
+        "training_ready_no_gpu_yet": True, "no_gaia_training": True,
+    }
+    k.AUDIT.write_text(json.dumps(audit))
+    proof = {
+        "protocol": "qwen9b-v8-continued-step35-to70-original100-scheduler-v1",
+        "model": k.MODEL,
+        "original_training_code_sha": k.SOURCE_SHA,
+        "train_sha256": k.TRAIN_SHA,
+        "original_stage35_run": 44781908112,
+        "trained_step_start": 35, "trained_step_end": 70,
+        "scheduler_max_steps": 100,
+        "full_v8_completed": False, "gaia_evaluated": False,
+    }
+    config = {"max_steps": 100, "pause_at_step": 70, "max_length": 3200,
+              "training_examples": 798}
+    state = {"global_step": 70, "max_steps": 100}
+    data = {
+        "stage70-verified-report.json": json.dumps(proof).encode(),
+        "run_config.json": json.dumps(config).encode(),
+        "checkpoint-70/trainer_state.json": json.dumps(state).encode(),
+        "checkpoint-70/adapter_config.json": b'{"r": 16}',
+    }
+    for name, key in (
+        ("adapter_model.safetensors", "STAGE70_WEIGHTS_SHA"),
+        ("optimizer.pt", "STAGE70_OPTIM_SHA"),
+        ("scheduler.pt", "STAGE70_SCHED_SHA"),
+        ("rng_state.pth", "STAGE70_RNG_SHA"),
+    ):
+        data["checkpoint-70/" + name] = ("toy-" + name).encode()
+        monkeypatch.setattr(k, key, hashlib.sha256(data["checkpoint-70/" + name]).hexdigest())
+    if zipped:
+        with zipfile.ZipFile(k.BUNDLE, "w") as z:
+            for name, raw in data.items():
+                z.writestr(name, raw)
+        zip_bytes = k.BUNDLE.stat().st_size
+        zip_sha = k.sha_file(k.BUNDLE)
+        monkeypatch.setattr(k, "STAGE70_FILE_SIZE", zip_bytes)
+    else:
+        # Test an extra nesting level as Kaggle's ZIP auto-extraction may use one.
+        prefix = root / "qlora-v8-stage70-checkpoint"
+        for name, raw in data.items():
+            dest = prefix / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(raw)
+        zip_bytes = k.STAGE70_FILE_SIZE
+        zip_sha = "b" * 64
+    manifest = {
+        "protocol": "private-kaggle-original-qlora-v8-step70-v1",
+        "stage70_artifact": k.STAGE70_ARTIFACT,
+        "stage70_source_run": k.STAGE70_RUN,
+        "dataset_id": k.DATASET_ID,
+        "stage70_zip_bytes": zip_bytes,
+        "stage70_zip_sha256": zip_sha,
+    }
+    k.SOURCE_MANIFEST.write_text(json.dumps(manifest))
+    return data
+
+
+def test_kaggle_auto_unpacked_full_optimizer_restores_with_hashes(tmp_path, monkeypatch):
+    data = _synthetic_stage70(tmp_path, monkeypatch)
+    proof = k.verify_and_restore()
+    assert proof["trained_step_end"] == 70
+    for name, raw in data.items():
+        if name.startswith("checkpoint-70/"):
+            assert (k.OUT / name).read_bytes() == raw
+
+
+def test_kaggle_original_zip_backward_compatible(tmp_path, monkeypatch):
+    data = _synthetic_stage70(tmp_path, monkeypatch, zipped=True)
+    k.verify_and_restore()
+    for name, raw in data.items():
+        if name.startswith("checkpoint-70/"):
+            assert (k.OUT / name).read_bytes() == raw
+
+
+def test_kaggle_unpacked_corrupt_optimizer_fails_closed(tmp_path, monkeypatch):
+    import pytest
+    _synthetic_stage70(tmp_path, monkeypatch)
+    opt = next(k.DATASET_ROOT.rglob("checkpoint-70/optimizer.pt"))
+    opt.write_bytes(b"corrupted-state")
+    with pytest.raises(ValueError, match="tensor state SHA mismatch"):
+        k.verify_and_restore()
+
+
+def test_kaggle_unpacked_ambiguous_checkpoints_fails_closed(tmp_path, monkeypatch):
+    import pytest
+    _synthetic_stage70(tmp_path, monkeypatch)
+    other = k.DATASET_ROOT / "second" / "checkpoint-70"
+    other.mkdir(parents=True)
+    (other / "trainer_state.json").write_text("{}")
+    with pytest.raises(FileNotFoundError, match="ambiguous"):
+        k.verify_and_restore()
