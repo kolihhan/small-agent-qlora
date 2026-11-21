@@ -36,6 +36,7 @@ BUNDLE = DATASET_ROOT / "qlora-v8-stage70-checkpoint.zip"
 SOURCE_MANIFEST = DATASET_ROOT / "stage70-kaggle-transport-manifest.json"
 OUT = TEMP / "qlora-v8-adapter"
 ARCHIVE = Path("/kaggle/working/qlora-v8-stage100-checkpoint.zip")
+QUARANTINE_ARCHIVE = Path("/kaggle/working/qlora-v8-stage100-UNVERIFIED.zip")
 MAX_STEPS = 100
 
 
@@ -196,6 +197,76 @@ def verify_and_restore() -> dict:
     return proof
 
 
+
+def finalize_stage100(*, gpu_name: str, duration_s: float) -> dict:
+    """Export step100 even if its final contract fails; NEVER promote mismatch."""
+    checkpoint = OUT / "checkpoint-100"
+    state_path = checkpoint / "trainer_state.json"
+    if not state_path.is_file():
+        raise RuntimeError("NO_CHECKPOINT100_CANNOT_CLAIM_COMPLETED")
+    state = json.loads(state_path.read_text())
+    cfg = json.loads((OUT / "run_config.json").read_text())
+    checks = {
+        "global_step": state.get("global_step") == MAX_STEPS,
+        "state_max_steps": state.get("max_steps") == MAX_STEPS,
+        "config_max_steps": cfg.get("max_steps") == MAX_STEPS,
+        "pause_at_step": cfg.get("pause_at_step") is None,
+        "save_steps": cfg.get("save_steps") == 10,
+        "training_examples": cfg.get("training_examples") == 798,
+        "resume_from_checkpoint": cfg.get("resume_from_checkpoint") == str((OUT / "checkpoint-70").resolve()),
+        "compute_dtype": cfg.get("compute_dtype") == "torch.float16",
+    }
+    required = ("adapter_model.safetensors", "adapter_config.json", "optimizer.pt",
+                "scheduler.pt", "rng_state.pth", "trainer_state.json")
+    failed_checks = [name for name, ok in checks.items() if not ok]
+    failed_checks.extend("missing_" + name for name in required if not (checkpoint / name).is_file())
+    verified = not failed_checks
+    report = {
+        "protocol": "qwen9b-v8-stage70-to100-original100-scheduler-kaggle-t4-v1",
+        "status": "VERIFIED" if verified else "UNVERIFIED",
+        "failed_checks": failed_checks,
+        "model": MODEL,
+        "stage70_source_run": STAGE70_RUN,
+        "stage70_artifact": STAGE70_ARTIFACT,
+        "stage70_adapter_sha256": STAGE70_WEIGHTS_SHA,
+        "original_training_code_sha": SOURCE_SHA,
+        "train_sha256": TRAIN_SHA,
+        "trained_step_start": 70,
+        "trained_step_end": state.get("global_step"),
+        "scheduler_max_steps": MAX_STEPS,
+        "gaia_evaluated": False,
+        "full_v8_completed": verified,
+        "gpu_name": gpu_name,
+        "compute_dtype": cfg.get("compute_dtype"),
+        "duration_s": round(duration_s, 2),
+    }
+    for name, key in (
+        ("adapter_model.safetensors", "adapter_sha256"),
+        ("optimizer.pt", "optimizer_sha256"),
+        ("scheduler.pt", "scheduler_sha256"),
+        ("rng_state.pth", "rng_sha256"),
+    ):
+        report[key] = sha_file(checkpoint / name) if (checkpoint / name).is_file() else None
+    report_path = OUT / "stage100-verified-report.json"
+    report_path.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n")
+    archive = ARCHIVE if verified else QUARANTINE_ARCHIVE
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_STORED) as z:
+        for item in sorted(checkpoint.rglob("*")):
+            if item.is_file():
+                z.write(item, arcname=str(item.relative_to(OUT)))
+        z.write(OUT / "run_config.json", arcname="run_config.json")
+        z.write(report_path, arcname="stage100-verified-report.json")
+    if verified:
+        print("KAGGLE_ORIGINAL_QWEN9B_V8_STAGE100_FULL_STATE_VERIFIED",
+              json.dumps(report, sort_keys=True), flush=True)
+    else:
+        print("KAGGLE_ORIGINAL_QWEN9B_V8_STAGE100_UNVERIFIED",
+              json.dumps({"failed_checks": failed_checks, "archive": archive.name}),
+              flush=True)
+    return report
+
+
 def main() -> None:
     # Kaggle GPU T4 ×2: force exactly one card for consistency with frozen Colab T4.
     if os.environ.get("CUDA_VISIBLE_DEVICES")!="0":
@@ -253,47 +324,7 @@ def main() -> None:
         require_full_prompt=True,preserve_large_half_parameters=True,
         pause_at_step=None,resume_from_checkpoint=OUT/"checkpoint-70",
     )
-    checkpoint=OUT/"checkpoint-100"
-    state_path=checkpoint/"trainer_state.json"
-    if not state_path.is_file():
-        raise RuntimeError("NO_CHECKPOINT100_CANNOT_CLAIM_COMPLETED")
-    state=json.loads(state_path.read_text())
-    cfg=json.loads((OUT/"run_config.json").read_text())
-    if (state.get("global_step")!=100 or state.get("max_steps")!=100
-        or cfg.get("max_steps")!=100 or cfg.get("pause_at_step") is not None
-        or cfg.get("save_steps")!=10 or cfg.get("training_examples")!=798
-        or cfg.get("resume_from_checkpoint")!=str((OUT/"checkpoint-70").resolve())
-        or cfg.get("compute_dtype")!="torch.float16"):
-        raise RuntimeError("final optimizer-step count, scheduler, or precision drift")
-    required=("adapter_model.safetensors","adapter_config.json","optimizer.pt",
-              "scheduler.pt","rng_state.pth","trainer_state.json")
-    if any(not (checkpoint/p).is_file() for p in required):
-        raise RuntimeError("incomplete checkpoint100 full-state")
-    report={
-        "protocol":"qwen9b-v8-stage70-to100-original100-scheduler-kaggle-t4-v1",
-        "model":MODEL,"stage70_source_run":STAGE70_RUN,
-        "stage70_artifact":STAGE70_ARTIFACT,
-        "stage70_adapter_sha256":STAGE70_WEIGHTS_SHA,
-        "original_training_code_sha":SOURCE_SHA,
-        "train_sha256":TRAIN_SHA,"trained_step_start":70,"trained_step_end":100,
-        "scheduler_max_steps":MAX_STEPS,"gaia_evaluated":False,
-        "full_v8_completed":True,"gpu_name":torch.cuda.get_device_name(0),
-        "compute_dtype":"torch.float16",
-        "adapter_sha256":sha_file(checkpoint/"adapter_model.safetensors"),
-        "optimizer_sha256":sha_file(checkpoint/"optimizer.pt"),
-        "scheduler_sha256":sha_file(checkpoint/"scheduler.pt"),
-        "rng_sha256":sha_file(checkpoint/"rng_state.pth"),
-        "duration_s":round(time.monotonic()-start,2),
-    }
-    (OUT/"stage100-verified-report.json").write_text(json.dumps(report,sort_keys=True,indent=2)+"\n")
-    with zipfile.ZipFile(ARCHIVE,"x",compression=zipfile.ZIP_STORED) as z:
-        for item in sorted(checkpoint.rglob("*")):
-            if item.is_file():
-                z.write(item,arcname=str(item.relative_to(OUT)))
-        z.write(OUT/"run_config.json",arcname="run_config.json")
-        z.write(OUT/"stage100-verified-report.json",arcname="stage100-verified-report.json")
-    print("KAGGLE_ORIGINAL_QWEN9B_V8_STAGE100_FULL_STATE_VERIFIED",json.dumps(report,sort_keys=True),flush=True)
-
+    finalize_stage100(gpu_name=torch.cuda.get_device_name(0),duration_s=time.monotonic()-start)
 
 if __name__=="__main__":
     main()
