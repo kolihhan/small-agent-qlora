@@ -193,6 +193,7 @@ def export_stage100_checkpoint(*, training_returned: bool, duration_s: float) ->
     report_path = OUT / "stage100-verified-report.json"
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     export = ARCHIVE if verified else QUARANTINE_ARCHIVE
+    export.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(export, "x", compression=zipfile.ZIP_STORED) as z:
         for item in sorted(checkpoint.rglob("*")):
             if item.is_file():
