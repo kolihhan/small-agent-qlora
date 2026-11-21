@@ -1,0 +1,190 @@
+name: Resume same Qwen9B v8 QLoRA from checkpoint35 to checkpoint70
+on:
+  push:
+    branches: [research/v8-stage70-resume-20261121]
+    paths: [.github/V8_STAGE70_START]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: qlora-v8-stage70-single-shot-20261121
+  cancel-in-progress: false
+jobs:
+  continue-stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
+      COLAB_OAUTH_JSON: ${{ secrets.COLAB_OAUTH_JSON }}
+      COLAB_AUTH_JSON: ${{ secrets.COLAB_AUTH_JSON }}
+      COLAB_CREDENTIALS_JSON: ${{ secrets.COLAB_CREDENTIALS_JSON }}
+      GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+      GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+      GOOGLE_COLAB_CREDENTIALS: ${{ secrets.GOOGLE_COLAB_CREDENTIALS }}
+      COLAB_TOKEN: ${{ secrets.COLAB_TOKEN }}
+      COLAB_CLI_TOKEN: ${{ secrets.COLAB_CLI_TOKEN }}
+      GOOGLE_COLAB_TOKEN: ${{ secrets.GOOGLE_COLAB_TOKEN }}
+      COLAB_ACCESS_TOKEN: ${{ secrets.COLAB_ACCESS_TOKEN }}
+      HF_HUB_DISABLE_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Read original protected 798-action v8 source
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 43619541894
+          github-token: ${{ github.token }}
+          name: qlora-v8-protected-source-balanced-token-checked
+          path: inputs
+      - name: Read original Colab-produced 35-step weights and optimizer state
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44781908112
+          github-token: ${{ github.token }}
+          name: qlora-v8-durable-stage35-with-optimizer-rng-if-trained
+          path: original-stage35
+      - name: Validate original stage35 and split into retry-safe small transport chunks
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/colab_v8_stage70_remote.py
+          python - <<'PY'
+          import hashlib,json,zipfile
+          from pathlib import Path
+          audit=json.loads(Path('inputs/qlora-v8-audit.json').read_text())
+          source=Path('inputs/qlora-v8-train.jsonl')
+          assert audit['train_actions']==798 and audit['train_parents']==304
+          assert audit['validation_parents']==35 and audit['no_gaia_training'] is True
+          assert hashlib.sha256(source.read_bytes()).hexdigest()==audit['train_sha256']
+          assert audit['train_sha256']=='203a643b9ef809bad311a4adad0ef24caccd9505f3fb3f8981ab95da5d999ac7'
+          p=Path('original-stage35/qlora-v8-stage35-checkpoint.zip')
+          assert p.is_file() and p.stat().st_size==280205410
+          with zipfile.ZipFile(p) as z:
+              report=json.loads(z.read('v8-stage35-verified-report.json'))
+              cfg=json.loads(z.read('run_config.json'))
+              assert report['optimizer_steps']==35
+              assert report['checkpoint_sha256']=='3fe28aeaefe48d585c229ec56b0637542158fbdc98a29b09d8539ecee49e58c5'
+              assert report['train_sha256']==audit['train_sha256']
+              assert cfg['max_steps']==100 and cfg['pause_at_step']==35
+              assert json.loads(z.read('checkpoint-35/trainer_state.json'))['global_step']==35
+          folder=Path('chunks');folder.mkdir()
+          parts=[]
+          with p.open('rb') as f:
+              for i in range(60):
+                  data=f.read(8*1024*1024)
+                  if not data:break
+                  name=f'chunk-{i:03d}.part'
+                  (folder/name).write_bytes(data)
+                  parts.append({'name':name,'sha256':hashlib.sha256(data).hexdigest(),'size':len(data)})
+          assert 20<=len(parts)<=60
+          manifest={'stage1_run':44781908112,'stage1_artifact':14661315509,
+                    'stage1_train_sha':audit['train_sha256'],'parts':parts,
+                    'size':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}
+          Path('inputs/stage35-manifest.json').write_text(json.dumps(manifest))
+          print('STAGE35_CHUNKS_SOURCE_VERIFIED',len(parts),flush=True)
+          PY
+      - name: Authenticate existing Colab ADC credentials without logging secrets
+        run: |
+          set -euo pipefail
+          python -m pip install -q 'google-auth>=2.20' 'requests>=2.31' 'google-colab-cli==0.8.0'
+          python - <<'PY'
+          import json,os,pathlib
+          import google.auth
+          from google.auth.transport.requests import Request
+          names=("COLAB_ADC_JSON","COLAB_OAUTH_JSON","COLAB_AUTH_JSON",
+                 "COLAB_CREDENTIALS_JSON","GOOGLE_APPLICATION_CREDENTIALS_JSON",
+                 "GOOGLE_CREDENTIALS_JSON","GOOGLE_COLAB_CREDENTIALS",
+                 "COLAB_TOKEN","COLAB_CLI_TOKEN","GOOGLE_COLAB_TOKEN","COLAB_ACCESS_TOKEN")
+          creds=None
+          for name in names:
+              raw=os.environ.get(name,"").strip()
+              if not raw: continue
+              try: d=json.loads(raw)
+              except (ValueError,TypeError): continue
+              if not isinstance(d,dict): continue
+              if all(d.get(k) for k in ("client_id","client_secret","refresh_token")):
+                  creds={**d,"type":"authorized_user"}
+                  break
+              if d.get("type")=="service_account" and all(d.get(k) for k in ("private_key","client_email")):
+                  creds=d
+                  break
+          if creds is None:
+              raise RuntimeError("COLAB_AUTH_MISSING_ADC_COMPATIBLE_SECRET")
+          target=pathlib.Path(os.environ["RUNNER_TEMP"])/"colab-v8-adc.json"
+          target.write_text(json.dumps(creds))
+          target.chmod(0o600)
+          # Never add requested scopes to a refreshable user ADC:
+          # previously this caused invalid_scope. Read-only Colab sessions
+          # auth succeeded under the original consented grant (run 43622650283).
+          try:
+              auth,_=google.auth.load_credentials_from_file(str(target))
+              auth.refresh(Request())
+              assert auth.valid
+          except Exception as exc:
+              print("COLAB_V8_AUTH_FAILED",type(exc).__name__)
+              raise SystemExit(41)
+          with open(os.environ["GITHUB_ENV"],"a") as f:
+              f.write("GOOGLE_APPLICATION_CREDENTIALS="+str(target)+"\n")
+          print("COLAB_V8_AUTH_VALIDATED_NO_GPU")
+          PY
+      - name: Check only one Colab active assignment before attempting T4
+        run: |
+          set -euo pipefail
+          usage="$(timeout 90 colab --auth=adc usage)"
+          active="$(printf '%s\n' "$usage" | awk '/^Active assignments:/ {print $3}')"
+          if ! [[ "$active" =~ ^[0-9]+$ ]] || [ "$active" != "0" ]; then
+            echo "COLAB_V8_SLOT_BUSY_OR_UNVERIFIED; no GPU requested"
+            exit 75
+          fi
+          echo "COLAB_V8_ONE_GPU_SLOT_AVAILABLE"
+      - name: Allocate one Colab T4, restore optimizer state, then continue 35 to 70
+        run: |
+          set -euo pipefail
+          session="v8-step70-${GITHUB_RUN_ID}"
+          mkdir -p exported
+          cleanup() { colab --auth=adc stop -s "$session" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          colab --auth=adc new -s "$session" --gpu T4
+          colab --auth=adc upload -s "$session" inputs/qlora-v8-train.jsonl /content/qlora-v8-train.jsonl
+          colab --auth=adc upload -s "$session" inputs/qlora-v8-audit.json /content/qlora-v8-audit.json
+          colab --auth=adc upload -s "$session" inputs/stage35-manifest.json /content/stage35-manifest.json
+          for part in chunks/chunk-*.part; do
+            colab --auth=adc upload -s "$session" "$part" "/content/$(basename "$part")"
+          done
+          set +e
+          colab --auth=adc exec -s "$session" --timeout 1800 -f scripts/colab_v8_stage70_remote.py 2>&1 | tee "$RUNNER_TEMP/v8-step70.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          colab --auth=adc download -s "$session" /content/qlora-v8-stage70-checkpoint.zip exported/qlora-v8-stage70-checkpoint.zip || true
+          if [ "$code" -ne 0 ]; then exit "$code"; fi
+          python - <<'PY'
+          import hashlib,json,zipfile
+          from pathlib import Path
+          p=Path('exported/qlora-v8-stage70-checkpoint.zip')
+          assert p.is_file() and p.stat().st_size>1000000
+          with zipfile.ZipFile(p) as z:
+              m=json.loads(z.read('stage70-verified-report.json'))
+              state=json.loads(z.read('checkpoint-70/trainer_state.json'))
+              cfg=json.loads(z.read('run_config.json'))
+              assert m['trained_step_start']==35 and m['trained_step_end']==70
+              assert m['scheduler_max_steps']==100 and m['gaia_evaluated'] is False
+              assert state['global_step']==70 and cfg['pause_at_step']==70
+              for filename,key in (('adapter_model.safetensors','adapter_sha256'),
+                                   ('optimizer.pt','optimizer_sha256'),
+                                   ('scheduler.pt','scheduler_sha256'),
+                                   ('rng_state.pth','rng_sha256')):
+                  assert hashlib.sha256(z.read('checkpoint-70/'+filename)).hexdigest()==m[key]
+          print('ORIGINAL_QWEN9B_STAGE70_VERIFIED',p.stat().st_size,flush=True)
+          PY
+      - name: Preserve the actual step70 checkpoint if generated
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qlora-v8-stage70-full-state-if-trained
+          path: exported/
+          if-no-files-found: warn
+          retention-days: 30
