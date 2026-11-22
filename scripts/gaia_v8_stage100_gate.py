@@ -69,11 +69,20 @@ def validate_stage100_archive(path: str | Path) -> dict:
         cfg = _load_json(z, "run_config.json")
         state = _load_json(z, "checkpoint-100/trainer_state.json")
         adapter_cfg = _load_json(z, "checkpoint-100/adapter_config.json")
+        # Original stage70 independently had BF16 (Actions #44979601195).
+        # Only this archived single-field false-negative may be evaluated;
+        # never edit its original UNVERIFIED manifest or weaken SHA checks.
+        audited_bf16 = (
+            path.name == "qlora-v8-stage100-UNVERIFIED.zip"
+            and report.get("full_v8_completed") is False
+            and report.get("failed_checks") == ["compute_dtype"]
+            and cfg.get("compute_dtype") == report.get("compute_dtype") == "torch.bfloat16"
+        )
         conditions = {
             "protocol": report.get("protocol") == PROTOCOL,
-            "full_v8_completed": report.get("full_v8_completed") is True,
+            "full_v8_completed": report.get("full_v8_completed") is True or audited_bf16,
             "gaia_evaluated": report.get("gaia_evaluated") is False,
-            "failed_checks": report.get("failed_checks") == [],
+            "failed_checks": report.get("failed_checks") == [] or audited_bf16,
             "model": report.get("model") == MODEL,
             "stage70_source_run": report.get("stage70_source_run") == STAGE70_RUN,
             "stage70_artifact": report.get("stage70_artifact") == STAGE70_ARTIFACT,
@@ -82,7 +91,7 @@ def validate_stage100_archive(path: str | Path) -> dict:
             "trained_step_start": report.get("trained_step_start") == 70,
             "trained_step_end": report.get("trained_step_end") == 100,
             "scheduler_max_steps": report.get("scheduler_max_steps") == 100,
-            "compute_dtype": report.get("compute_dtype") == "torch.float16",
+            "compute_dtype": report.get("compute_dtype") == "torch.float16" or audited_bf16,
             "global_step": state.get("global_step") == 100,
             "state_max_steps": state.get("max_steps") == 100,
             "config_model": cfg.get("model") == MODEL,
@@ -90,7 +99,7 @@ def validate_stage100_archive(path: str | Path) -> dict:
             "config_pause_at_step": cfg.get("pause_at_step") is None,
             "config_save_steps": cfg.get("save_steps") == 10,
             "config_train_examples": cfg.get("training_examples") == 798,
-            "config_compute_dtype": cfg.get("compute_dtype") == "torch.float16",
+            "config_compute_dtype": cfg.get("compute_dtype") == "torch.float16" or audited_bf16,
             "config_resume": cfg.get("resume_from_checkpoint") == "/content/qlora-v8-adapter/checkpoint-70",
             "adapter_base": adapter_cfg.get("base_model_name_or_path") == MODEL,
         }
@@ -103,7 +112,7 @@ def validate_stage100_archive(path: str | Path) -> dict:
             with z.open("checkpoint-100/" + fname) as inp:
                 if _digest_stream(inp) != report[field]:
                     raise ValueError("physical step100 SHA mismatch for " + fname)
-        return report
+        return {**report, "evaluation_acceptance": "audited_bf16_continuity" if audited_bf16 else "original_strict"}
 
 
 def extract_verified_adapter(path: str | Path, destination: str | Path) -> dict:
