@@ -40,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--final-text-retry", action="store_true", help="research only; one extra final-only response if last step emits textual tool call")
     parser.add_argument("--partition", choices=("evaluation", "shadow"), default="evaluation", help="research-only frozen partition; never change existing evaluation default")
     parser.add_argument("--evidence-stop-contract", action="store_true", help="research-only self-decision evidence stop/continue instruction; does not force final")
+    parser.add_argument("--max-tool-observation-chars", type=int, choices=(2000, 8000), default=MAX_TOOL_OBSERVATION_CHARS, help="research-only matched observation budget; default unchanged")
     return parser
 
 
@@ -99,7 +100,8 @@ def main() -> int:
         return AgentRuntime(model, default_tools(), max_steps=12,
                             observation_filter=LeakageGate() if args.benchmark_leakage_gate else None,
                             final_text_retry=args.final_text_retry,
-                            evidence_stop_contract=args.evidence_stop_contract)
+                            evidence_stop_contract=args.evidence_stop_contract,
+                            max_tool_observation_chars=args.max_tool_observation_chars)
 
     run_config = {
         "backend": args.backend,
@@ -117,7 +119,7 @@ def main() -> int:
         "quantize_4bit": None,
         "seed": LOCAL_PROTOCOL_SEED,
         "dataset_revision": GAIA_REVISION,
-        "tool_observation_max_chars": MAX_TOOL_OBSERVATION_CHARS,
+        "tool_observation_max_chars": args.max_tool_observation_chars,
         "partition": args.partition,
         "cache_implementation": None,
         "tool_names": tool_names,
