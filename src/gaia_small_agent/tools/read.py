@@ -5,6 +5,7 @@ import ipaddress
 import json
 import re
 import socket
+import subprocess
 from html import unescape
 from io import BytesIO
 from pathlib import Path
@@ -156,9 +157,11 @@ class ReadTool(Tool):
     }
     _UNSUPPORTED_BINARY_MESSAGE = "Cannot read binary or unsupported file as text. Use inspect for supported metadata; this file format is not readable by the available tools."
 
-    def __init__(self, timeout_s: float = 20.0, endpoint: str = "https://search.parallel.ai/mcp"):
+    def __init__(self, timeout_s: float = 20.0, endpoint: str = "https://search.parallel.ai/mcp",
+                 image_ocr_enabled: bool = False):
         self.timeout_s = float(timeout_s)
         self.endpoint = endpoint
+        self.image_ocr_enabled = bool(image_ocr_enabled)
 
     async def _fetch_parallel(self, url: str) -> ToolResult:
         try:
@@ -298,6 +301,23 @@ class ReadTool(Tool):
                     wb.close()
             elif detected_type == "json":
                 text = json.dumps(json.loads(path.read_text(encoding="utf-8")), ensure_ascii=False, indent=2)
+            elif detected_type in {"image", "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff"}:
+                if not self.image_ocr_enabled:
+                    return ToolResult(False, self._UNSUPPORTED_BINARY_MESSAGE, "UNSUPPORTED_BINARY")
+                try:
+                    result = subprocess.run(
+                        ["tesseract", str(path), "stdout", "-l", "eng", "--psm", "3"],
+                        capture_output=True, text=True, timeout=25, check=False,
+                    )
+                except FileNotFoundError:
+                    return ToolResult(False, "Image OCR engine is unavailable", "OCR_UNAVAILABLE")
+                except subprocess.TimeoutExpired:
+                    return ToolResult(False, "Image OCR exceeded its time limit", "OCR_TIMEOUT")
+                if result.returncode != 0:
+                    return ToolResult(False, "Image OCR could not decode this attachment", "OCR_FAILED")
+                text = result.stdout.strip()
+                if not text:
+                    return ToolResult(False, "Image OCR found no text; diagrams or other semantic visuals remain unsupported", "OCR_NO_TEXT")
             else:
                 data = path.read_bytes()
                 if data.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08", b"%PDF-")):
