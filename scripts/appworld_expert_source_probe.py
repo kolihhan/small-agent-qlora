@@ -24,7 +24,7 @@ SEED = "appworld-train-source-feasibility-fixed-prelabel-20261122"
 UPSTREAM_SHA = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
 N_SCENES = 12
 CASE_PREFIX = "APPWORLD_SAFE_CASE="
-STAGES = frozenset({"official_success", "official_failed", "init_failed", "metadata_failed", "execute_failed", "evaluate_failed", "unclassified"})
+STAGES = frozenset({"official_success", "official_failed", "init_failed", "metadata_failed", "compile_failed", "execute_failed", "evaluate_failed", "unclassified"})
 
 
 def digest(value: str) -> str:
