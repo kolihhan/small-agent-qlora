@@ -1,0 +1,66 @@
+name: PROOF convert actual Qwen3.5-9B v8 checkpoint70 adapter to GGUF
+on:
+  push:
+    branches: [research/gaia-shadow25-v3b-transfer-proof-20261122]
+    paths: [.github/workflows/gaia-v8-stage70-gguf-convert-20261122.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  convert_verified_v8_stage70:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44861054303
+          github-token: ${{ github.token }}
+          name: qlora-v8-stage70-full-state-if-trained
+          path: stage70-artifact
+      - name: Extract only the original Qwen v8 step70 PEFT adapter and verify tensors
+        shell: bash
+        run: |
+          set -euo pipefail
+          find stage70-artifact -maxdepth 3 -type f -printf '%P %s bytes\n' | head -n 12
+          BUNDLE=$(find stage70-artifact -type f -name '*stage70*checkpoint*.zip' | head -n1)
+          test -n "$BUNDLE" && test -s "$BUNDLE" || { echo "ORIGINAL_STAGE70_BUNDLE_NOT_FOUND"; exit 1; }
+          mkdir -p converted/peft
+          unzip -p "$BUNDLE" checkpoint-70/adapter_config.json > converted/peft/adapter_config.json
+          unzip -p "$BUNDLE" checkpoint-70/adapter_model.safetensors > converted/peft/adapter_model.safetensors
+          test -s converted/peft/adapter_config.json
+          echo '214ca477a95c8dd9c4395d1093ada147eb7fed62d33b3781f846d28d54f4c8c  converted/peft/adapter_model.safetensors' | sha256sum -c -
+          python - <<'PY'
+          import json
+          p=json.load(open("converted/peft/adapter_config.json"))
+          assert "Qwen3.5-9B" in str(p.get("base_model_name_or_path","")), "wrong original base"
+          assert p.get("peft_type")=="LORA", "not trained PEFT adapter"
+          print("REAL_QWEN_V8_STAGE70_ADAPTER_SHA_VERIFIED")
+          PY
+      - name: Pinned upstream llama.cpp converter with Qwen3.5 LoRA V-head reorder fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/ggml-org/llama.cpp.git llama-converter
+          cd llama-converter
+          git checkout -q --detach b016f461be57949f4d0749ec04caaee1c16c5b60
+          test "$(git rev-parse HEAD)" = b016f461be57949f4d0749ec04caaee1c16c5b60
+          python -m pip install -q -r requirements/requirements-convert_lora_to_gguf.txt
+          python convert_lora_to_gguf.py \
+            --base-model-id Qwen/Qwen3.5-9B \
+            --outfile ../converted/v8-stage70-adapter-f16.gguf \
+            --outtype f16 ../converted/peft
+          test -s ../converted/v8-stage70-adapter-f16.gguf
+          sha256sum ../converted/v8-stage70-adapter-f16.gguf > ../converted/v8-stage70-adapter.sha256
+          echo "PHYSICAL_V8_STAGE70_GGUF_EXPORT_SUCCEEDED"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qwen35-9b-v8-stage70-verified-lora-gguf
+          path: |
+            converted/v8-stage70-adapter-f16.gguf
+            converted/v8-stage70-adapter.sha256
+          if-no-files-found: error
+          retention-days: 14
