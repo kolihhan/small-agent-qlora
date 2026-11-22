@@ -22,17 +22,19 @@ def put(root, arm, cases):
     path.write_text("\n".join(json.dumps(r) for r in cases)+"\n", encoding="utf-8")
 
 def test_paired_rescues_regressions_and_redaction(tmp_path):
-    put(tmp_path, "base", [row("a", False, ["search"]), row("b", True, ["read"])])
-    put(tmp_path, "qlora-v8", [row("a", True, ["search", "read"]), row("b", False, [])])
-    report = analyze(tmp_path, expected_n=2, shard_count=1, assert_frozen=False)
-    assert report["outcomes"]["rescue"] == 1
+    put(tmp_path, "base", [row("a", False, ["search"]), row("b", True, ["read"]), row("c", False, ["search"])])
+    put(tmp_path, "qlora-v8", [row("a", True, ["search", "read"]), row("b", False, []), row("c", True, ["read"])])
+    report = analyze(tmp_path, expected_n=3, shard_count=1, assert_frozen=False)
+    assert report["outcomes"]["rescue"] == 2
     assert report["outcomes"]["regression"] == 1
     assert report["mcnemar_two_sided_exact_p"] == 1
     serialized = json.dumps(report)
     assert "SECRET_ANSWER_DO_NOT_LEAK" not in serialized
     assert "DO_NOT_LEAK" not in serialized
     assert '"task_id"' not in serialized
-    assert len(report["changed_15_cases"]) == 2
+    assert len(report["changed_15_cases"]) == 3
+    assert report["base_correct"] == 1
+    assert report["v8_correct"] == 2
 
 def test_must_be_complete(tmp_path):
     put(tmp_path, "base", [row("a", False, [])])
