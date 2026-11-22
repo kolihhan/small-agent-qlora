@@ -19,6 +19,15 @@ Use tools only when needed. Never invent tool results.
 When you have enough evidence, return the final answer concisely.
 Do not reveal hidden chain-of-thought; tool calls and short factual status are sufficient.
 """
+EVIDENCE_STOP_CONTRACT = """At every decision, check whether the available observations already
+establish a specific, supported answer to the user's exact question.
+If they do, finish immediately with only that answer. Do not search again merely
+to repeat or confirm facts already established.
+If any necessary fact is still missing or contradictory, choose one tool action
+that can resolve that precise gap; never guess or invent evidence.
+This is a stop-or-continue decision policy, not permission to answer without evidence.
+"""
+
 MAX_TOOL_OBSERVATION_CHARS = 2000
 _RETRYABLE_TOOL_ERRORS = frozenset({
     "SEARCH_TIMEOUT",
@@ -38,10 +47,12 @@ def _looks_like_textual_tool_call(content: str) -> bool:
 class AgentRuntime:
     def __init__(self, model: Model, tools: list[Tool], max_steps: int = 12,
                  observation_filter: Callable[[str, ToolResult, str], ToolResult] | None = None,
-                 final_text_retry: bool = False):
+                 final_text_retry: bool = False,
+                 evidence_stop_contract: bool = False):
         self.model = model
         self.observation_filter = observation_filter
         self.final_text_retry = bool(final_text_retry)
+        self.evidence_stop_contract = bool(evidence_stop_contract)
         self.tools = {tool.name: tool for tool in tools}
         self.max_steps = max_steps
 
@@ -49,7 +60,7 @@ class AgentRuntime:
         workspace = Path(workspace)
         workspace.mkdir(parents=True, exist_ok=True)
         messages: list[dict] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": SYSTEM_PROMPT + (EVIDENCE_STOP_CONTRACT if self.evidence_stop_contract else "")},
             {"role": "user", "content": question},
         ]
         trace: list[TraceEvent] = []
