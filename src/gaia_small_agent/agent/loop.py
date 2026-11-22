@@ -49,7 +49,8 @@ class AgentRuntime:
                  observation_filter: Callable[[str, ToolResult, str], ToolResult] | None = None,
                  final_text_retry: bool = False,
                  evidence_stop_contract: bool = False,
-                 max_tool_observation_chars: int = MAX_TOOL_OBSERVATION_CHARS):
+                 max_tool_observation_chars: int = MAX_TOOL_OBSERVATION_CHARS,
+                 nonpaginated_head_tail: bool = False):
         self.model = model
         self.observation_filter = observation_filter
         self.final_text_retry = bool(final_text_retry)
@@ -58,6 +59,7 @@ class AgentRuntime:
                 or not 500 <= max_tool_observation_chars <= 30000):
             raise ValueError('max_tool_observation_chars must be an int in [500, 30000]')
         self.max_tool_observation_chars = max_tool_observation_chars
+        self.nonpaginated_head_tail = bool(nonpaginated_head_tail)
         self.tools = {tool.name: tool for tool in tools}
         self.max_steps = max_steps
 
@@ -198,7 +200,10 @@ class AgentRuntime:
                                 metrics.tool_errors += 1
                     seen[key] = result
 
-                obs, delivered_metadata = result.bounded_observation(self.max_tool_observation_chars)
+                obs, delivered_metadata = result.bounded_observation(
+                    self.max_tool_observation_chars,
+                    nonpaginated_head_tail=self.nonpaginated_head_tail,
+                )
                 trace.append(TraceEvent("tool_result", step, {
                     "id": call.id,
                     "name": call.name,
