@@ -34,6 +34,7 @@ jobs:
           set -euo pipefail
           python -m pip install -e '.[dev,search,files,eval]'
           python -m pytest -q tests/test_gaia100.py tests/test_gaia_sharding.py tests/test_gaia_leakage_gate_research.py tests/test_gaia_image_ocr.py
+          command -v tesseract >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr; }
           test -n "$HF_TOKEN" || { echo "GAIA_HF_TOKEN_UNAVAILABLE"; exit 42; }
           python - <<'PY'
           from gaia_small_agent.benchmark.gaia100 import QUOTAS, SHADOW_QUOTAS
@@ -75,7 +76,7 @@ jobs:
           echo "V8_SHA=$checksum" >> "$GITHUB_ENV"
           echo "V8_GGUF=$GGUF" >> "$GITHUB_ENV"
           echo "VERIFIED_BF16_CONTINUOUS_STEP100_GGUF_ADAPTER"
-      - name: Actually run identical QLoRA adapter under normal vs image OCR condition ocr
+      - name: Actually run identical QLoRA adapter under baseline vs opt-in image OCR (same Step100)
         shell: bash
         run: |
           set -euo pipefail
@@ -121,14 +122,14 @@ jobs:
               meta=json.loads((root/'summary.json').read_text())
               assert meta.get('partition')=='evaluation'
               rows=[json.loads(l) for l in (root/'results.jsonl').read_text().splitlines() if l.strip()]
-              assert len(rows)==2 and len({r['task_id'] for r in rows})==5
+              assert len(rows)==2 and len({r['task_id'] for r in rows})==2
               cohorts[arm]={r['task_id']:r for r in rows}
           assert set(cohorts['control'])==set(cohorts['ocr']), 'unmatched tasks'
           safe=[]
           for task_id in sorted(cohorts['control']):
               a,b=cohorts['control'][task_id],cohorts['ocr'][task_id]
               safe.append({
-                'id_sha256':hashlib.sha256(('gaia-eval20-stop-v1:'+task_id).encode()).hexdigest(),
+                'id_sha256':hashlib.sha256(('gaia-eval6-imageocr-v1:'+task_id).encode()).hexdigest(),
                 'level':a['level'],
                 'control_correct':bool(a['correct']),
                 'ocr_correct':bool(b['correct']),
@@ -162,7 +163,7 @@ jobs:
                'cases':safe}
           Path('safe').mkdir(exist_ok=True)
           Path(f'safe/shard-{shard}.json').write_text(json.dumps(obj,sort_keys=True,indent=2)+'\n')
-          print('GAIA_EVAL20_PAIRED_OCR_SHARD',shard,'CONTROL',sum(r['control_correct'] for r in safe),
+          print('GAIA_EVAL6_PAIRED_OCR_SHARD',shard,'CONTROL',sum(r['control_correct'] for r in safe),
                 'OCR',sum(r['ocr_correct'] for r in safe))
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -195,7 +196,7 @@ jobs:
           for index,path in enumerate(files):
               d=json.loads(path.read_text())
               assert d['protocol']=='GAIA-QWEN-V8-ST100-IMAGEOCR-EVAL6-V1'
-              assert d['shard']==index and d['n_tasks']==5
+              assert d['shard']==index and d['n_tasks']==2
               assert d['source_partition']=='evaluation' and d['no_trajectories_or_answers_uploaded']
               assert len(d['cases'])==2
               for row in d['cases']:
@@ -227,17 +228,17 @@ jobs:
               'ocr_truncated_observations':sum(x['ocr_truncated_observations'] for x in cases),
               'known_multimodal_capability_gaps':sum(x['capability_gap'] for x in cases),
               'same_v8_adapter_for_both_arms':True,
-              'all_20_paired':True,'no_training':True,
+              'all_6_paired':True,'no_training':True,
               'audited_bf16_stage100':True,
               'limitation':'Already-exposed public Evaluation100 six image-attachment cases; exploratory screen, not hidden independent test or a GAIA100 score',
               'case_level_safe_only':cases,
           }
-          Path('GAIA-EVAL20-stop-ocr-score.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
-          print('GAIA_REAL_TASK_SUCCESS_IMAGEOCR_EVAL20',json.dumps({k:v for k,v in result.items() if k!='case_level_safe_only'}))
+          Path('GAIA-EVAL6-step100-image-ocr-score.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          print('GAIA_REAL_TASK_SUCCESS_IMAGEOCR_EVAL6',json.dumps({k:v for k,v in result.items() if k!='case_level_safe_only'}))
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: GAIA-EVAL6-ST100-IMAGEOCR-PAIRED-SCORE
-          path: GAIA-EVAL20-stop-ocr-score.json
+          path: GAIA-EVAL6-step100-image-ocr-score.json
           if-no-files-found: error
           retention-days: 21
