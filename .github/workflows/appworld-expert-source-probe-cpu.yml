@@ -1,0 +1,76 @@
+name: Research AppWorld official TRAIN expert-source CPU-only feasibility
+on:
+  push:
+    branches: [research/official-prefix-stop-label-gate-20261122]
+    paths:
+      - scripts/appworld_expert_source_probe.py
+      - tests/test_appworld_expert_source_probe.py
+      - .github/workflows/appworld-expert-source-probe-cpu.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source_probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - name: CPU-only source feasibility tests (no model)
+        run: |
+          python -m pip install -e ".[dev]"
+          python -m pytest -q tests/test_appworld_expert_source_probe.py tests/test_prefix_state_labels.py
+      - name: Install pinned official AppWorld source
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+          git lfs install
+          mkdir -p "$RUNNER_TEMP/appworld"
+          cd "$RUNNER_TEMP/appworld"
+          git init -q
+          git remote add origin https://github.com/StonyBrookNLP/appworld.git
+          git fetch -q --depth 1 origin 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+          git lfs pull
+          python -m pip install -e .
+          python -m pip install 'pydantic==2.12.5' 'fastapi==0.120.4'
+          appworld install --repo
+          appworld download data
+      - name: Execute official TRAIN expert solutions privately and export aggregates ONLY
+        shell: bash
+        run: |
+          set -euo pipefail
+          export APPWORLD_ROOT="$RUNNER_TEMP/appworld"
+          python -m scripts.appworld_expert_source_probe --out safe-output/report.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('safe-output/report.json')
+          d=json.loads(p.read_text())
+          assert d['n_distinct_train_task_families']==12
+          assert d['verified_native_agent_long_horizon_success']==0
+          assert d['native_stop_labels']=={'STOP':0,'CONTINUE':0,'UNKNOWN':12}
+          assert d['no_qwen_or_training'] and d['no_raw_task_solutions_states_credentials_or_trace_export']
+          assert set(d)=={
+              'protocol','upstream_sdk_commit','source_roster_sha256',
+              'fixed_prelabel_selection_sha256','n_distinct_train_task_families',
+              'official_expert_terminal_success','publisher_api_depth_observed',
+              'publisher_declared_api_depth_at_least_7',
+              'verified_native_agent_long_horizon_success','native_prefix_state_replays',
+              'native_stop_labels','research_decision','no_qwen_or_training',
+              'no_raw_task_solutions_states_credentials_or_trace_export',
+          }
+          assert list(Path('safe-output').iterdir())==[p]
+          print('SAFE_COUNTS_ONLY_VALIDATED')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: APPWORLD-OFFICIAL-TRAIN-EXPERT-SOURCE-AGGREGATE-ONLY
+          path: safe-output/report.json
+          if-no-files-found: error
+          retention-days: 14
