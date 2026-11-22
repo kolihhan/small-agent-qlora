@@ -8,6 +8,7 @@ import tempfile
 
 from gaia_small_agent.agent.loop import AgentRuntime, MAX_TOOL_OBSERVATION_CHARS
 from gaia_small_agent.agent.leakage_gate import LeakageGate
+from gaia_small_agent.protocol_recovery import ProtocolRepairModel
 from gaia_small_agent.benchmark.gaia100 import GAIA_REVISION, LOCAL_PROTOCOL_SEED, load_validation, select_gaia_partition
 import gaia_small_agent.benchmark.runner as gaia_runner
 from gaia_small_agent.benchmark.sharding import shard_selected_rows
@@ -35,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True)
     parser.add_argument("--thinking", action="store_true")
     parser.add_argument("--benchmark-leakage-gate", action="store_true", help="research only; gold-blind suppress public benchmark solutions")
+    parser.add_argument("--protocol-json-retry", action="store_true", help="research only; retry malformed native tool arguments at most twice per task")
+    parser.add_argument("--final-text-retry", action="store_true", help="research only; one extra final-only response if last step emits textual tool call")
     return parser
 
 
@@ -88,8 +91,12 @@ def main() -> int:
     tool_names = tool_preflight["tool_names"]
 
     def factory() -> AgentRuntime:
-        return AgentRuntime(build_model(args), default_tools(), max_steps=12,
-                            observation_filter=LeakageGate() if args.benchmark_leakage_gate else None)
+        model = build_model(args)
+        if args.protocol_json_retry:
+            model = ProtocolRepairModel(model, max_retries=2)
+        return AgentRuntime(model, default_tools(), max_steps=12,
+                            observation_filter=LeakageGate() if args.benchmark_leakage_gate else None,
+                            final_text_retry=args.final_text_retry)
 
     run_config = {
         "backend": args.backend,
@@ -99,6 +106,10 @@ def main() -> int:
         "max_new_tokens": 512,
         "thinking": args.thinking,
         "benchmark_leakage_gate": bool(args.benchmark_leakage_gate),
+        "protocol_json_retry": bool(args.protocol_json_retry),
+        "final_text_retry": bool(args.final_text_retry),
+        "max_additional_protocol_calls_per_task": 2 if args.protocol_json_retry else 0,
+        "max_additional_final_calls_per_task": 1 if args.final_text_retry else 0,
         "quantize_4bit": None,
         "seed": LOCAL_PROTOCOL_SEED,
         "dataset_revision": GAIA_REVISION,
