@@ -37,9 +37,11 @@ def _looks_like_textual_tool_call(content: str) -> bool:
 
 class AgentRuntime:
     def __init__(self, model: Model, tools: list[Tool], max_steps: int = 12,
-                 observation_filter: Callable[[str, ToolResult, str], ToolResult] | None = None):
+                 observation_filter: Callable[[str, ToolResult, str], ToolResult] | None = None,
+                 final_text_retry: bool = False):
         self.model = model
         self.observation_filter = observation_filter
+        self.final_text_retry = bool(final_text_retry)
         self.tools = {tool.name: tool for tool in tools}
         self.max_steps = max_steps
 
@@ -81,6 +83,29 @@ class AgentRuntime:
                     trace.append(TraceEvent("empty_final", step, {}))
                     return AgentResult("", False, "empty_final", trace, metrics)
                 if _looks_like_textual_tool_call(answer):
+                    if final_only and self.final_text_retry:
+                        complete_final = getattr(self.model, "complete_final", None)
+                        if callable(complete_final):
+                            trace.append(TraceEvent("final_retry_requested", step, {"cause": "textual_tool_call", "extra_model_calls": 1}))
+                            retry_messages = list(messages) + [{
+                                "role": "user",
+                                "content": (
+                                    "No more tools are available. The previous output was a tool-call marker, "
+                                    "not a final answer. Based only on observations you already received, "
+                                    "provide the concise answer now, or explicitly say you cannot determine it. "
+                                    "Do not request tools or output <tool_call> markup."
+                                ),
+                            }]
+                            try:
+                                retry_turn = complete_final(retry_messages, tool_definitions)
+                            except (ModelRuntimeError, ModelCapacityError) as exc:
+                                trace.append(TraceEvent("final_retry_failed", step, {"reason": type(exc).__name__}))
+                            else:
+                                revised = (retry_turn.content or "").strip()
+                                if not retry_turn.tool_calls and revised and not _looks_like_textual_tool_call(revised):
+                                    trace.append(TraceEvent("final", step, {"answer": revised, "recovery": "second_model_response"}))
+                                    return AgentResult(revised, True, "final", trace, metrics)
+                                trace.append(TraceEvent("final_retry_failed", step, {"reason": "not_a_final_answer"}))
                     trace.append(TraceEvent("invalid_final", step, {"content": answer}))
                     return AgentResult("", False, "invalid_final", trace, metrics)
                 trace.append(TraceEvent("final", step, {"answer": answer}))
