@@ -31,3 +31,20 @@ def test_bad_official_success_type_fails_closed():
             [{"official_expert_success": "true", "publisher_api_call_count": 8}],
             source_sha256="b"*64, sample_sha256="a"*64,
         )
+
+
+def test_worker_output_accepts_only_safe_schema_and_never_returns_raw_logs():
+    from scripts.appworld_expert_source_probe import parse_safe_worker_output
+    safe = safe_summary(
+        [{"official_expert_success":True,"publisher_api_call_count":9}],
+        source_sha256="b"*64, sample_sha256="a"*64,
+    )
+    import json
+    line = "APPWORLD_SAFE_AGGREGATE=" + json.dumps(safe)
+    assert parse_safe_worker_output("potential private SDK log ignored\n"+line)==safe
+
+    import pytest
+    with pytest.raises(ValueError):
+        parse_safe_worker_output("potential private SDK log ignored\n")
+    with pytest.raises(ValueError):
+        parse_safe_worker_output(line+"\n"+line)
