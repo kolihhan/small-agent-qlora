@@ -106,8 +106,9 @@ def _case_result(index: int) -> dict:
                 declared = getattr(gt, "api_calls", None)
                 if isinstance(declared, (list, tuple)):
                     api_count = len(declared)
-                stage = "execute_failed"
+                stage = "compile_failed"
                 code = gt.compiled_solution_code
+                stage = "execute_failed"
                 # Official source program stays in private memory only.
                 world.execute(code + "\nsolution(apis, requester)")
                 stage = "evaluate_failed"
