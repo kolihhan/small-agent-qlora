@@ -32,10 +32,17 @@ jobs:
           unzip -p "$BUNDLE" checkpoint-70/adapter_config.json > converted/peft/adapter_config.json
           unzip -p "$BUNDLE" checkpoint-70/adapter_model.safetensors > converted/peft/adapter_model.safetensors
           test -s converted/peft/adapter_config.json
-          echo '214ca477a95c8dd9c4395d1093ada147eb7fed62d33b3781f846d28d54f4c8c  converted/peft/adapter_model.safetensors' | sha256sum -c -
+          unzip -p "$BUNDLE" stage70-verified-report.json > converted/stage70-proof.json
           python - <<'PY'
-          import json
+          import hashlib,json
+          from pathlib import Path
           p=json.load(open("converted/peft/adapter_config.json"))
+          proof=json.load(open("converted/stage70-proof.json"))
+          actual=hashlib.sha256(Path("converted/peft/adapter_model.safetensors").read_bytes()).hexdigest()
+          assert proof.get("adapter_sha256")==actual and len(actual)==64
+          assert proof.get("protocol")=="qwen9b-v8-continued-step35-to70-original100-scheduler-v1"
+          assert proof.get("model")=="Qwen/Qwen3.5-9B"
+          assert proof.get("trained_step_end")==70 and proof.get("gaia_evaluated") is False
           assert "Qwen3.5-9B" in str(p.get("base_model_name_or_path","")), "wrong original base"
           assert p.get("peft_type")=="LORA", "not trained PEFT adapter"
           print("REAL_QWEN_V8_STAGE70_ADAPTER_SHA_VERIFIED")
