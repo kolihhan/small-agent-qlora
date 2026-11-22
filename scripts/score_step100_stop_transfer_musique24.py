@@ -4,6 +4,10 @@ import argparse
 import json
 from collections import Counter
 from pathlib import Path
+import sys
+
+# Aggregation runs on a CPU-only job without package installation.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
 from scripts.eval_step100_stop_transfer_musique24 import (
     FROZEN_TASKS_SHA256, PER_SHARD, PROTOCOL, SHARDS, TASKS,
