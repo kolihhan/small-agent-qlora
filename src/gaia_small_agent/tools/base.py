@@ -30,8 +30,8 @@ class ToolResult:
     def observation(self) -> str:
         return self._metadata_prefix(self.metadata) + self._body_prefix() + self.content
 
-    def bounded_observation(self, max_chars: int) -> tuple[str, dict[str, Any]]:
-        """Render an observation without making pagination metadata skip unseen content."""
+    def bounded_observation(self, max_chars: int, *, nonpaginated_head_tail: bool = False) -> tuple[str, dict[str, Any]]:
+        """Render bounded observation; original pagination metadata remains lossless."""
         if max_chars <= 0:
             raise ValueError("max_chars must be positive")
 
@@ -54,6 +54,8 @@ class ToolResult:
         )
         if pagination:
             marker = f"\n...[truncated from {len(self.content)} content characters; continue from next_offset_chars when provided]"
+        elif nonpaginated_head_tail:
+            marker = f"\n...[middle omitted; {len(self.content)} content characters total]...\n"
         else:
             marker = (
                 f"\n...[truncated from {len(self.content)} characters; request a narrower result "
@@ -83,7 +85,13 @@ class ToolResult:
             prefix = self._metadata_prefix(metadata)
             visible = max(0, min(len(self.content), max_chars - len(prefix) - len(body_prefix) - len(marker)))
 
-        observation = prefix + body_prefix + self.content[:visible] + marker
+        if nonpaginated_head_tail and not pagination and visible >= 2:
+            # Same 2k budget; only for non-paginated tool output, preserving original order.
+            head_chars = max(1, min(visible - 1, (visible * 7) // 10))
+            tail_chars = visible - head_chars
+            observation = prefix + body_prefix + self.content[:head_chars] + marker + self.content[-tail_chars:]
+        else:
+            observation = prefix + body_prefix + self.content[:visible] + marker
         return observation[:max_chars], metadata
 
 
