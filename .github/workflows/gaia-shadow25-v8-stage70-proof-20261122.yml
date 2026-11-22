@@ -1,0 +1,213 @@
+name: PROOF GAIA Shadow25 original Qwen9B Base vs verified v8-step70 Task Success
+on:
+  push:
+    branches: [research/gaia-shadow25-v8stage70-transfer-proof-20261122]
+    paths: [.github/workflows/gaia-shadow25-v8stage70-proof-20261122.yml]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: gaia-shadow25-v8stage70-proof-20261122
+  cancel-in-progress: true
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  BASE_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  BASE_SHA: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLM_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLM_SHA: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+
+
+jobs:
+  paired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - name: Install fixed evaluation runtime and verify heldout selection
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev,search,files,eval]'
+          python -m pytest -q tests/test_gaia100.py tests/test_gaia_sharding.py tests/test_gaia_leakage_gate_research.py
+          test -n "$HF_TOKEN" || { echo "GAIA_HF_TOKEN_UNAVAILABLE"; exit 42; }
+          python - <<'PY'
+          from gaia_small_agent.benchmark.gaia100 import QUOTAS, SHADOW_QUOTAS
+          assert sum(SHADOW_QUOTAS.values())==25
+          assert sum(QUOTAS.values())==100
+          print("HELDOUT_SHADOW25_FIXED_SOURCE_READY")
+          PY
+      - name: Download identical original Qwen3.5-9B and pinned llama server
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model /tmp/llama-bin adapter
+          curl -fL --retry 5 --retry-delay 3 "$BASE_URL" -o model/base.gguf
+          echo "$BASE_SHA  model/base.gguf" | sha256sum -c -
+          curl -fL --retry 5 --retry-delay 3 "$LLM_URL" -o /tmp/llama.tar.gz
+          echo "$LLM_SHA  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER=$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -n1)
+          test -x "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 45037819202
+          name: qwen35-9b-v8-stage70-verified-lora-gguf
+          github-token: ${{ github.token }}
+          path: adapter
+      - name: Verify actual v8-step70 GGUF and checksum from pinned converter run
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s adapter/converted/v8-stage70-adapter-f16.gguf
+          test -s adapter/converted/v8-stage70-adapter.sha256
+          checksum=$(cut -d' ' -f1 adapter/converted/v8-stage70-adapter.sha256)
+          test "$checksum" = "$(sha256sum adapter/converted/v8-stage70-adapter-f16.gguf | cut -d' ' -f1)"
+          test "$(head -c 4 adapter/converted/v8-stage70-adapter-f16.gguf)" = GGUF
+          echo "V8_SHA=$checksum" >> "$GITHUB_ENV"
+          echo "VERIFIED_ACTUAL_V8_STEP70_GGUF_ADAPTER"
+      - name: Actually run original Qwen Base and QLoRA-v8stage70 matched real tool-agent episodes
+        shell: bash
+        run: |
+          set -euo pipefail
+          shard=${{ matrix.shard }}
+          for arm in base v8stage70; do
+            extra=()
+            if [ "$arm" = v8stage70 ]; then extra=(--lora adapter/converted/v8-stage70-adapter-f16.gguf); fi
+            mkdir -p "runs/$arm/shard-$shard"
+            "$LLAMA_SERVER" -m model/base.gguf "${extra[@]}" \
+              --alias qwen3.5-9b --host 127.0.0.1 --port 8080 \
+              --ctx-size 16384 --threads 4 --parallel 1 --jinja \
+              --reasoning-budget 0 --temperature 0 \
+              > "/tmp/llama-shadow-$arm.log" 2>&1 &
+            pid=$!
+            trap 'kill "$pid" 2>/dev/null || true' EXIT
+            for i in {1..180}; do
+              if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then break; fi
+              sleep 2
+            done
+            curl -fsS http://127.0.0.1:8080/health >/dev/null
+            python scripts/run_gaia_eval_shard.py \
+              --partition shadow --benchmark-leakage-gate \
+              --backend openai_compat --model qwen3.5-9b \
+              --openai-base-url http://127.0.0.1:8080 \
+              --hf-token "$HF_TOKEN" --shard-index "$shard" --shard-count 5 \
+              --work-root "runs/$arm/shard-$shard" \
+              --output "runs/$arm/shard-$shard/summary.json" \
+              > "/tmp/gaia-shadow-$arm-private-log" 2>&1 || {
+                echo "GAIA_SHADOW_EPISODE_FAILED_PRIVATE_TRACE_NOT_EXPORTED"; exit 1;
+              }
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            trap - EXIT
+          done
+          python - <<'PY'
+          import json, hashlib, os
+          from pathlib import Path
+          shard=int(os.environ.get('MATRIX_SHARD', '${{ matrix.shard }}'))
+          cohorts={}
+          for arm in ('base','v8stage70'):
+              root=Path(f'runs/{arm}/shard-{shard}')
+              meta=json.loads((root/'summary.json').read_text())
+              assert meta.get('partition')=='shadow'
+              rows=[json.loads(l) for l in (root/'results.jsonl').read_text().splitlines() if l.strip()]
+              assert len(rows)==5 and len({r['task_id'] for r in rows})==5
+              cohorts[arm]={r['task_id']:r for r in rows}
+          assert set(cohorts['base'])==set(cohorts['v8stage70']), 'unmatched tasks'
+          safe=[]
+          for task_id in sorted(cohorts['base']):
+              a,b=cohorts['base'][task_id],cohorts['v8stage70'][task_id]
+              safe.append({
+                'id_sha256':hashlib.sha256(('shadow25-v1:'+task_id).encode()).hexdigest(),
+                'level':a['level'],
+                'base_correct':bool(a['correct']),
+                'v8stage70_correct':bool(b['correct']),
+                'base_completed':bool(a['completed']),
+                'v8stage70_completed':bool(b['completed']),
+                'base_tools':int(a['tool_calls']),
+                'v8stage70_tools':int(b['tool_calls']),
+                'base_steps':int(a['steps']),
+                'v8stage70_steps':int(b['steps']),
+              })
+          obj={'protocol':'GAIA-ORIGINAL-QWEN-V8-SHADOW25-PAIRED-V1',
+               'shard':shard,'n_tasks':5,'original_model_sha':os.environ['BASE_SHA'],
+               'v8stage70_adapter_sha':os.environ['V8_SHA'],
+               'source_partition':'shadow',
+               'same_model_tools_steps_and_leakage_gate':True,
+               'no_trajectories_or_answers_uploaded':True,
+               'cases':safe}
+          Path('safe').mkdir(exist_ok=True)
+          Path(f'safe/shard-{shard}.json').write_text(json.dumps(obj,sort_keys=True,indent=2)+'\n')
+          print('GAIA_REAL_SHADOW_PAIRED_SHARD',shard,'BASE',sum(r['base_correct'] for r in safe),
+                'TRAINED',sum(r['v8stage70_correct'] for r in safe))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: GAIA-SHADOW25-QWEN-V8-SAFE-SHARD-${{ matrix.shard }}
+          path: safe/shard-${{ matrix.shard }}.json
+          if-no-files-found: warn
+          retention-days: 21
+
+  official_paired_score:
+    needs: paired
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: GAIA-SHADOW25-QWEN-V8-SAFE-SHARD-*
+          merge-multiple: true
+          path: evidence
+      - name: Aggregate exact 25 heldout official-scored Task Success outcomes
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          files=sorted(Path('evidence').glob('shard-*.json'))
+          assert len(files)==5
+          cases=[];seen=set()
+          for index,path in enumerate(files):
+              d=json.loads(path.read_text())
+              assert d['protocol']=='GAIA-ORIGINAL-QWEN-V8-SHADOW25-PAIRED-V1'
+              assert d['shard']==index and d['n_tasks']==5
+              assert d['source_partition']=='shadow' and d['no_trajectories_or_answers_uploaded']
+              assert len(d['cases'])==5
+              for row in d['cases']:
+                  assert row['id_sha256'] not in seen
+                  seen.add(row['id_sha256'])
+                  cases.append(row)
+          assert len(seen)==25
+          base=sum(x['base_correct'] for x in cases)
+          trained=sum(x['v8stage70_correct'] for x in cases)
+          result={
+              'protocol':'GAIA-ORIGINAL-QWEN-V8-SHADOW25-PAIRED-V1',
+              'n_tasks':25,'source_partition':'previously reserved Shadow25',
+              'base_correct':base,'v8stage70_correct':trained,
+              'rescues':sum(x['v8stage70_correct'] and not x['base_correct'] for x in cases),
+              'regressions':sum(x['base_correct'] and not x['v8stage70_correct'] for x in cases),
+              'base_completed':sum(x['base_completed'] for x in cases),
+              'v8stage70_completed':sum(x['v8stage70_completed'] for x in cases),
+              'base_tool_calls':sum(x['base_tools'] for x in cases),
+              'v8stage70_tool_calls':sum(x['v8stage70_tools'] for x in cases),
+              'all_25_paired':True,'no_training':True,
+              'not_completed_v8_stage100':True,
+              'limitation':'Public GAIA validation partition, not hidden independent test; one matched run',
+              'case_level_safe_only':cases,
+          }
+          Path('GAIA-SHADOW25-real-score.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          print('GAIA_REAL_TASK_SUCCESS_SHADOW25',json.dumps({k:v for k,v in result.items() if k!='case_level_safe_only'}))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: GAIA-SHADOW25-QWEN-V8-REAL-PAIRED-SCORE
+          path: GAIA-SHADOW25-real-score.json
+          if-no-files-found: error
+          retention-days: 21
