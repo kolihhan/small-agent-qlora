@@ -56,6 +56,7 @@ jobs:
           git checkout -q --detach b016f461be57949f4d0749ec04caaee1c16c5b60
           test "$(git rev-parse HEAD)" = b016f461be57949f4d0749ec04caaee1c16c5b60
           python -m pip install -q -r requirements/requirements-convert_lora_to_gguf.txt
+          python -m pip install -q 'transformers>=5.15,<6'
           python convert_lora_to_gguf.py \
             --base-model-id Qwen/Qwen3.5-9B \
             --outfile ../converted/v8-stage70-adapter-f16.gguf \
