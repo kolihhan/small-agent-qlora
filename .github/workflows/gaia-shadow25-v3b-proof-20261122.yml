@@ -33,7 +33,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install -e '.[dev,search,files,eval]'
-          python -m pytest -q tests/test_gaia100.py tests/test_gaia_sharding.py tests/test_data_contamination.py
+          python -m pytest -q tests/test_gaia100.py tests/test_gaia_sharding.py tests/test_gaia_leakage_gate_research.py
           test -n "$HF_TOKEN" || { echo "GAIA_HF_TOKEN_UNAVAILABLE"; exit 42; }
           python - <<'PY'
           from gaia_small_agent.benchmark.gaia100 import QUOTAS, SHADOW_QUOTAS
