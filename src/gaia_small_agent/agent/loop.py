@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, Callable
 
 from .types import AgentResult, AssistantTurn, ModelCapacityError, ModelRuntimeError, RunMetrics, TraceEvent
 from ..tools.base import Tool, ToolResult
@@ -36,8 +36,10 @@ def _looks_like_textual_tool_call(content: str) -> bool:
 
 
 class AgentRuntime:
-    def __init__(self, model: Model, tools: list[Tool], max_steps: int = 12):
+    def __init__(self, model: Model, tools: list[Tool], max_steps: int = 12,
+                 observation_filter: Callable[[str, ToolResult, str], ToolResult] | None = None):
         self.model = model
+        self.observation_filter = observation_filter
         self.tools = {tool.name: tool for tool in tools}
         self.max_steps = max_steps
 
@@ -138,6 +140,12 @@ class AgentRuntime:
                                 result = tool.run(call.arguments, workspace)
                             except Exception as exc:  # runtime boundary: tool exceptions become observations
                                 result = ToolResult(False, f"{type(exc).__name__}: {exc}", "TOOL_EXCEPTION")
+                            if result.ok and self.observation_filter is not None:
+                                try:
+                                    result = self.observation_filter(call.name, result, question)
+                                except Exception:
+                                    # Fail closed; do not disclose an unscanned tool result.
+                                    result = ToolResult(False, "Observation guard failed closed", "OBSERVATION_GUARD_ERROR")
                             if result.ok:
                                 metrics.tool_successes += 1
                             else:
