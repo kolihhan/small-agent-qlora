@@ -14,6 +14,9 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
       - name: Fetch verified stage70 real adapter before spending GPU
         uses: actions/download-artifact@v4
         with:
@@ -48,6 +51,7 @@ jobs:
           git clone -q --depth 1 --branch b11541 https://github.com/ggml-org/llama.cpp.git /tmp/llama-convert
           test "$(git -C /tmp/llama-convert rev-parse HEAD)" = "f2918cabbffe8abf8e2a90c1c089085fa116c2cf"
           python -m pip install -q -r /tmp/llama-convert/requirements/requirements-convert_lora_to_gguf.txt
+          python -m pip install -q "git+https://github.com/huggingface/transformers.git@2f1bc5e321b9a736200a590d6e7743ccdeb60772"
           python /tmp/llama-convert/convert_lora_to_gguf.py --base-model-id Qwen/Qwen3.5-9B --outtype f16 --outfile /tmp/v8-stage70-smoke.gguf adapter
           test "$(stat -c%s /tmp/v8-stage70-smoke.gguf)" -gt 1000000
           echo "V8_STAGE70_LORA_CONVERTER_ACCEPTED_CPU"
