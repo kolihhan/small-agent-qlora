@@ -66,10 +66,15 @@ class AgentResult:
     metrics: RunMetrics
 
     def to_dict(self) -> dict[str, Any]:
+        metrics = asdict(self.metrics)
+        # Preserve exact legacy result JSON when optional recovery is disabled.
+        for field_name in ("protocol_json_retries", "final_text_retries"):
+            if metrics[field_name] == 0:
+                del metrics[field_name]
         return {
             "answer": self.answer,
             "completed": self.completed,
             "stop_reason": self.stop_reason,
-            "metrics": asdict(self.metrics),
+            "metrics": metrics,
             "trace": [event.to_dict() for event in self.trace],
         }
