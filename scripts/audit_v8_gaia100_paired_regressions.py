@@ -112,8 +112,8 @@ def analyze(root: Path, expected_n=EXPECTED_N, shard_count=20, assert_frozen=Tru
                 "steps_delta": new["steps"] - old["steps"],
                 "interpretation": "Descriptive signal only: root cause requires content-aware review.",
             })
-    score_base = groups["rescue"] + groups["both_correct"]
-    score_v8 = groups["regression"] + groups["both_correct"]
+    score_base = groups["regression"] + groups["both_correct"]
+    score_v8 = groups["rescue"] + groups["both_correct"]
     if assert_frozen and (score_base, score_v8, groups["rescue"], groups["regression"]) != (
         EXPECTED_BASE, EXPECTED_V8, EXPECTED_RESCUES, EXPECTED_REGRESSIONS
     ):
