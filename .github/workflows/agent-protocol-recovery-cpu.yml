@@ -12,6 +12,8 @@ on:
       - scripts/run_gaia_eval_shard.py
       - scripts/audit_protocol_recovery_opportunities.py
       - tests/test_protocol_recovery_research.py
+      - tests/test_audit_v8_final_answer_priority.py
+      - scripts/audit_v8_final_answer_priority.py
 permissions:
   contents: read
   actions: read
@@ -27,7 +29,7 @@ jobs:
       - name: Run synthetic protocol and existing loop tests (no model)
         run: |
           python -m pip install -q -e '.[dev]'
-          python -m pytest -q tests/test_protocol_recovery_research.py tests/test_agent_loop.py
+          python -m pytest -q tests/test_protocol_recovery_research.py tests/test_agent_loop.py tests/test_audit_v8_final_answer_priority.py
       - uses: actions/download-artifact@v4
         with:
           repository: kolihhan/small-agent-qlora
@@ -37,6 +39,24 @@ jobs:
           path: evidence
       - name: Recount 100 matched case JSON and finalization failure modes
         run: python -u scripts/audit_protocol_recovery_opportunities.py
+      - uses: actions/download-artifact@v4
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44997451491
+          github-token: ${{ github.token }}
+          name: gaia-v8-15-discordant-case-trace-audit
+          path: .safe-discordant
+      - name: Decide which v8 failures protocol retries can even address (no model)
+        run: |
+          python -u scripts/audit_v8_final_answer_priority.py \
+            --source .safe-discordant/gaia-v8-paired-regression-report.json \
+            --output audit/v8-final-answer-priority.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v8-final-answer-priority-audit
+          path: audit/v8-final-answer-priority.json
+          if-no-files-found: error
+          retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
           name: agent-protocol-failure-opportunity-audit
