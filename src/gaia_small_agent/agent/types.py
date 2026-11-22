@@ -53,6 +53,8 @@ class RunMetrics:
     duplicate_calls_blocked: int = 0
     invalid_tool_calls: int = 0
     tool_retries: int = 0
+    protocol_json_retries: int = 0
+    final_text_retries: int = 0
 
 
 @dataclass
