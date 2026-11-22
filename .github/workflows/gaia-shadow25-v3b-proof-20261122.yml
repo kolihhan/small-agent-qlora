@@ -8,7 +8,7 @@ permissions:
   actions: read
 concurrency:
   group: gaia-shadow25-v3b-proof-20261122
-  cancel-in-progress: false
+  cancel-in-progress: true
 env:
   HF_TOKEN: ${{ secrets.HF_TOKEN }}
   BASE_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
@@ -107,7 +107,7 @@ jobs:
           for arm in ('base','v3b'):
               root=Path(f'runs/{arm}/shard-{shard}')
               meta=json.loads((root/'summary.json').read_text())
-              assert meta['run_config']['partition']=='shadow' if 'run_config' in meta else meta.get('partition')=='shadow'
+              assert meta.get('partition')=='shadow'
               rows=[json.loads(l) for l in (root/'results.jsonl').read_text().splitlines() if l.strip()]
               assert len(rows)==5 and len({r['task_id'] for r in rows})==5
               cohorts[arm]={r['task_id']:r for r in rows}
