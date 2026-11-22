@@ -1,8 +1,8 @@
 name: PROOF GAIA Shadow25 original Qwen9B Base vs verified v8-step70 Task Success
 on:
   push:
-    branches: [research/gaia-shadow25-v8stage70-transfer-proof-20261122]
-    paths: [.github/workflows/gaia-shadow25-v8stage70-proof-20261122.yml]
+    branches: [research/gaia-shadow25-v3b-transfer-proof-20261122]
+    paths: [.github/workflows/gaia-shadow25-v8-stage70-proof-20261122.yml]
 permissions:
   contents: read
   actions: read
