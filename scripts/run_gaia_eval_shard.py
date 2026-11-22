@@ -148,6 +148,7 @@ def main() -> int:
         "benchmark": ("GAIA 2023 validation / reserved Shadow25" if args.partition == "shadow" else "GAIA 2023 validation / frozen Evaluation100"),
         "dataset_revision": GAIA_REVISION,
         "seed": LOCAL_PROTOCOL_SEED,
+        "partition": args.partition,
         "backend": args.backend,
         "model": args.model,
         "thinking": args.thinking,
