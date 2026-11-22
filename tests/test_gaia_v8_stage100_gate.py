@@ -105,3 +105,37 @@ def test_untrusted_zip_entries_rejected(tmp_path):
         z.writestr("../escape", b"illegal")
     with pytest.raises(ValueError, match="unsafe"):
         validate_stage100_archive(path)
+
+
+def test_only_original_bf16_quarantine_can_be_audited_for_evaluation(tmp_path):
+    from zipfile import ZipFile
+    path = _archive(tmp_path, overrides={
+        "full_v8_completed": False,
+        "failed_checks": ["compute_dtype"],
+        "compute_dtype": "torch.bfloat16",
+    })
+    # Preserve the old report and alter only synthetic config, as real training did.
+    with ZipFile(path, "r") as archive:
+        files = {name: archive.read(name) for name in archive.namelist()}
+    config = json.loads(files["run_config.json"])
+    config["compute_dtype"] = "torch.bfloat16"
+    files["run_config.json"] = json.dumps(config).encode()
+    audit = tmp_path / "qlora-v8-stage100-UNVERIFIED.zip"
+    with ZipFile(audit, "w") as archive:
+        for name, content in files.items():
+            archive.writestr(name, content)
+    proof = validate_stage100_archive(audit)
+    assert proof["evaluation_acceptance"] == "audited_bf16_continuity"
+    assert proof["full_v8_completed"] is False  # no rewriting failed Colab report
+    assert (tmp_path / "adapter" / "optimizer.pt").exists() is False
+    extract_verified_adapter(audit, tmp_path / "adapter")
+    assert (tmp_path / "adapter" / "adapter_model.safetensors").is_file()
+    # Do not accept arbitrary bf16 artifacts or corrupted optimizer.
+    with pytest.raises(ValueError):
+        validate_stage100_archive(path)
+    files["checkpoint-100/optimizer.pt"] = b"corrupt"
+    with ZipFile(audit, "w") as archive:
+        for name, content in files.items():
+            archive.writestr(name, content)
+    with pytest.raises(ValueError, match="SHA mismatch"):
+        validate_stage100_archive(audit)
