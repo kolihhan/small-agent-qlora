@@ -12,8 +12,8 @@ _DEFAULT_TOOL_NAMES = ["search", "read", "inspect", "python"]
 _DEPENDENCIES = ("requests", "mcp", "ddgs", "pypdf", "openpyxl")
 
 
-def default_tools():
-    return [SearchTool(), ReadTool(), InspectTool(), PythonTool()]
+def default_tools(*, image_ocr_enabled: bool = False):
+    return [SearchTool(), ReadTool(image_ocr_enabled=image_ocr_enabled), InspectTool(), PythonTool()]
 
 
 def check_default_tools(workspace: str | Path, *, live_search: bool = False) -> dict:
