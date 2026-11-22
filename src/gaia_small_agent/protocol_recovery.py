@@ -15,8 +15,9 @@ _FORMAT_PROMPT = (
 )
 
 class ProtocolRepairModel:
-    def __init__(self, model):
+    def __init__(self, model, *, max_retries: int = 2):
         self.model = model
+        self.max_retries = max_retries
         self.protocol_retries = 0
         self.protocol_retry_successes = 0
 
@@ -26,6 +27,8 @@ class ProtocolRepairModel:
             return perform(messages, tools)
         except ModelRuntimeError as exc:
             if exc.stop_reason != "model_error" or not exc.message.startswith("Invalid tool arguments JSON:"):
+                raise
+            if self.protocol_retries >= self.max_retries:
                 raise
             self.protocol_retries += 1
             # Fresh same-turn retry, without exposing the malformed arguments to tools.
