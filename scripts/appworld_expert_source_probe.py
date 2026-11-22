@@ -16,7 +16,6 @@ import io
 import json
 from pathlib import Path
 import re
-import tempfile
 
 SEED = "appworld-train-source-feasibility-fixed-prelabel-20261122"
 UPSTREAM_SHA = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
@@ -81,38 +80,37 @@ def probe() -> dict:
     roster_sha = digest("\n".join(sorted(roster)))
     selected_sha = digest("\n".join(chosen))
     rows: list[dict] = []
-    with tempfile.TemporaryDirectory(prefix="private-appworld-expert-") as base:
-        for i, task_id in enumerate(chosen):
-            stdout, stderr = io.StringIO(), io.StringIO()
+    for i, task_id in enumerate(chosen):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        success = False
+        declared_api_count = None
+        try:
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                with AppWorld(
+                    task_id=task_id,
+                    experiment_name=f"private-expert-source-probe-{i}",
+                    ground_truth_mode="full",
+                    timeout_seconds=180,
+                ) as world:
+                    gt = world.task.ground_truth
+                    declared = getattr(gt, "api_calls", None)
+                    if isinstance(declared, (list, tuple)):
+                        declared_api_count = len(declared)
+                    code = gt.compiled_solution_code
+                    # Never persist or print official solution/feedback.
+                    world.execute(code + "\nsolution(apis, requester)")
+                    tracker = world.evaluate(suppress_errors=True)
+                    success = bool(tracker.success)
+        except Exception:
+            # AppWorld errors may include credentials or task text.
             success = False
-            declared_api_count = None
-            try:
-                with redirect_stdout(stdout), redirect_stderr(stderr):
-                    with AppWorld(
-                        task_id=task_id,
-                        experiment_name=f"private-expert-source-probe-{i}",
-                        ground_truth_mode="full",
-                        timeout_seconds=180,
-                    ) as world:
-                        gt = world.task.ground_truth
-                        declared = getattr(gt, "api_calls", None)
-                        if isinstance(declared, (list, tuple)):
-                            declared_api_count = len(declared)
-                        code = gt.compiled_solution_code
-                        # Never persist or print official solution/feedback.
-                        world.execute(code + "\nsolution(apis, requester)")
-                        tracker = world.evaluate(suppress_errors=True)
-                        success = bool(tracker.success)
-            except Exception:
-                # AppWorld errors may include credentials or task text.
-                success = False
-            finally:
-                stdout.close()
-                stderr.close()
-            rows.append({
-                "official_expert_success": success,
-                "publisher_api_call_count": declared_api_count,
-            })
+        finally:
+            stdout.close()
+            stderr.close()
+        rows.append({
+            "official_expert_success": success,
+            "publisher_api_call_count": declared_api_count,
+        })
     return safe_summary(rows, source_sha256=roster_sha, sample_sha256=selected_sha)
 
 
