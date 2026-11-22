@@ -118,6 +118,24 @@ def analyze(root: Path, expected_n=EXPECTED_N, shard_count=20, assert_frozen=Tru
         EXPECTED_BASE, EXPECTED_V8, EXPECTED_RESCUES, EXPECTED_REGRESSIONS
     ):
         raise ValueError("original GAIA v8 scored summary differs from downloaded traces")
+    discordant_profiles = {}
+    for outcome in ("rescue", "regression"):
+        selected = [x for x in matched if x["outcome"] == outcome]
+        discordant_profiles[outcome] = {
+            "n": len(selected),
+            "base_failure_labels": dict(sorted(Counter(x["base"]["failure_label"] for x in selected).items())),
+            "v8_failure_labels": dict(sorted(Counter(x["v8"]["failure_label"] for x in selected).items())),
+            "base_stop_reasons": dict(sorted(Counter(x["base"]["stop_reason"] for x in selected).items())),
+            "v8_stop_reasons": dict(sorted(Counter(x["v8"]["stop_reason"] for x in selected).items())),
+            "base_with_tool_errors": sum(x["base"]["tool_errors"] > 0 for x in selected),
+            "v8_with_tool_errors": sum(x["v8"]["tool_errors"] > 0 for x in selected),
+            "base_no_tool_calls": sum(x["base"]["tool_calls"] == 0 for x in selected),
+            "v8_no_tool_calls": sum(x["v8"]["tool_calls"] == 0 for x in selected),
+            "base_total_tool_calls": sum(x["base"]["tool_calls"] for x in selected),
+            "v8_total_tool_calls": sum(x["v8"]["tool_calls"] for x in selected),
+            "base_capability_gaps": sum(bool(x["base"]["capability_gap"]) for x in selected),
+            "v8_capability_gaps": sum(bool(x["v8"]["capability_gap"]) for x in selected),
+        }
     report = {
         "schema_version": "v8-gaia100-observational-paired-audit/v1",
         "run_id": 44980055775, "n": expected_n, "shards_per_arm": shard_count,
@@ -135,6 +153,7 @@ def analyze(root: Path, expected_n=EXPECTED_N, shard_count=20, assert_frozen=Tru
             for (outcome,sig),n in sorted(error_code_changes.items())
         ],
         "changed_15_cases": matched,
+        "discordant_profiles": discordant_profiles,
         "warning": "Tool use/finalization labels cannot identify why correctness changed; manual trajectory review required.",
         "promotion_allowed": False,
     }
@@ -154,6 +173,7 @@ def main():
         "regressions": report["outcomes"].get("regression", 0),
         "exact_mcnemar_p": report["mcnemar_two_sided_exact_p"],
         "route_signals": report["route_change_signals"],
+        "discordant_profiles": report["discordant_profiles"],
     }), flush=True)
 
 if __name__ == "__main__":
