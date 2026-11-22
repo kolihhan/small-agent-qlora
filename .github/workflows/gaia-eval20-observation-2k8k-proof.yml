@@ -1,0 +1,243 @@
+name: PROOF GAIA Eval20 v8 step70 observation 2k vs 8k paired A/B
+on:
+  push:
+    branches: [research/gaia-observation-2k8k-20261123]
+    paths: [.github/workflows/gaia-eval20-observation-2k8k-proof.yml]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: gaia-eval20-observation-2k8k-proof-20261123
+  cancel-in-progress: true
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  BASE_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  BASE_SHA: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLM_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLM_SHA: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+
+
+jobs:
+  paired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - name: Install fixed evaluation runtime and verify heldout selection
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev,search,files,eval]'
+          python -m pytest -q tests/test_gaia100.py tests/test_gaia_sharding.py tests/test_gaia_leakage_gate_research.py tests/test_gaia_evidence_stop_cap8k20.py
+          test -n "$HF_TOKEN" || { echo "GAIA_HF_TOKEN_UNAVAILABLE"; exit 42; }
+          python - <<'PY'
+          from gaia_small_agent.benchmark.gaia100 import QUOTAS, SHADOW_QUOTAS
+          assert sum(SHADOW_QUOTAS.values())==25
+          assert sum(QUOTAS.values())==100
+          print("FIXED_ALREADY_SEEN_EVALUATION100_SCREEN20_READY")
+          PY
+      - name: Download identical original Qwen3.5-9B and pinned llama server
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model /tmp/llama-bin adapter
+          curl -fL --retry 5 --retry-delay 3 "$BASE_URL" -o model/base.gguf
+          echo "$BASE_SHA  model/base.gguf" | sha256sum -c -
+          curl -fL --retry 5 --retry-delay 3 "$LLM_URL" -o /tmp/llama.tar.gz
+          echo "$LLM_SHA  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER=$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -n1)
+          test -x "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 45037819202
+          name: qwen35-9b-v8-stage70-verified-lora-gguf
+          github-token: ${{ github.token }}
+          path: adapter
+      - name: Verify actual v8-step70 GGUF and checksum from pinned converter run
+        shell: bash
+        run: |
+          set -euo pipefail
+          GGUF=$(find adapter -type f -name 'v8-stage70-adapter-f16.gguf' -print -quit)
+          SHAFILE=$(find adapter -type f -name 'v8-stage70-adapter.sha256' -print -quit)
+          test -n "$GGUF" && test -s "$GGUF"
+          test -n "$SHAFILE" && test -s "$SHAFILE"
+          checksum=$(cut -d' ' -f1 "$SHAFILE")
+          test "$checksum" = "$(sha256sum "$GGUF" | cut -d' ' -f1)"
+          test "$(head -c 4 "$GGUF")" = GGUF
+          echo "V8_SHA=$checksum" >> "$GITHUB_ENV"
+          echo "V8_GGUF=$GGUF" >> "$GITHUB_ENV"
+          echo "VERIFIED_ACTUAL_V8_STEP70_GGUF_ADAPTER"
+      - name: Actually run identical QLoRA adapter under normal vs evidence-stop decision cap8k
+        shell: bash
+        run: |
+          set -euo pipefail
+          shard=${{ matrix.shard }}
+          for arm in cap2k cap8k; do
+            extra=(--lora "$V8_GGUF")
+            addon=(--max-tool-observation-chars 2000)
+            if [ "$arm" = cap8k ]; then addon=(--max-tool-observation-chars 8000); fi
+            mkdir -p "runs/$arm/shard-$shard"
+            "$LLAMA_SERVER" -m model/base.gguf "${extra[@]}" \
+              --alias qwen3.5-9b --host 127.0.0.1 --port 8080 \
+              --ctx-size 16384 --threads 4 --parallel 1 --jinja \
+              --reasoning-budget 0 --temperature 0 \
+              > "/tmp/llama-obs20-$arm.log" 2>&1 &
+            pid=$!
+            trap 'kill "$pid" 2>/dev/null || true' EXIT
+            for i in {1..180}; do
+              if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then break; fi
+              sleep 2
+            done
+            curl -fsS http://127.0.0.1:8080/health >/dev/null
+            python scripts/run_gaia_eval_shard.py \
+              --partition evaluation --benchmark-leakage-gate "${addon[@]}" \
+              --backend openai_compat --model qwen3.5-9b \
+              --openai-base-url http://127.0.0.1:8080 \
+              --hf-token "$HF_TOKEN" --shard-index "$shard" --shard-count 20 \
+              --work-root "runs/$arm/shard-$shard" \
+              --output "runs/$arm/shard-$shard/summary.json" \
+              > "/tmp/gaia-obs20-$arm-private-log" 2>&1 || {
+                echo "GAIA_OBS2K8K_EPISODE_FAILED_PRIVATE_TRACE_NOT_EXPORTED"; exit 1;
+              }
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            trap - EXIT
+          done
+          python - <<'PY'
+          import json, hashlib, os
+          from pathlib import Path
+          shard=int(os.environ.get('MATRIX_SHARD', '${{ matrix.shard }}'))
+          cohorts={}
+          for arm in ('cap2k','cap8k'):
+              root=Path(f'runs/{arm}/shard-{shard}')
+              meta=json.loads((root/'summary.json').read_text())
+              assert meta.get('partition')=='evaluation'
+              rows=[json.loads(l) for l in (root/'results.jsonl').read_text().splitlines() if l.strip()]
+              assert len(rows)==5 and len({r['task_id'] for r in rows})==5
+              cohorts[arm]={r['task_id']:r for r in rows}
+          assert set(cohorts['cap2k'])==set(cohorts['cap8k']), 'unmatched tasks'
+          safe=[]
+          for task_id in sorted(cohorts['cap2k']):
+              a,b=cohorts['cap2k'][task_id],cohorts['cap8k'][task_id]
+              safe.append({
+                'id_sha256':hashlib.sha256(('gaia-eval20-stop-v1:'+task_id).encode()).hexdigest(),
+                'level':a['level'],
+                'cap2k_correct':bool(a['correct']),
+                'cap8k_correct':bool(b['correct']),
+                'cap2k_completed':bool(a['completed']),
+                'cap8k_completed':bool(b['completed']),
+                'cap2k_tools':int(a['tool_calls']),
+                'cap8k_tools':int(b['tool_calls']),
+                'cap2k_steps':int(a['steps']),
+                'cap8k_steps':int(b['steps']),
+                'cap2k_stop_reason':str(a['stop_reason']),
+                'cap8k_stop_reason':str(b['stop_reason']),
+                'cap2k_tool_errors':int(a['tool_errors']),
+                'cap8k_tool_errors':int(b['tool_errors']),
+                'cap2k_duplicate_blocks':int(a['duplicate_calls_blocked']),
+                'cap8k_duplicate_blocks':int(b['duplicate_calls_blocked']),
+                'capability_gap':bool(a['capability_gap'] or b['capability_gap']),
+                'cap2k_truncated_observations':sum(
+                    e['kind']=='tool_result' and '[truncated' in str(e['data'].get('content',''))
+                    for e in a['trace']),
+                'cap8k_truncated_observations':sum(
+                    e['kind']=='tool_result' and '[truncated' in str(e['data'].get('content',''))
+                    for e in b['trace']),
+              })
+          obj={'protocol':'GAIA-QWEN-V8-OBS2K8K-EVAL20-V1',
+               'shard':shard,'n_tasks':5,'original_model_sha':os.environ['BASE_SHA'],
+               'v8stage70_adapter_sha':os.environ['V8_SHA'],
+               'source_partition':'evaluation',
+               'same_model_weights_tools_steps_and_leakage_gate':True,
+               'only_experimental_variable':'max_tool_observation_chars_2000_vs_8000',
+               'no_trajectories_or_answers_uploaded':True,
+               'cases':safe}
+          Path('safe').mkdir(exist_ok=True)
+          Path(f'safe/shard-{shard}.json').write_text(json.dumps(obj,sort_keys=True,indent=2)+'\n')
+          print('GAIA_EVAL20_PAIRED_STOP_SHARD',shard,'CONTROL',sum(r['cap2k_correct'] for r in safe),
+                'CONTRACT',sum(r['cap8k_correct'] for r in safe))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: GAIA-EVAL20-OBS2K8K-SAFE-SHARD-${{ matrix.shard }}
+          path: safe/shard-${{ matrix.shard }}.json
+          if-no-files-found: warn
+          retention-days: 21
+
+  official_paired_score:
+    needs: paired
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: GAIA-EVAL20-OBS2K8K-SAFE-SHARD-*
+          merge-multiple: true
+          path: evidence
+      - name: Aggregate exactly 20 previously seen Evaluation100 task success results with matched QLoRA
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          files=sorted(Path('evidence').glob('shard-*.json'))
+          assert len(files)==4
+          cases=[];seen=set()
+          for index,path in enumerate(files):
+              d=json.loads(path.read_text())
+              assert d['protocol']=='GAIA-QWEN-V8-OBS2K8K-EVAL20-V1'
+              assert d['shard']==index and d['n_tasks']==5
+              assert d['source_partition']=='evaluation' and d['no_trajectories_or_answers_uploaded']
+              assert len(d['cases'])==5
+              for row in d['cases']:
+                  assert row['id_sha256'] not in seen
+                  seen.add(row['id_sha256'])
+                  cases.append(row)
+          assert len(seen)==20
+          assert all(x['cap2k_stop_reason'] in ('final','invalid_final','max_steps','empty_final','model_error','model_timeout','model_unavailable','model_capacity') for x in cases)
+          assert all(x['cap8k_stop_reason'] in ('final','invalid_final','max_steps','empty_final','model_error','model_timeout','model_unavailable','model_capacity') for x in cases)
+          base=sum(x['cap2k_correct'] for x in cases)
+          trained=sum(x['cap8k_correct'] for x in cases)
+          result={
+              'protocol':'GAIA-QWEN-V8-OBS2K8K-EVAL20-V1',
+              'n_tasks':20,'source_partition':'previously_seen_Evaluation100_subset20',
+              'cap2k_correct':base,'cap8k_correct':trained,
+              'rescues':sum(x['cap8k_correct'] and not x['cap2k_correct'] for x in cases),
+              'regressions':sum(x['cap2k_correct'] and not x['cap8k_correct'] for x in cases),
+              'cap2k_completed':sum(x['cap2k_completed'] for x in cases),
+              'cap8k_completed':sum(x['cap8k_completed'] for x in cases),
+              'cap2k_tool_calls':sum(x['cap2k_tools'] for x in cases),
+              'cap8k_tool_calls':sum(x['cap8k_tools'] for x in cases),
+              'cap2k_invalid_final':sum(x['cap2k_stop_reason']=='invalid_final' for x in cases),
+              'cap8k_invalid_final':sum(x['cap8k_stop_reason']=='invalid_final' for x in cases),
+              'cap2k_tool_errors':sum(x['cap2k_tool_errors'] for x in cases),
+              'cap8k_tool_errors':sum(x['cap8k_tool_errors'] for x in cases),
+              'cap2k_duplicate_blocks':sum(x['cap2k_duplicate_blocks'] for x in cases),
+              'cap8k_duplicate_blocks':sum(x['cap8k_duplicate_blocks'] for x in cases),
+              'cap2k_truncated_observations':sum(x['cap2k_truncated_observations'] for x in cases),
+              'cap8k_truncated_observations':sum(x['cap8k_truncated_observations'] for x in cases),
+              'known_multimodal_capability_gaps':sum(x['capability_gap'] for x in cases),
+              'same_v8_adapter_for_both_arms':True,
+              'all_20_paired':True,'no_training':True,
+              'not_completed_v8_stage100':True,
+              'limitation':'Already-exposed public Evaluation100 subset20; exploratory screen, not hidden independent test or a GAIA100 score',
+              'case_level_safe_only':cases,
+          }
+          Path('GAIA-EVAL20-obs2k8k-score.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          print('GAIA_REAL_TASK_SUCCESS_OBS2K8K_EVAL20',json.dumps({k:v for k,v in result.items() if k!='case_level_safe_only'}))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: GAIA-EVAL20-OBS2K8K-PAIRED-SCORE
+          path: GAIA-EVAL20-obs2k8k-score.json
+          if-no-files-found: error
+          retention-days: 21
