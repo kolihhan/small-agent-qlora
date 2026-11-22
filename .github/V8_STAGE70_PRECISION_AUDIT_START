@@ -1,0 +1,1 @@
+Audit original Colab v8 stage70 compute_dtype to compare with actual stage100 BF16. Pure CPU, read-only, no GPU, no GAIA or model promotion.
