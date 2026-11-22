@@ -1,0 +1,168 @@
+name: PREREG Step100 Stop/Continue non-GAIA MuSiQue24 transfer
+on:
+  push:
+    branches: [research/gaia-stop-transfer-musique24-prereg-20261123]
+    paths: [.github/workflows/musique24-step100-stop-transfer-prereg.yml]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: step100-stop-musique24-prereg-transfer-20261123
+  cancel-in-progress: true
+env:
+  BASE_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  BASE_SHA: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLM_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLM_SHA: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+
+jobs:
+  paired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - name: Enforce predeclared source, selection and gate tests before model inference
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev,search,files,eval]'
+          python -m pytest -q tests/test_stop_transfer_musique24_prereg.py tests/test_gaia_evidence_stop_contract20.py
+      - name: Load immutable MuSiQue24 source-ready artifact from before any GAIA20 outcome
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 43683645483
+          name: qwen9b-v8-musique24-autonomous-source-ready-if-verified
+          github-token: ${{ github.token }}
+          path: frozen
+      - name: Validate heldout physical source SHA and train/holdout split
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'e6253660ac6b834041f4ac48dd5c930a3b37ce71654d0a1261bf182c756b6b0f  frozen/v8-musique24-full-workspace.jsonl' | sha256sum -c -
+          python - <<'PY'
+          from pathlib import Path
+          from scripts.eval_step100_stop_transfer_musique24 import frozen_tasks
+          tasks=frozen_tasks(Path('frozen/v8-musique24-full-workspace.jsonl'),Path('frozen/v8-musique24-source-reconstruction-report.json'))
+          assert len(tasks)==24
+          print('FROZEN_NON_GAIA_MUSIQUE24_HOLDOUT_VERIFIED')
+          PY
+      - name: Pin base Qwen3.5-9B and identical inference engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model /tmp/llama-bin adapter
+          curl -fL --retry 5 --retry-delay 3 "$BASE_URL" -o model/base.gguf
+          echo "$BASE_SHA  model/base.gguf" | sha256sum -c -
+          curl -fL --retry 5 --retry-delay 3 "$LLM_URL" -o /tmp/llama.tar.gz
+          echo "$LLM_SHA  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER=$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -n1)
+          test -x "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+      - name: Obtain audited BF16-continuous Step100 adapter, not Step70
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44980055775
+          name: gaia-v8-audited-gguf
+          github-token: ${{ github.token }}
+          path: adapter
+      - name: Verify complete Step100 provenance and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          GGUF=$(find adapter -type f -name v8-qlora-adapter.gguf -print -quit)
+          MANIFEST=$(find adapter -type f -name gguf-conversion-manifest.json -print -quit)
+          test -s "$GGUF" && test -s "$MANIFEST"
+          checksum=$(python -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["training_run_id"]==44925307580 and m["training_steps"]==100 and m["model"]=="Qwen/Qwen3.5-9B"; print(m["gguf_adapter_sha256"])' "$MANIFEST")
+          test "$checksum" = "$(sha256sum "$GGUF" | cut -d' ' -f1)"
+          test "$(head -c 4 "$GGUF")" = GGUF
+          echo "V8_GGUF=$GGUF" >> "$GITHUB_ENV"
+          echo "VERIFIED_QWEN_STAGE100_TRANSFER_ADAPTER"
+      - name: Actual autonomous closed-loop MuSiQue24 same-model matched A/B, counterbalanced order
+        shell: bash
+        run: |
+          set -euo pipefail
+          shard=${{ matrix.shard }}
+          arms=(control stop)
+          if (( shard % 2 == 1 )); then arms=(stop control); fi
+          for arm in "${arms[@]}"; do
+            mkdir -p "runs/$arm/shard-$shard" safe
+            "$LLAMA_SERVER" -m model/base.gguf --lora "$V8_GGUF" \
+              --alias qwen3.5-9b --host 127.0.0.1 --port 8080 \
+              --ctx-size 16384 --threads 4 --parallel 1 --jinja \
+              --reasoning-budget 0 --temperature 0 \
+              > "/tmp/musique24-stage100-$arm-server.log" 2>&1 &
+            pid=$!
+            trap 'kill "$pid" 2>/dev/null || true' EXIT
+            for i in {1..180}; do
+              if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then break; fi
+              sleep 2
+            done
+            curl -fsS http://127.0.0.1:8080/health >/dev/null
+            python -m scripts.eval_step100_stop_transfer_musique24 \
+              --tasks frozen/v8-musique24-full-workspace.jsonl \
+              --source-report frozen/v8-musique24-source-reconstruction-report.json \
+              --shard "$shard" --arm "$arm" \
+              --base-url http://127.0.0.1:8080 \
+              --work-root "runs/$arm/shard-$shard" \
+              --output "safe/shard-$shard-$arm.json" \
+              > "/tmp/musique24-stage100-$arm-private-evaluation.log" 2>&1 || {
+                echo "MUSIQUE24_TRANSFER_EPISODE_FAILED_PRIVATE_TASKS_NOT_EXPORTED"; exit 1;
+              }
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            trap - EXIT
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          shard=${{ matrix.shard }}
+          rows={}
+          for arm in ('control','stop'):
+              d=json.loads(Path(f'safe/shard-{shard}-{arm}.json').read_text())
+              assert d['shard']==shard and len(d['cases'])==6
+              rows[arm]={row['id_sha256']:row for row in d['cases']}
+          assert rows['control'].keys()==rows['stop'].keys()
+          print("MUSIQUE24_STAGE100_PAIRED_NON_GAIA", shard,
+                "base",sum(x['correct'] for x in rows['control'].values()),
+                "stop",sum(x['correct'] for x in rows['stop'].values()))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: MU24-ST100-STOP-TRANSFER-SAFE-SHARD-${{ matrix.shard }}
+          path: safe/shard-${{ matrix.shard }}-*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  official_paired_transfer:
+    needs: paired
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: MU24-ST100-STOP-TRANSFER-SAFE-SHARD-*
+          merge-multiple: true
+          path: safe
+      - name: Score all 24 matched MuSiQue tasks and enforce prereg gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.score_step100_stop_transfer_musique24 \
+            --evidence-dir safe --output MU24-ST100-STOP-TRANSFER-PREREG-SCORE.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: MU24-ST100-STOP-TRANSFER-PREREG-SCORE
+          path: MU24-ST100-STOP-TRANSFER-PREREG-SCORE.json
+          if-no-files-found: error
+          retention-days: 30
