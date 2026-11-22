@@ -10,6 +10,7 @@ prefix replay. This is an evidence acquisition preflight, not SFT data.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from contextlib import redirect_stdout, redirect_stderr
 from hashlib import sha256
 import io
@@ -22,6 +23,8 @@ import sys
 SEED = "appworld-train-source-feasibility-fixed-prelabel-20261122"
 UPSTREAM_SHA = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
 N_SCENES = 12
+CASE_PREFIX = "APPWORLD_SAFE_CASE="
+STAGES = frozenset({"official_success", "official_failed", "init_failed", "metadata_failed", "execute_failed", "evaluate_failed", "unclassified"})
 
 
 def digest(value: str) -> str:
@@ -51,6 +54,9 @@ def safe_summary(rows: list[dict], *, source_sha256: str, sample_sha256: str) ->
         count = row.get("publisher_api_call_count")
         if count is not None and (type(count) is not int or count < 0):
             raise ValueError("invalid_publisher_api_count")
+    stage_counts = Counter(row.get("stage", "unclassified") for row in rows)
+    if not set(stage_counts) <= STAGES:
+        raise ValueError("invalid_official_replay_stage")
     successful = sum(int(row["official_expert_success"]) for row in rows)
     observed_depth = sum(row.get("publisher_api_call_count") is not None for row in rows)
     depth_ge7 = sum(
@@ -63,6 +69,7 @@ def safe_summary(rows: list[dict], *, source_sha256: str, sample_sha256: str) ->
         "fixed_prelabel_selection_sha256": sample_sha256,
         "n_distinct_train_task_families": len(rows),
         "official_expert_terminal_success": successful,
+        "official_failure_phase_counts": dict(sorted(stage_counts.items())),
         "publisher_api_depth_observed": observed_depth,
         "publisher_declared_api_depth_at_least_7": depth_ge7,
         "verified_native_agent_long_horizon_success": 0,
@@ -74,54 +81,93 @@ def safe_summary(rows: list[dict], *, source_sha256: str, sample_sha256: str) ->
     }
 
 
-def probe() -> dict:
+def _case_result(index: int) -> dict:
+    """One official world in one short-lived process (SDK monkeypatches globally)."""
     from appworld import AppWorld, load_task_ids
 
     roster = load_task_ids("train")
     chosen = select_train_tasks(roster)
-    roster_sha = digest("\n".join(sorted(roster)))
-    selected_sha = digest("\n".join(chosen))
-    rows: list[dict] = []
-    for i, task_id in enumerate(chosen):
-        stdout, stderr = io.StringIO(), io.StringIO()
-        success = False
-        declared_api_count = None
-        try:
-            with redirect_stdout(stdout), redirect_stderr(stderr):
-                with AppWorld(
-                    task_id=task_id,
-                    experiment_name=f"private-expert-source-probe-{i}",
-                    ground_truth_mode="full",
-                    timeout_seconds=180,
-                ) as world:
-                    gt = world.task.ground_truth
-                    declared = getattr(gt, "api_calls", None)
-                    if isinstance(declared, (list, tuple)):
-                        declared_api_count = len(declared)
-                    code = gt.compiled_solution_code
-                    # Never persist or print official solution/feedback.
-                    world.execute(code + "\nsolution(apis, requester)")
-                    tracker = world.evaluate(suppress_errors=True)
-                    success = bool(tracker.success)
-        except Exception:
-            # AppWorld errors may include credentials or task text.
-            success = False
-        finally:
-            stdout.close()
-            stderr.close()
-        rows.append({
-            "official_expert_success": success,
-            "publisher_api_call_count": declared_api_count,
-        })
-    return safe_summary(rows, source_sha256=roster_sha, sample_sha256=selected_sha)
+    if index not in range(len(chosen)):
+        raise ValueError("invalid_fixed_case_index")
+    stdout, stderr = io.StringIO(), io.StringIO()
+    stage = "init_failed"
+    api_count = None
+    try:
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            with AppWorld(
+                task_id=chosen[index],
+                experiment_name=f"private-expert-source-probe-{index}",
+                ground_truth_mode="full",
+                raise_on_failure=False,
+                timeout_seconds=180,
+            ) as world:
+                stage = "metadata_failed"
+                gt = world.task.ground_truth
+                declared = getattr(gt, "api_calls", None)
+                if isinstance(declared, (list, tuple)):
+                    api_count = len(declared)
+                stage = "execute_failed"
+                code = gt.compiled_solution_code
+                # Official source program stays in private memory only.
+                world.execute(code + "\nsolution(apis, requester)")
+                stage = "evaluate_failed"
+                result = world.evaluate(suppress_errors=True)
+                stage = "official_success" if bool(result.success) else "official_failed"
+    except Exception:
+        # The SDK exception can contain task identifiers and API credentials.
+        pass
+    finally:
+        stdout.close()
+        stderr.close()
+    return {
+        "index": index,
+        "official_expert_success": stage == "official_success",
+        "publisher_api_call_count": api_count,
+        "stage": stage,
+    }
 
+
+def probe() -> dict:
+    """Recompute the source-only selection; replay each case in a fresh process."""
+    from appworld import load_task_ids
+
+    roster = load_task_ids("train")
+    chosen = select_train_tasks(roster)
+    rows = []
+    for index in range(len(chosen)):
+        case = subprocess.run(
+            [sys.executable, "-m", "scripts.appworld_expert_source_probe",
+             "--case", str(index), "--out", "unused"],
+            capture_output=True, text=True, check=False, timeout=240,
+        )
+        if case.returncode:
+            raise ValueError("private_official_case_process_failed")
+        matches = [line[len(CASE_PREFIX):] for line in case.stdout.splitlines()
+                   if line.startswith(CASE_PREFIX)]
+        if len(matches) != 1:
+            raise ValueError("missing_or_duplicate_private_case_receipt")
+        try:
+            row = json.loads(matches[0])
+        except (ValueError, TypeError) as exc:
+            raise ValueError("malformed_private_case_receipt") from exc
+        if (not isinstance(row, dict) or set(row) != {
+                "index", "official_expert_success", "publisher_api_call_count", "stage"}
+                or row["index"] != index or row["stage"] not in STAGES):
+            raise ValueError("invalid_private_case_receipt")
+        del row["index"]
+        rows.append(row)
+    return safe_summary(
+        rows,
+        source_sha256=digest("\n".join(sorted(roster))),
+        sample_sha256=digest("\n".join(chosen)),
+    )
 
 
 SAFE_PREFIX = "APPWORLD_SAFE_AGGREGATE="
 SAFE_FIELDS = frozenset({
     "protocol", "upstream_sdk_commit", "source_roster_sha256",
     "fixed_prelabel_selection_sha256", "n_distinct_train_task_families",
-    "official_expert_terminal_success", "publisher_api_depth_observed",
+    "official_expert_terminal_success", "official_failure_phase_counts", "publisher_api_depth_observed",
     "publisher_declared_api_depth_at_least_7",
     "verified_native_agent_long_horizon_success", "native_prefix_state_replays",
     "native_stop_labels", "research_decision", "no_qwen_or_training",
@@ -158,7 +204,11 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--out", required=True, type=Path)
     p.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--case", type=int, help=argparse.SUPPRESS)
     args = p.parse_args()
+    if args.case is not None:
+        print(CASE_PREFIX + json.dumps(_case_result(args.case), sort_keys=True))
+        return
     if args.worker:
         # The official SDK's sandbox patches pathlib/shutil in this process.
         # No I/O is attempted after the AppWorld work: only safe stdout.
