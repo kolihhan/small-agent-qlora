@@ -72,6 +72,7 @@ def test_final_only_retry_generates_a_fresh_model_answer_without_tools(tmp_path)
     assert model.calls==2 and out.completed and out.answer=="42"
     assert [e.kind for e in out.trace]==["final_retry_requested","final"]
     assert out.trace[1].data["recovery"]=="second_model_response"
+    assert out.metrics.final_text_retries==1 and out.metrics.protocol_json_retries==0
 
 
 def test_final_retry_never_treats_more_tool_markup_as_an_answer(tmp_path):
@@ -91,3 +92,20 @@ def test_second_final_must_not_contain_native_tool_call(tmp_path):
     model=FinalModel(AssistantTurn("",[ToolCall("x","read",{"source":"w"})]))
     out=AgentRuntime(model,[],max_steps=1,final_text_retry=True).run("What is 6*7?",tmp_path)
     assert not out.completed and out.stop_reason=="invalid_final"
+
+
+def test_json_protocol_retry_is_tracked_by_runtime_metric(tmp_path):
+    class Once:
+        def __init__(self): self.n=0
+        def complete(self,messages,tools):
+            self.n+=1
+            if self.n==1:
+                raise ModelRuntimeError("model_error","Invalid tool arguments JSON: missing brace")
+            return AssistantTurn("42")
+        def complete_final(self,messages,tools):
+            return AssistantTurn("42")
+    model=ProtocolRepairModel(Once(),max_retries=2)
+    out=AgentRuntime(model,[],max_steps=3).run("Answer 6*7",tmp_path)
+    assert out.completed and out.answer=="42"
+    assert out.metrics.protocol_json_retries==1
+    assert out.metrics.final_text_retries==0
