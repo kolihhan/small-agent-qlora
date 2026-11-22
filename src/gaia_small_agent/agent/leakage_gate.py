@@ -14,6 +14,9 @@ from gaia_small_agent.tools.base import ToolResult
 _BENCHMARK = re.compile(r"\bgaia\b.{0,70}\b(?:benchmark|evaluation|dataset|task|question|answer|solution)\b|\b(?:benchmark|evaluation|dataset)\b.{0,70}\bgaia\b", re.I | re.S)
 _ANSWER_FIELD = re.compile(r"\b(?:ground[_ -]?truth|gold[_ -]?answer|correct[_ -]?answer|reference[_ -]?answer|final[_ -]?answer)\b", re.I)
 _TASK_MARKER = re.compile(r"\b(?:task[_ -]?id|gaia[_ -]?task|gaia[_ -]?question)\b", re.I)
+_GAIA_SOURCE_PATH = re.compile(r"gaia[_/-](?:filtered|validation|benchmark|dataset|task|answer|solution)|/gaia[_/-]|gaia\\.jsonl", re.I)
+_BENCHMARK_CASE_STUDY = re.compile(r"(?:AI\\s+Agents?\\s+Challenge|GAIA\\s+benchmark).{0,250}(?:my\\s+approach|my\\s+solutions?|worked\\s+example|task\\s+solution)|(?:my\\s+approach|my\\s+solutions?).{0,120}(?:AI\\s+Agents?\\s+Challenge|GAIA\\s+benchmark)",re.I|re.S)
+_TASK_QA_RECORD = re.compile(r"\\btask\\s*id\\s*:\\s*[0-9a-f]{8}(?:-[0-9a-f]{4})?.{0,300}\\bquestion\\s*:",re.I|re.S)
 _ANSWER_TABLE = re.compile(r"\b(?:question|prompt)\s*[:|].{0,250}\b(?:answer|response|solution)\s*[:|]", re.I | re.S)
 _WORD = re.compile(r"[A-Za-z0-9]{3,}")
 
@@ -32,6 +35,12 @@ def leakage_signals(query: str, content: str) -> tuple[str, ...]:
     """Conservative suspect flags. False negatives are possible."""
     if not isinstance(content, str) or not content:
         return ()
+    if _GAIA_SOURCE_PATH.search(content):
+        return ("PUBLIC_GAIA_ANSWER_CORPUS",)
+    if _TASK_QA_RECORD.search(content):
+        return ("PUBLISHED_BENCHMARK_TASK_RECORD",)
+    if _BENCHMARK_CASE_STUDY.search(content):
+        return ("AGENT_BENCHMARK_SOLUTION_WALKTHROUGH",)
     benchmark = bool(_BENCHMARK.search(content))
     if benchmark and (_ANSWER_FIELD.search(content) or _TASK_MARKER.search(content)):
         return ("BENCHMARK_WITH_ANSWER_KEY",)
