@@ -29,6 +29,7 @@ def test_retry_only_invalid_json_with_one_native_tool_call():
     assert base.calls==2 and wrap.protocol_retries==1 and wrap.protocol_retry_successes==1
     assert len(original)==1
     assert "well-formed" in base.copy[-1]["content"]
+    assert base.copy[-1]["role"]=="user"
 
 
 def test_non_parser_model_error_does_not_retry():
