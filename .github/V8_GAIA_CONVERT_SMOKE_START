@@ -1,1 +1,1 @@
-Only CPU-only real stage70 LoRA -> pinned llama.cpp GGUF converter compatibility check. Owner's v8 GAIA100 event remains blocked until verified Colab step100; no GAIA, no GPU, no new training.
+Owner-approved one CPU-only retry: stage70 physical LoRA -> llama.cpp GGUF using pinned Qwen3.5-capable Transformers, no training or GPU, 2026-11-22.
