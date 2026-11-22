@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 
 from gaia_small_agent.agent.loop import AgentRuntime, MAX_TOOL_OBSERVATION_CHARS
+from gaia_small_agent.agent.leakage_gate import LeakageGate
 from gaia_small_agent.benchmark.gaia100 import GAIA_REVISION, LOCAL_PROTOCOL_SEED, load_validation, select_gaia_partition
 import gaia_small_agent.benchmark.runner as gaia_runner
 from gaia_small_agent.benchmark.sharding import shard_selected_rows
@@ -33,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--work-root", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--thinking", action="store_true")
+    parser.add_argument("--benchmark-leakage-gate", action="store_true", help="research only; gold-blind suppress public benchmark solutions")
     return parser
 
 
@@ -86,7 +88,8 @@ def main() -> int:
     tool_names = tool_preflight["tool_names"]
 
     def factory() -> AgentRuntime:
-        return AgentRuntime(build_model(args), default_tools(), max_steps=12)
+        return AgentRuntime(build_model(args), default_tools(), max_steps=12,
+                            observation_filter=LeakageGate() if args.benchmark_leakage_gate else None)
 
     run_config = {
         "backend": args.backend,
@@ -95,6 +98,7 @@ def main() -> int:
         "max_steps": 12,
         "max_new_tokens": 512,
         "thinking": args.thinking,
+        "benchmark_leakage_gate": bool(args.benchmark_leakage_gate),
         "quantize_4bit": None,
         "seed": LOCAL_PROTOCOL_SEED,
         "dataset_revision": GAIA_REVISION,
