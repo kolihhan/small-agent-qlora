@@ -74,9 +74,11 @@ class AgentRuntime:
                 trace.append(TraceEvent("model_capacity", step, {}))
                 return AgentResult("", False, "model_capacity", trace, metrics)
             except ModelRuntimeError as exc:
+                metrics.protocol_json_retries = int(getattr(self.model, "protocol_retries", 0))
                 trace.append(TraceEvent("model_error", step, {"stop_reason": exc.stop_reason, "message": exc.message}))
                 return AgentResult("", False, exc.stop_reason, trace, metrics)
 
+            metrics.protocol_json_retries = int(getattr(self.model, "protocol_retries", 0))
             if not turn.tool_calls:
                 answer = (turn.content or "").strip()
                 if not answer:
@@ -86,6 +88,7 @@ class AgentRuntime:
                     if final_only and self.final_text_retry:
                         complete_final = getattr(self.model, "complete_final", None)
                         if callable(complete_final):
+                            metrics.final_text_retries += 1
                             trace.append(TraceEvent("final_retry_requested", step, {"cause": "textual_tool_call", "extra_model_calls": 1}))
                             retry_messages = list(messages) + [{
                                 "role": "user",
@@ -99,8 +102,10 @@ class AgentRuntime:
                             try:
                                 retry_turn = complete_final(retry_messages, tool_definitions)
                             except (ModelRuntimeError, ModelCapacityError) as exc:
+                                metrics.protocol_json_retries = int(getattr(self.model, "protocol_retries", 0))
                                 trace.append(TraceEvent("final_retry_failed", step, {"reason": type(exc).__name__}))
                             else:
+                                metrics.protocol_json_retries = int(getattr(self.model, "protocol_retries", 0))
                                 revised = (retry_turn.content or "").strip()
                                 if not retry_turn.tool_calls and revised and not _looks_like_textual_tool_call(revised):
                                     trace.append(TraceEvent("final", step, {"answer": revised, "recovery": "second_model_response"}))
