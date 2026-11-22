@@ -3,7 +3,10 @@ on:
   workflow_dispatch:
   push:
     branches: [research/v8-gaia100-regression-audit-20261122]
-    paths: [.github/workflows/v8-gaia100-regression-audit.yml]
+    paths:
+      - .github/workflows/v8-gaia100-regression-audit.yml
+      - scripts/audit_v8_gaia100_paired_regressions.py
+      - tests/test_audit_v8_gaia100_paired_regressions.py
 permissions:
   contents: read
   actions: read
