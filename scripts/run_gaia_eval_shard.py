@@ -38,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--benchmark-leakage-gate", action="store_true", help="research only; gold-blind suppress public benchmark solutions")
     parser.add_argument("--protocol-json-retry", action="store_true", help="research only; retry malformed native tool arguments at most twice per task")
     parser.add_argument("--final-text-retry", action="store_true", help="research only; one extra final-only response if last step emits textual tool call")
+    parser.add_argument("--partition", choices=("evaluation", "shadow"), default="evaluation", help="research-only frozen partition; never change existing evaluation default")
     return parser
 
 
@@ -79,7 +80,7 @@ def main() -> int:
         tool_preflight = preflight_eval_tools(workspace)
 
     dataset = load_validation("gaia-benchmark/GAIA", token=args.hf_token, revision=GAIA_REVISION)
-    full_selection = select_gaia_partition(dataset, partition="evaluation", seed=LOCAL_PROTOCOL_SEED)
+    full_selection = select_gaia_partition(dataset, partition=args.partition, seed=LOCAL_PROTOCOL_SEED)
     shard = shard_selected_rows(full_selection, shard_index=args.shard_index, shard_count=args.shard_count)
     if not shard:
         raise SystemExit("selected GAIA shard is empty")
@@ -114,7 +115,7 @@ def main() -> int:
         "seed": LOCAL_PROTOCOL_SEED,
         "dataset_revision": GAIA_REVISION,
         "tool_observation_max_chars": MAX_TOOL_OBSERVATION_CHARS,
-        "partition": "evaluation",
+        "partition": args.partition,
         "cache_implementation": None,
         "tool_names": tool_names,
         "shard_index": args.shard_index,
@@ -134,7 +135,7 @@ def main() -> int:
             manifest_path=None,
             dataset_revision=GAIA_REVISION,
             run_config=run_config,
-            partition="evaluation",
+            partition=args.partition,
         )
     finally:
         gaia_runner.select_gaia_partition = original_selector
@@ -144,7 +145,7 @@ def main() -> int:
 
     payload = {
         "schema_version": "gaia-9b-shard/v1",
-        "benchmark": "GAIA 2023 validation / frozen Evaluation100",
+        "benchmark": ("GAIA 2023 validation / reserved Shadow25" if args.partition == "shadow" else "GAIA 2023 validation / frozen Evaluation100"),
         "dataset_revision": GAIA_REVISION,
         "seed": LOCAL_PROTOCOL_SEED,
         "backend": args.backend,
