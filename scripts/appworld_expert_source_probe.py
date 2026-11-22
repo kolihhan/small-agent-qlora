@@ -16,6 +16,8 @@ import io
 import json
 from pathlib import Path
 import re
+import subprocess
+import sys
 
 SEED = "appworld-train-source-feasibility-fixed-prelabel-20261122"
 UPSTREAM_SHA = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
@@ -114,14 +116,66 @@ def probe() -> dict:
     return safe_summary(rows, source_sha256=roster_sha, sample_sha256=selected_sha)
 
 
+
+SAFE_PREFIX = "APPWORLD_SAFE_AGGREGATE="
+SAFE_FIELDS = frozenset({
+    "protocol", "upstream_sdk_commit", "source_roster_sha256",
+    "fixed_prelabel_selection_sha256", "n_distinct_train_task_families",
+    "official_expert_terminal_success", "publisher_api_depth_observed",
+    "publisher_declared_api_depth_at_least_7",
+    "verified_native_agent_long_horizon_success", "native_prefix_state_replays",
+    "native_stop_labels", "research_decision", "no_qwen_or_training",
+    "no_raw_task_solutions_states_credentials_or_trace_export",
+})
+
+
+def parse_safe_worker_output(stdout: str) -> dict:
+    """Parse only one explicitly marked, strictly allowlisted worker result."""
+    rows = [line[len(SAFE_PREFIX):] for line in stdout.splitlines()
+            if line.startswith(SAFE_PREFIX)]
+    if len(rows) != 1:
+        raise ValueError("worker_safe_report_missing_or_duplicate")
+    try:
+        d = json.loads(rows[0])
+    except (ValueError, TypeError) as exc:
+        raise ValueError("invalid_worker_json") from exc
+    if (not isinstance(d, dict) or set(d) != SAFE_FIELDS
+            or d.get("protocol") != "APPWORLD-EXPERT-TRAIN-SOURCE-FEASIBILITY-CPU-V1"
+            or d.get("upstream_sdk_commit") != UPSTREAM_SHA
+            or d.get("no_qwen_or_training") is not True
+            or d.get("no_raw_task_solutions_states_credentials_or_trace_export") is not True):
+        raise ValueError("unsafe_worker_report_schema")
+    if (type(d.get("n_distinct_train_task_families")) is not int
+            or d["n_distinct_train_task_families"] < 1
+            or d.get("native_stop_labels") != {
+                "STOP": 0, "CONTINUE": 0, "UNKNOWN": d["n_distinct_train_task_families"]
+            }):
+        raise ValueError("unexpected_native_supervision_claim")
+    return d
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--out", required=True, type=Path)
+    p.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args()
+    if args.worker:
+        # The official SDK's sandbox patches pathlib/shutil in this process.
+        # No I/O is attempted after the AppWorld work: only safe stdout.
+        print(SAFE_PREFIX + json.dumps(probe(), sort_keys=True))
+        return
     if args.out.exists():
         raise FileExistsError("immutable_probe_output")
-    result = probe()
     args.out.parent.mkdir(parents=True, exist_ok=True)
+    child = subprocess.run(
+        [sys.executable, "-m", "scripts.appworld_expert_source_probe",
+         "--worker", "--out", str(args.out)],
+        capture_output=True, text=True, timeout=900, check=False,
+    )
+    # Never log raw child stdout/stderr; SDK errors may contain protected data.
+    if child.returncode:
+        raise SystemExit("private_appworld_worker_failed_no_sensitive_logs")
+    result = parse_safe_worker_output(child.stdout)
     args.out.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     print("OFFICIAL_EXPERT_SOURCE_FEASIBILITY_COUNTS", json.dumps({
         "tasks": result["n_distinct_train_task_families"],
