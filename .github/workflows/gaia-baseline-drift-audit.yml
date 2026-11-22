@@ -1,0 +1,34 @@
+name: GAIA original Base9 versus Base20 strict provenance replay (no Qwen)
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/v8-gaia100-regression-audit-20261122]
+    paths: [.github/workflows/gaia-baseline-drift-audit.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  cpu-provenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download all original GAIA100 Base-v8 matched shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44980055775
+          github-token: ${{ github.token }}
+          pattern: gaia-v8-paired-shard-*
+          path: evidence
+      - name: Cross-check both historical workflow identities and latest 100 paired raw results
+        run: python -u scripts/audit_baseline_drift_9_to_20.py
+      - name: Upload locked observational baseline drift verdict
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaia-base9-vs-base20-provenance-audit
+          path: audit/gaia-base9-to-base20.json
+          if-no-files-found: error
+          retention-days: 30
