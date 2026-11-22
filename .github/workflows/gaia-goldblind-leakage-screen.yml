@@ -1,0 +1,43 @@
+name: Gold-blind GAIA research search leak guard retrospective CPU test
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/gaia-search-leakage-gate-20261122]
+    paths:
+      - .github/workflows/gaia-goldblind-leakage-screen.yml
+      - scripts/audit_gaia_goldblind_leakage.py
+      - src/gaia_small_agent/agent/leakage_gate.py
+      - src/gaia_small_agent/agent/loop.py
+      - tests/test_gaia_leakage_gate_research.py
+permissions:
+  contents: read
+  actions: read
+jobs:
+  research-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: |
+          python -m pip install -e '.[dev]'
+          python -m pytest -q tests/test_gaia_leakage_gate_research.py
+      - name: Retrieve original 20 paired GAIA100 shard artifacts — no reference answers or new inference
+        uses: actions/download-artifact@v4
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44980055775
+          github-token: ${{ github.token }}
+          pattern: gaia-v8-paired-shard-*
+          path: evidence
+      - name: Scan 200 raw tool traces for benchmark source exposure, without gold
+        run: |
+          python -u scripts/audit_gaia_goldblind_leakage.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GAIA-GOLDBLIND-LEAKAGE-SCREEN-EXPOSED100
+          path: audit/gaia-v8-goldblind-leakage-screen.json
+          if-no-files-found: error
+          retention-days: 30
