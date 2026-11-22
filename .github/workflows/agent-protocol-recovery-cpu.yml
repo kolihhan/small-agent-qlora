@@ -7,6 +7,9 @@ on:
       - .github/workflows/agent-protocol-recovery-cpu.yml
       - src/gaia_small_agent/protocol_recovery.py
       - src/gaia_small_agent/agent/loop.py
+      - src/gaia_small_agent/agent/types.py
+      - src/gaia_small_agent/benchmark/runner.py
+      - scripts/run_gaia_eval_shard.py
       - scripts/audit_protocol_recovery_opportunities.py
       - tests/test_protocol_recovery_research.py
 permissions:
