@@ -58,3 +58,18 @@ def test_runtime_gate_blocks_before_model_and_counts_as_error(tmp_path):
     assert out.metrics.tool_successes==0
     assert out.answer=="abstain"
     assert not any("1786" in str(x.data) for x in out.trace)
+
+
+def test_reject_public_gaia_validation_corpus_source_without_reading_any_gold():
+    hit="1. data/gaia_validation.jsonl at public dataset mirror https://example.org/gaia_validation.jsonl"
+    assert leakage_signals(QUESTION,hit)==("PUBLIC_GAIA_ANSWER_CORPUS",)
+
+def test_reject_published_task_question_answer_record_without_gaia_keyword():
+    hit="Task ID: 1f975693-876d-457b-a649-393859e79bf3. Level 1 Question: Which answer is listed? In this case the answer is four."
+    assert leakage_signals(QUESTION,hit)==("PUBLISHED_BENCHMARK_TASK_RECORD",)
+
+def test_reject_agents_challenge_solution_walkthrough_and_preserve_real_page():
+    hit="Making AI think and act: my approach to the Hugging Face AI Agents Challenge"
+    assert leakage_signals(QUESTION,hit)==("AGENT_BENCHMARK_SOLUTION_WALKTHROUGH",)
+    normal="Hugging Face Agents Course: Introductions to building agents and tools"
+    assert not leakage_signals(QUESTION,normal)
