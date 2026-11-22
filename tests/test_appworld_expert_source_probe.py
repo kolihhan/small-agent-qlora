@@ -48,3 +48,14 @@ def test_worker_output_accepts_only_safe_schema_and_never_returns_raw_logs():
         parse_safe_worker_output("potential private SDK log ignored\n")
     with pytest.raises(ValueError):
         parse_safe_worker_output(line+"\n"+line)
+
+
+def test_official_replay_failure_reasons_are_counted_without_raw_data():
+    rows=[
+        {"official_expert_success":False,"publisher_api_call_count":None,"stage":"init_failed"},
+        {"official_expert_success":False,"publisher_api_call_count":5,"stage":"official_failed"},
+        {"official_expert_success":True,"publisher_api_call_count":8,"stage":"official_success"},
+    ]
+    d=safe_summary(rows,source_sha256="b"*64,sample_sha256="a"*64)
+    assert d["official_failure_phase_counts"]=={"init_failed":1,"official_failed":1,"official_success":1}
+    assert "task_ids" not in d
