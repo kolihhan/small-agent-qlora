@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import time
 from pathlib import Path
 
 from gaia_small_agent.agent.loop import AgentRuntime
@@ -79,7 +80,9 @@ def evaluate(tasks: list[dict], *, shard: int, arm: str, base_url: str, work_roo
             model, default_tools(), max_steps=12,
             evidence_stop_contract=(arm == "stop"),
         )
+        started = time.monotonic()
         result = agent.run(task["question"], workspace)
+        elapsed_s = round(time.monotonic() - started, 3)
         safe.append({
             "id_sha256": hashlib.sha256(("musique24-transfer-v1:" + ident).encode()).hexdigest(),
             "hop_count": int(row["hop_count"]),
@@ -87,6 +90,7 @@ def evaluate(tasks: list[dict], *, shard: int, arm: str, base_url: str, work_roo
             "completed": bool(result.completed),
             "stop_reason": str(result.stop_reason),
             "steps": result.metrics.steps,
+            "elapsed_s": elapsed_s,
             "tool_calls": result.metrics.tool_calls,
             "tool_errors": result.metrics.tool_errors,
             "duplicate_calls_blocked": result.metrics.duplicate_calls_blocked,
