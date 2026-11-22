@@ -59,7 +59,7 @@ jobs:
           assert set(d)=={
               'protocol','upstream_sdk_commit','source_roster_sha256',
               'fixed_prelabel_selection_sha256','n_distinct_train_task_families',
-              'official_expert_terminal_success','publisher_api_depth_observed',
+              'official_expert_terminal_success','official_failure_phase_counts','publisher_api_depth_observed',
               'publisher_declared_api_depth_at_least_7',
               'verified_native_agent_long_horizon_success','native_prefix_state_replays',
               'native_stop_labels','research_decision','no_qwen_or_training',
