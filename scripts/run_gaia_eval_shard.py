@@ -39,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--protocol-json-retry", action="store_true", help="research only; retry malformed native tool arguments at most twice per task")
     parser.add_argument("--final-text-retry", action="store_true", help="research only; one extra final-only response if last step emits textual tool call")
     parser.add_argument("--partition", choices=("evaluation", "shadow"), default="evaluation", help="research-only frozen partition; never change existing evaluation default")
+    parser.add_argument("--evidence-stop-contract", action="store_true", help="research-only self-decision evidence stop/continue instruction; does not force final")
     return parser
 
 
@@ -97,7 +98,8 @@ def main() -> int:
             model = ProtocolRepairModel(model, max_retries=2)
         return AgentRuntime(model, default_tools(), max_steps=12,
                             observation_filter=LeakageGate() if args.benchmark_leakage_gate else None,
-                            final_text_retry=args.final_text_retry)
+                            final_text_retry=args.final_text_retry,
+                            evidence_stop_contract=args.evidence_stop_contract)
 
     run_config = {
         "backend": args.backend,
@@ -109,6 +111,7 @@ def main() -> int:
         "benchmark_leakage_gate": bool(args.benchmark_leakage_gate),
         "protocol_json_retry": bool(args.protocol_json_retry),
         "final_text_retry": bool(args.final_text_retry),
+        "evidence_stop_contract": bool(args.evidence_stop_contract),
         "max_additional_protocol_calls_per_task": 2 if args.protocol_json_retry else 0,
         "max_additional_final_calls_per_task": 1 if args.final_text_retry else 0,
         "quantize_4bit": None,
