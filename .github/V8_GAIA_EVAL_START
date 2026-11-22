@@ -1,0 +1,1 @@
+Manual Chat-triggered one-shot GAIA2023 matched Evaluation100 Base vs Qwen3.5-9B v8, after BF16 step70/step100 full-state physical SHA auditing, reproducible CPU LoRA conversion smoke #44979814191 passed. No training, no scheduler, no GPU. Run once; reject all incomplete or SHA-mismatched artifacts. 2026-11-22.
