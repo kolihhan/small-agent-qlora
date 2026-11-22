@@ -1,0 +1,44 @@
+name: Read-only posthoc audit of 8 GAIA v8 rescues and 7 regressions
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/v8-gaia100-regression-audit-20261122]
+    paths: [.github/workflows/v8-gaia100-regression-audit.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  retrospective-no-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run synthetic pairing / privacy contract tests
+        run: |
+          python -m pip install -q pytest
+          python -m pytest -q tests/test_audit_v8_gaia100_paired_regressions.py
+      - name: Retrieve the same 20 scored GAIA100 shards (no inference or training)
+        uses: actions/download-artifact@v4
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44980055775
+          github-token: ${{ github.token }}
+          pattern: gaia-v8-paired-shard-*
+          path: evidence
+      - name: Score paired 100 identities and profile every rescue / regression
+        run: |
+          python -u scripts/audit_v8_gaia100_paired_regressions.py \
+            --root evidence \
+            --output audit/gaia-v8-paired-regression-report.json
+      - name: Upload privacy-safe observational case audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaia-v8-15-discordant-case-trace-audit
+          path: audit/gaia-v8-paired-regression-report.json
+          if-no-files-found: error
+          retention-days: 30
