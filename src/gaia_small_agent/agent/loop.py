@@ -48,11 +48,16 @@ class AgentRuntime:
     def __init__(self, model: Model, tools: list[Tool], max_steps: int = 12,
                  observation_filter: Callable[[str, ToolResult, str], ToolResult] | None = None,
                  final_text_retry: bool = False,
-                 evidence_stop_contract: bool = False):
+                 evidence_stop_contract: bool = False,
+                 max_tool_observation_chars: int = MAX_TOOL_OBSERVATION_CHARS):
         self.model = model
         self.observation_filter = observation_filter
         self.final_text_retry = bool(final_text_retry)
         self.evidence_stop_contract = bool(evidence_stop_contract)
+        if (isinstance(max_tool_observation_chars, bool) or not isinstance(max_tool_observation_chars, int)
+                or not 500 <= max_tool_observation_chars <= 30000):
+            raise ValueError('max_tool_observation_chars must be an int in [500, 30000]')
+        self.max_tool_observation_chars = max_tool_observation_chars
         self.tools = {tool.name: tool for tool in tools}
         self.max_steps = max_steps
 
@@ -193,7 +198,7 @@ class AgentRuntime:
                                 metrics.tool_errors += 1
                     seen[key] = result
 
-                obs, delivered_metadata = result.bounded_observation(MAX_TOOL_OBSERVATION_CHARS)
+                obs, delivered_metadata = result.bounded_observation(self.max_tool_observation_chars)
                 trace.append(TraceEvent("tool_result", step, {
                     "id": call.id,
                     "name": call.name,
