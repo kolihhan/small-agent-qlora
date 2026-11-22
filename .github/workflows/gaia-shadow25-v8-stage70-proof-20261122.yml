@@ -65,12 +65,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -s adapter/converted/v8-stage70-adapter-f16.gguf
-          test -s adapter/converted/v8-stage70-adapter.sha256
-          checksum=$(cut -d' ' -f1 adapter/converted/v8-stage70-adapter.sha256)
-          test "$checksum" = "$(sha256sum adapter/converted/v8-stage70-adapter-f16.gguf | cut -d' ' -f1)"
-          test "$(head -c 4 adapter/converted/v8-stage70-adapter-f16.gguf)" = GGUF
+          GGUF=$(find adapter -type f -name 'v8-stage70-adapter-f16.gguf' -print -quit)
+          SHAFILE=$(find adapter -type f -name 'v8-stage70-adapter.sha256' -print -quit)
+          test -n "$GGUF" && test -s "$GGUF"
+          test -n "$SHAFILE" && test -s "$SHAFILE"
+          checksum=$(cut -d' ' -f1 "$SHAFILE")
+          test "$checksum" = "$(sha256sum "$GGUF" | cut -d' ' -f1)"
+          test "$(head -c 4 "$GGUF")" = GGUF
           echo "V8_SHA=$checksum" >> "$GITHUB_ENV"
+          echo "V8_GGUF=$GGUF" >> "$GITHUB_ENV"
           echo "VERIFIED_ACTUAL_V8_STEP70_GGUF_ADAPTER"
       - name: Actually run original Qwen Base and QLoRA-v8stage70 matched real tool-agent episodes
         shell: bash
@@ -79,7 +82,7 @@ jobs:
           shard=${{ matrix.shard }}
           for arm in base v8stage70; do
             extra=()
-            if [ "$arm" = v8stage70 ]; then extra=(--lora adapter/converted/v8-stage70-adapter-f16.gguf); fi
+            if [ "$arm" = v8stage70 ]; then extra=(--lora "$V8_GGUF"); fi
             mkdir -p "runs/$arm/shard-$shard"
             "$LLAMA_SERVER" -m model/base.gguf "${extra[@]}" \
               --alias qwen3.5-9b --host 127.0.0.1 --port 8080 \
