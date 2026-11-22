@@ -1,0 +1,74 @@
+name: V8 stage100 quarantine read-only physical dtype audit
+on:
+  push:
+    branches: [research/v8-stage100-resume-20261121]
+    paths: [.github/V8_STAGE100_QUARANTINE_AUDIT_START]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  physical-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Download exact user-approved Colab training archive without GPU
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44925307580
+          github-token: ${{ github.token }}
+          name: qlora-v8-stage100-full-state-if-trained
+          path: physical
+      - name: Independently audit no-promotion quarantine and physical hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,zipfile
+          from pathlib import Path
+          root=Path('physical')
+          assert sorted(p.name for p in root.iterdir())==['qlora-v8-stage100-UNVERIFIED.zip'], 'NOT_EXACTLY_ONE_UNVERIFIED_ARCHIVE'
+          path=root/'qlora-v8-stage100-UNVERIFIED.zip'
+          with zipfile.ZipFile(path) as z:
+              names=z.namelist()
+              assert len(names)==len(set(names))
+              required={'stage100-verified-report.json','run_config.json',
+                         *(f'checkpoint-100/{x}' for x in (
+                          'adapter_model.safetensors','adapter_config.json',
+                          'optimizer.pt','scheduler.pt','rng_state.pth','trainer_state.json'))}
+              print('STAGE100_ALL_REQUIRED_FILES_PRESENT',required.issubset(names))
+              cfg=json.loads(z.read('run_config.json'))
+              report=json.loads(z.read('stage100-verified-report.json'))
+              state=json.loads(z.read('checkpoint-100/trainer_state.json'))
+              assert report['full_v8_completed'] is False
+              print('STAGE100_FAILED_CHECKS',json.dumps(report.get('failed_checks')))
+              print('STAGE100_EXPECTED_COMPUTE_DTYPE','torch.float16')
+              print('STAGE100_ACTUAL_COMPUTE_DTYPE',repr(cfg.get('compute_dtype')))
+              print('STAGE100_REPORTED_COMPUTE_DTYPE',repr(report.get('compute_dtype')))
+              print('STAGE100_TRAINER_STEP',state.get('global_step'))
+              print('STAGE100_TRAINER_MAX_STEPS',state.get('max_steps'))
+              print('STAGE100_CONFIG_MODEL',repr(cfg.get('model')))
+              print('STAGE100_CONFIG_SAVE_STEPS',cfg.get('save_steps'))
+              print('STAGE100_CONFIG_TRAIN_EXAMPLES',cfg.get('training_examples'))
+              print('STAGE100_CONFIG_RESUME_MATCH',
+                    cfg.get('resume_from_checkpoint') == '/content/qlora-v8-adapter/checkpoint-70')
+              print('STAGE100_CONFIG_LOAD_DTYPE',repr(cfg.get('load_dtype')))
+              print('STAGE100_ADAPTER_BASE_MODEL',
+                    repr(json.loads(z.read('checkpoint-100/adapter_config.json')).get('base_model_name_or_path')))
+              fields=[('adapter_model.safetensors','adapter_sha256'),
+                      ('optimizer.pt','optimizer_sha256'),
+                      ('scheduler.pt','scheduler_sha256'),('rng_state.pth','rng_sha256')]
+              for fname,field in fields:
+                  target='checkpoint-100/'+fname
+                  if target not in names: print('STAGE100_PHYSICAL_SHA',fname,'MISSING'); continue
+                  digest=hashlib.sha256()
+                  with z.open(target) as file:
+                      for block in iter(lambda: file.read(4*1024*1024),b''):digest.update(block)
+                  print('STAGE100_PHYSICAL_SHA',fname,'MATCH' if digest.hexdigest()==report.get(field) else 'MISMATCH')
+              assert report.get('failed_checks')==['compute_dtype'], 'OTHER_FAILURES_NOT_DIAGNOSED'
+          print('STAGE100_QUARANTINE_AUDIT_COMPLETE_NO_PROMOTION',path.stat().st_size)
+          PY
