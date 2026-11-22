@@ -32,7 +32,7 @@ class ProtocolRepairModel:
                 raise
             self.protocol_retries += 1
             # Fresh same-turn retry, without exposing the malformed arguments to tools.
-            retry_messages = list(messages) + [{"role": "system", "content": _FORMAT_PROMPT}]
+            retry_messages = list(messages) + [{"role": "user", "content": _FORMAT_PROMPT}]
             try:
                 result = perform(retry_messages, tools)
             except ModelRuntimeError:
