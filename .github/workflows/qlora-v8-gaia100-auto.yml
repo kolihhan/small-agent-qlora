@@ -25,7 +25,10 @@ jobs:
     steps:
       - name: Checkout v8 physical checkpoint gate
         uses: actions/checkout@v4
-      - name: Reject failed or substituted training run before any eval
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+      - name: Require the exact original training run (accept audited BF16 only)
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -40,11 +43,11 @@ jobs:
           })
           with urllib.request.urlopen(req, timeout=30) as response:
               run=json.load(response)
-          assert run["status"]=="completed" and run["conclusion"]=="success", "TRAINING_NOT_SUCCESSFUL"
+          assert run["status"]=="completed" and run["conclusion"]=="failure", "NOT_THE_EXPECTED_QUARANTINED_RUN"
           assert run["head_sha"]=="4121d87e485fbbb8c0775a26b8975399b2e2cef4", "TRAINING_COMMIT_DRIFT"
           assert run["head_branch"]=="research/v8-stage100-resume-20261121"
           assert run["name"]=="Resume same Qwen9B v8 QLoRA from verified checkpoint70 to full step100"
-          print("V8_TRAINING_SUCCESS_VERIFIED",run["id"])
+          print("V8_EXACT_QUARANTINED_RUN_MATCHED",run["id"])
           PY
       - name: Download original step100 artifact from frozen Colab run
         uses: actions/download-artifact@v4
@@ -58,9 +61,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test ! -e source/qlora-v8-stage100-UNVERIFIED.zip
-          test -s source/qlora-v8-stage100-checkpoint.zip
-          python scripts/gaia_v8_stage100_gate.py source/qlora-v8-stage100-checkpoint.zip --extract-adapter adapter --output-report stage100-report.json
+          test -s source/qlora-v8-stage100-UNVERIFIED.zip
+          test ! -e source/qlora-v8-stage100-checkpoint.zip
+          python scripts/gaia_v8_stage100_gate.py source/qlora-v8-stage100-UNVERIFIED.zip --extract-adapter adapter --output-report stage100-report.json
+          grep -q '"evaluation_acceptance": "audited_bf16_continuity"' stage100-report.json
           test "$(stat -c%s adapter/adapter_model.safetensors)" -gt 1000000
       - name: Convert verified Qwen3.5-9B PEFT LoRA to GGUF with frozen llama.cpp
         shell: bash
@@ -70,6 +74,7 @@ jobs:
           git clone -q --depth 1 --branch b11541 https://github.com/ggml-org/llama.cpp.git /tmp/llama-convert
           test "$(git -C /tmp/llama-convert rev-parse HEAD)" = "f2918cabbffe8abf8e2a90c1c089085fa116c2cf"
           python -m pip install -q -r /tmp/llama-convert/requirements/requirements-convert_lora_to_gguf.txt
+          python -m pip install -q "git+https://github.com/huggingface/transformers.git@2f1bc5e321b9a736200a590d6e7743ccdeb60772"
           python /tmp/llama-convert/convert_lora_to_gguf.py --base-model-id Qwen/Qwen3.5-9B --outtype f16 --outfile v8-qlora-adapter.gguf adapter
           test "$(stat -c%s v8-qlora-adapter.gguf)" -gt 1000000
           python - <<'PY'
@@ -85,10 +90,10 @@ jobs:
           Path("gguf-conversion-manifest.json").write_text(json.dumps(out,sort_keys=True,indent=2)+"\n")
           print("V8_VERIFIED_CONVERSION_SHA256",out["gguf_adapter_sha256"])
           PY
-      - name: Upload verified model adapter for all 20 independent shards
+      - name: Upload BF16-audited model adapter for GAIA100
         uses: actions/upload-artifact@v4
         with:
-          name: gaia-v8-verified-gguf
+          name: gaia-v8-audited-gguf
           path: |
             v8-qlora-adapter.gguf
             gguf-conversion-manifest.json
@@ -134,10 +139,10 @@ jobs:
           test -n "$SERVER"
           echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
 
-      - name: Download verified v8 adapter produced after step100 gate
+      - name: Download audited v8 adapter produced after physical step100 gate
         uses: actions/download-artifact@v4
         with:
-          name: gaia-v8-verified-gguf
+          name: gaia-v8-audited-gguf
           path: matched-input/v8
       - name: Reverify transformed adapter SHA against its manifest
         shell: bash
