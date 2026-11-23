@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Protocol, Callable
 
 from .types import AgentResult, AssistantTurn, ModelCapacityError, ModelRuntimeError, RunMetrics, TraceEvent
+from .evidence_state import EvidenceState
 from ..tools.base import Tool, ToolResult
 
 
@@ -48,11 +49,13 @@ class AgentRuntime:
     def __init__(self, model: Model, tools: list[Tool], max_steps: int = 12,
                  observation_filter: Callable[[str, ToolResult, str], ToolResult] | None = None,
                  final_text_retry: bool = False,
-                 evidence_stop_contract: bool = False):
+                 evidence_stop_contract: bool = False,
+                 evidence_state: bool = False):
         self.model = model
         self.observation_filter = observation_filter
         self.final_text_retry = bool(final_text_retry)
         self.evidence_stop_contract = bool(evidence_stop_contract)
+        self.evidence_state = bool(evidence_state)
         self.tools = {tool.name: tool for tool in tools}
         self.max_steps = max_steps
 
@@ -67,6 +70,7 @@ class AgentRuntime:
         metrics = RunMetrics()
         seen: dict[str, ToolResult] = {}
         retry_counts: dict[str, int] = {}
+        ledger = EvidenceState(question) if self.evidence_state else None
         tool_definitions = [tool.definition() for tool in self.tools.values()]
 
         for step in range(1, self.max_steps + 1):
@@ -193,7 +197,18 @@ class AgentRuntime:
                                 metrics.tool_errors += 1
                     seen[key] = result
 
-                obs, delivered_metadata = result.bounded_observation(MAX_TOOL_OBSERVATION_CHARS)
+                if ledger is None:
+                    obs, delivered_metadata = result.bounded_observation(MAX_TOOL_OBSERVATION_CHARS)
+                else:
+                    # Extract ONLY from a shorter already-visible read preview.
+                    # Model receives the same 2k observation cap in both arms.
+                    preview, _ = result.bounded_observation(1590)
+                    ledger.observe(call.name, call.arguments, ok=result.ok, observation=preview)
+                    index = ledger.summary()
+                    obs, delivered_metadata = result.bounded_observation(
+                        MAX_TOOL_OBSERVATION_CHARS - len(index)
+                    )
+                    obs += index
                 trace.append(TraceEvent("tool_result", step, {
                     "id": call.id,
                     "name": call.name,
