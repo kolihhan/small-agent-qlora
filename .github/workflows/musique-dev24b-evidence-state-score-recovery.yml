@@ -58,3 +58,5 @@ jobs:
           path: safe/MUDEV24B-EVIDENCE-STATE-STEP100-PREREG-SCORE.json
           if-no-files-found: error
           retention-days: 30
+
+# CPU-only score recovery trigger: reuse immutable run 45104088600 shards 0,1,3 and 45104501119 shard 2.
