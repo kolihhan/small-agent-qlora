@@ -1,0 +1,87 @@
+name: QLoRA v9 matched source token-length audit (CPU only)
+on:
+  push:
+    branches: [research/v9-real-source-recovery-contrast-20261123]
+    paths: [.github/workflows/v9-token-budget-cpu.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - name: Download original v8 exact 798-action source
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 43619541894
+          name: qlora-v8-protected-source-balanced-token-checked
+          github-token: ${{ github.token }}
+          path: original
+      - name: Download exact v9 44-error-context source from validated CPU run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 45130385017
+          name: V9-REAL-SOURCE-RECOVERY-TRAIN-CANDIDATE-IF-VERIFIED
+          github-token: ${{ github.token }}
+          path: candidate
+      - name: Exact Qwen3.5 tokenizer; source content stays private, report counts only
+        run: |
+          set -euo pipefail
+          python -m pip install -e .
+          python -m pip install 'transformers>=5.15,<6' 'jinja2>=3.1' 'sentencepiece>=0.2'
+          mkdir -p safe
+          python - <<'PY'
+          from pathlib import Path
+          from hashlib import sha256
+          from collections import Counter
+          import json
+          from transformers import AutoTokenizer
+          from gaia_small_agent.training.qlora import load_verified_rows,_render_turn_examples
+          original=Path('original/qlora-v8-train.jsonl')
+          candidate=Path('candidate/qlora-v9-error-context-train.jsonl')
+          assert sha256(original.read_bytes()).hexdigest()=='203a643b9ef809bad311a4adad0ef24caccd9505f3fb3f8981ab95da5d999ac7'
+          assert sha256(candidate.read_bytes()).hexdigest()=='66ae5bab40a46b5247abbdc47b46f4a2ca4f86dd5445d3304830d65408feb7c6'
+          t=AutoTokenizer.from_pretrained('Qwen/Qwen3.5-9B',trust_remote_code=True)
+          results={}
+          for name,path in [('original',original),('candidate',candidate)]:
+              r=load_verified_rows(path)
+              rendered=_render_turn_examples(t,r)
+              assert len(r)==304 and len(rendered)==798
+              lengths=[len(t(x['prompt'],add_special_tokens=False)['input_ids']) +
+                       len(t(x['completion'],add_special_tokens=False)['input_ids'])
+                       for x in rendered]
+              assert len(lengths)==798
+              results[name]=lengths
+          before,after=results['original'],results['candidate']
+          report={
+              'protocol':'v9-Qwen3.5-9B-token-budget-original-vs-error-conditioned-v1',
+              'n_actions':len(before),'n_parents':304,
+              'original_max_tokens':max(before),'candidate_max_tokens':max(after),
+              'original_over3200':sum(x>3200 for x in before),
+              'candidate_over3200':sum(x>3200 for x in after),
+              'introduced_over3200':sum(a<=3200<b for a,b in zip(before,after)),
+              'original_over4096':sum(x>4096 for x in before),
+              'candidate_over4096':sum(x>4096 for x in after),
+              'modified_action_count':sum(a!=b for a,b in zip(before,after)),
+              'max_added_tokens':max(b-a for a,b in zip(before,after)),
+              'max_removed_tokens':min(b-a for a,b in zip(before,after)),
+              'safe_for_original_3200_context':sum(a<=3200<b for a,b in zip(before,after))==0,
+              'model_training_performed':False,'data_or_answers_exported':False,
+          }
+          Path('safe/v9-token-budget-aggregate.json').write_text(json.dumps(report,sort_keys=True,indent=2)+'\n')
+          print('V9_REAL_SOURCE_TOKEN_BUDGET',json.dumps(report,sort_keys=True))
+          PY
+      - name: Save count-only context budget proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: V9-REAL-SOURCE-TOKEN-BUDGET-AGGREGATE
+          path: safe/v9-token-budget-aggregate.json
+          if-no-files-found: warn
+          retention-days: 21
