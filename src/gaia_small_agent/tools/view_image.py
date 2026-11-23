@@ -34,7 +34,7 @@ class ViewImageTool(Tool):
     MAX_RESPONSE_CHARS = 1800
     PROMPT = (
         "Describe only what is directly visible in this image. Note the main objects, "
-        "text and numbers (if legible), spatial relationships, any chart axes/legends, "
+        "visible colors, text and numbers (if legible), spatial relationships, any chart axes/legends, "
         "and uncertainty. Do not invent unreadable text, hidden context, sources, "
         "or an answer to a question not shown here. Be factual and concise."
     )
