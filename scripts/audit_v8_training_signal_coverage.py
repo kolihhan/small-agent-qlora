@@ -23,7 +23,7 @@ EXPECTED_SOURCES = {
     "finqa-train",
     "musique-train",
 }
-ERROR_TOKENS = ("toolerror[", "[error]", "tool error:", "error_code:")
+ERROR_TOKENS = ("toolerror[", "error[", "[error]", "tool error:", "error_code:")
 
 
 def sha(path: Path) -> str:
