@@ -20,6 +20,12 @@ When you have enough evidence, return the final answer concisely.
 Do not reveal hidden chain-of-thought; tool calls and short factual status are sufficient.
 """
 MAX_TOOL_OBSERVATION_CHARS = 2000
+FINALIZATION_NUDGE = (
+    "\nYou are at the final two agent steps. Stop searching now. "
+    "Give the final answer immediately; do not call a tool. "
+    "Use only evidence already observed. Return only the short answer, "
+    "without explanation, Markdown, or extra text.\n"
+)
 _RETRYABLE_TOOL_ERRORS = frozenset({
     "SEARCH_TIMEOUT",
     "SEARCH_ERROR",
@@ -36,10 +42,14 @@ def _looks_like_textual_tool_call(content: str) -> bool:
 
 
 class AgentRuntime:
-    def __init__(self, model: Model, tools: list[Tool], max_steps: int = 12):
+    def __init__(
+        self, model: Model, tools: list[Tool], max_steps: int = 12,
+        *, finalization_nudge: bool = False,
+    ):
         self.model = model
         self.tools = {tool.name: tool for tool in tools}
         self.max_steps = max_steps
+        self.finalization_nudge = finalization_nudge
 
     def run(self, question: str, workspace: str | Path) -> AgentResult:
         workspace = Path(workspace)
@@ -57,15 +67,22 @@ class AgentRuntime:
         for step in range(1, self.max_steps + 1):
             metrics.steps = step
             final_only = step == self.max_steps
+            # Opt-in only. Do not modify the persisted transcript or baseline behavior.
+            model_messages = messages
+            if self.finalization_nudge and step >= max(1, self.max_steps - 1):
+                model_messages = [
+                    {**messages[0], "content": messages[0]["content"] + FINALIZATION_NUDGE},
+                    *messages[1:],
+                ]
             try:
                 if final_only:
                     complete_final = getattr(self.model, "complete_final", None)
                     if callable(complete_final):
-                        turn = complete_final(messages, tool_definitions)
+                        turn = complete_final(model_messages, tool_definitions)
                     else:
-                        turn = self.model.complete(messages, [])
+                        turn = self.model.complete(model_messages, [])
                 else:
-                    turn = self.model.complete(messages, tool_definitions)
+                    turn = self.model.complete(model_messages, tool_definitions)
             except ModelCapacityError:
                 trace.append(TraceEvent("model_capacity", step, {}))
                 return AgentResult("", False, "model_capacity", trace, metrics)
