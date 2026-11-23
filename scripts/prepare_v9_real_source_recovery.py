@@ -1,14 +1,14 @@
-"""One-variable v9 QLoRA *data-only* hypothesis: real-source error-conditioned next actions.
+"""Prepare v9 evidence-grounded *real-source* failure-conditioned QLoRA training.
 
-Replace the input context (NOT the target action, task, final answer, assistant
-supervision count, tool schema or training-parent order) for one source-grounded
-read action in some genuine TRAIN trajectories. Simulate a missing read via the
-actual ReadTool against the task's files; next selected action is the source's
-original correct read. This is a SYNTHETIC FAILURE on a REAL-SOURCE TASK, not
-an observed model recovery. No GAIA, MuSiQue DEV or heldout source is used.
+Controlled change: preserve original 304 TRAIN parents and 798 selected
+assistant targets. Inject a real ReadTool NOT_FOUND observation before ONE
+originally source-visible, label-safe read action per eligible MuSiQue TRAIN
+parent, using physical reconstruction from immutable MuSiQue source bytes.
 
-This script prepares a candidate corpus and provenance report. It does NOT
-train a model or claim improved accuracy.
+Error is deliberately induced by a synthetic filename typo, NOT observed
+autonomous agent behavior. No oracle answer, support flag or decomposition is
+introduced into model input; the next-action target was already selected by
+v8's visible-link gate. Training and GAIA evaluation are NOT performed here.
 """
 from __future__ import annotations
 
@@ -23,230 +23,230 @@ from gaia_small_agent.agent.loop import MAX_TOOL_OBSERVATION_CHARS
 from gaia_small_agent.tools import default_tools
 from gaia_small_agent.training.trajectories import _materialize_files
 
-ORIGINAL_TRAIN_SHA = "203a643b9ef809bad311a4adad0ef24caccd9505f3fb3f8981ab95da5d999ac7"
-SEED = "step100-qlora-v9-realsource-tool-miss-20261123-fixed-v1"
-ELIGIBLE = {"2wikimultihopqa-train", "hotpotqa-distractor-train", "finqa-train"}
-EXPECTED_PARENTS, EXPECTED_ACTIONS = 304, 798
+TRAIN_SHA = "203a643b9ef809bad311a4adad0ef24caccd9505f3fb3f8981ab95da5d999ac7"
+MUSIQUE_TRAIN_SHA = "83a75b1e11e4e9bb8f8308e72ac40ca617ae4431b3a0d955b61cab259248490a"
+SEED = "v9-mu-verified-read-fail-recovery-20261123-frozen-1"
+N_PARENTS, N_ACTIONS = 304, 798
 
 
-def _serialized_rows(path: Path) -> list[dict]:
-    return [json.loads(s) for s in path.read_text(encoding="utf8").splitlines() if s.strip()]
+def _jsonl(path: Path) -> list[dict]:
+    return [json.loads(x) for x in path.read_text(encoding="utf8").splitlines() if x.strip()]
 
 
-def _read_action(message: dict) -> str | None:
-    if message.get("role") != "assistant":
+def _read_source(msg: dict) -> str | None:
+    if msg.get("role") != "assistant":
         return None
-    calls = message.get("tool_calls") or []
-    if len(calls) != 1 or not isinstance(calls[0], dict):
+    calls=msg.get("tool_calls") or []
+    if len(calls)!=1:
         return None
-    func = calls[0].get("function") or {}
-    if func.get("name") != "read":
+    fn=calls[0].get("function") or {}
+    if fn.get("name")!="read":
         return None
-    args = func.get("arguments") or {}
-    if not isinstance(args, dict):
-        return None
-    src = args.get("source")
-    if not isinstance(src, str) or not src or len(src) > 250:
-        return None
-    return src
+    args=fn.get("arguments") or {}
+    source=args.get("source")
+    return source if isinstance(source,str) and source.startswith("passages/") else None
+
+
+def _files_from_source(source: dict) -> dict[str, str]:
+    parts=source.get("paragraphs")
+    if not isinstance(parts,list) or len(parts)!=20:
+        raise ValueError("Original MuSiQue workspace missing 20 passages")
+    files={}
+    index=[]
+    for p in sorted(parts,key=lambda p:p["idx"]):
+        ix=p["idx"]
+        if type(ix) is not int or not 0<=ix<100:
+            raise ValueError("MuSiQue passage identity invalid")
+        title=p.get("title","")
+        body=p.get("paragraph_text")
+        if not isinstance(title,str) or not isinstance(body,str) or not body:
+            raise ValueError("MuSiQue passage content invalid")
+        name=f"passages/p{ix}.txt"
+        if name in files:
+            raise ValueError("Duplicate passage identity")
+        files[name]=body
+        index.append(f"{name} | {title}")
+    files["passages/index.txt"]="\n".join(index)
+    if len(files)!=21:
+        raise ValueError("Missing source passage identity")
+    return files
 
 
 def _visible_before(messages: list[dict], idx: int, path: str) -> bool:
-    # The target path must already be visible, NOT oracle-selected from gold
-    # or exposed only in a later observation. This protects causal inference.
-    prefix = messages[:idx]
-    visible = "\n".join(str(x.get("content") or "") for x in prefix
-                        if x.get("role") in {"user", "tool"})
-    return path in visible
+    # Exact path must have already appeared in a user/tool message.
+    seen="\n".join(str(m.get("content") or "") for m in messages[:idx]
+                   if m.get("role") in ("user","tool"))
+    return path in seen
 
 
-def augment(row: dict) -> tuple[dict, str] | None:
-    if row.get("source") not in ELIGIBLE:
+def augment(row: dict, files: dict[str,str]) -> dict | None:
+    if row.get("source")!="musique-train":
         return None
-    task = row.get("eval_task") or {}
-    files = task.get("files") or {}
-    if not isinstance(files, dict) or not files:
+    if (row.get("derived_from_annotation_not_observed_model") is not True
+        or row.get("annotation_supervision_profile")!="visible_link_or_final_v1"
+        or int(row.get("link_grounded_read_labels") or 0)<1):
         return None
-    messages = row.get("messages") or []
-    selected = row.get("training_action_indices") or []
-    if not isinstance(selected, list) or not selected:
-        raise ValueError("Unverified original TRAIN action indices")
-    read_tool = next(t for t in default_tools() if t.name == "read")
+    messages=row.get("messages") or []
+    selected=row.get("training_action_indices") or []
+    if not isinstance(selected,list) or not selected:
+        raise ValueError("Invalid source-annotated selected action indices")
+    read=next(t for t in default_tools() if t.name=="read")
     for idx in selected:
-        target = _read_action(messages[idx])
-        if target is None or target not in files or not _visible_before(messages, idx, target):
+        target=_read_source(messages[idx])
+        if target is None or target=="passages/index.txt" or target not in files:
             continue
-        ident = str(row["task_id"])
-        suffix = sha256(f"{SEED}:{ident}:{idx}".encode()).hexdigest()[:12]
-        bad = target + ".v9-missing-" + suffix
+        if not _visible_before(messages,idx,target):
+            continue
+        if idx+1>=len(messages) or messages[idx+1].get("role")!="tool":
+            continue
+        suffix=sha256(f"{SEED}:{row['task_id']}:{idx}".encode()).hexdigest()[:12]
+        bad=target+".missing-"+suffix
         if bad in files:
-            raise ValueError("Injected-missing path already exists")
-        invalid_id = "v9_failed_read_" + suffix
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            _materialize_files({"files": files}, root)
-            arguments = {"source": bad}
-            if read_tool.validate_arguments(arguments) is not None:
-                raise ValueError("Injected read invalid under native schema")
-            result = read_tool.run(arguments, root)
-            if result.ok or not result.error_code:
-                raise ValueError("ReadTool did not verify expected missing-file failure")
-            observed, _ = result.bounded_observation(MAX_TOOL_OBSERVATION_CHARS)
-        if "ToolError[" not in observed or bad not in observed:
-            raise ValueError("Error observation does not identify failed source")
-        injected = [
-            {
-                "role": "assistant", "content": "",
-                "tool_calls": [{
-                    "id": invalid_id,
-                    "type": "function",
-                    "function": {"name": "read", "arguments": arguments},
-                }],
-            },
-            {
-                "role": "tool", "tool_call_id": invalid_id,
-                "name": "read", "content": observed,
-            }
+            raise ValueError("Injected missing path exists in authentic source")
+        with TemporaryDirectory() as tmp:
+            workspace=Path(tmp)
+            _materialize_files({"files":files},workspace)
+            failed=read.run({"source":bad},workspace)
+            passed=read.run({"source":target},workspace)
+            if failed.ok or failed.error_code!="NOT_FOUND" or not passed.ok:
+                raise ValueError("Native ReadTool failed physical expected-result proof")
+            obs,_=failed.bounded_observation(MAX_TOOL_OBSERVATION_CHARS)
+            good,_=passed.bounded_observation(MAX_TOOL_OBSERVATION_CHARS)
+            if good!=str(messages[idx+1].get("content") or ""):
+                raise ValueError("Original true observation differs from replay: no safe intervention")
+        if "ToolError[NOT_FOUND]" not in obs or bad not in obs:
+            raise ValueError("Native error observation marker absent")
+        injected=[
+            {"role":"assistant","content":"","tool_calls":[{
+                "id":"v9_failed_read_"+suffix,"type":"function",
+                "function":{"name":"read","arguments":{"source":bad}},
+            }]},
+            {"role":"tool","tool_call_id":"v9_failed_read_"+suffix,
+             "name":"read","content":obs},
         ]
-        new_messages = messages[:idx] + injected + messages[idx:]
-        new_indices = [j if j < idx else j + len(injected) for j in selected]
-        if len(new_indices) != len(selected):
-            raise AssertionError("Action count drift")
-        cloned = dict(row)
-        cloned["messages"] = new_messages
-        cloned["training_action_indices"] = new_indices
-        verification = dict(row.get("verification") or {})
-        if verification.get("zero_tool_errors") is not True:
-            raise ValueError("Expected clean original tool trace for source augmentation")
-        verification["zero_tool_errors"] = False
-        verification["expected_tool_failures_only"] = True
-        verification["expected_tool_error_codes"] = [result.error_code]
-        cloned["verification"] = verification
-        metrics = dict(row.get("metrics") or {})
-        metrics["tool_calls"] = int(metrics.get("tool_calls") or 0) + 1
-        metrics["tool_errors"] = int(metrics.get("tool_errors") or 0) + 1
-        cloned["metrics"] = metrics
-        cloned["counterfactual_tool_failure"] = {
-            "schema": "v9-causally-observed-tool-missing-v1",
-            "failure_code": result.error_code,
-            "not_observed_agent_recovery": True,
-            "read_error_physically_executed": True,
-            "original_target_unchanged": True,
-            "visible_filename_before_action": True,
-            "new_supervised_actions": 0,
+        result=dict(row)
+        result["messages"]=messages[:idx]+injected+messages[idx:]
+        result["training_action_indices"]=[i if i<idx else i+2 for i in selected]
+        verify=dict(row.get("verification") or {})
+        if verify.get("zero_tool_errors") is not True:
+            raise ValueError("Original gold-derived read sequence was not verified clean")
+        verify["zero_tool_errors"]=False
+        verify["expected_tool_failures_only"]=True
+        verify["expected_tool_error_codes"]=["NOT_FOUND"]
+        result["verification"]=verify
+        metrics=dict(row.get("metrics") or {})
+        metrics["tool_calls"]=int(metrics.get("tool_calls") or 0)+1
+        metrics["tool_errors"]=int(metrics.get("tool_errors") or 0)+1
+        result["metrics"]=metrics
+        result["error_conditioned_augmentation"]={
+            "protocol":"v9-mu-native-read-not-found-v1",
+            "failure_physically_replayed":True,
+            "source_read_success_physically_replayed":True,
+            "source_link_visible_before_original_action":True,
+            "not_observed_agent_behavior":True,
+            "supervised_targets_unchanged":True,
         }
-        return cloned, row["source"]
+        return result
     return None
 
 
-def _ineligibility_reason(row: dict) -> str:
-    task=row.get("eval_task") or {}
-    files=task.get("files") or {}
-    if not isinstance(files,dict) or not files:
-        return "no_materialized_files"
-    msgs=row.get("messages") or []
-    selected=row.get("training_action_indices") or []
-    targets=[(i,_read_action(msgs[i])) for i in selected]
-    targets=[(i,t) for i,t in targets if t is not None]
-    if not targets:
-        return "no_selected_read_actions"
-    exists=[(i,t) for i,t in targets if t in files]
-    if not exists:
-        return "selected_read_sources_not_in_eval_files"
-    if not any(_visible_before(msgs,i,t) for i,t in exists):
-        return "read_paths_not_visible_prior_to_action"
-    return "source_replay_failed_before_selection"
+def build(train: Path, holdout: Path, manifest: Path, musique: Path) -> tuple[list[dict],dict]:
+    if sha256(train.read_bytes()).hexdigest()!=TRAIN_SHA:
+        raise ValueError("V8 training source SHA mismatch")
+    if sha256(musique.read_bytes()).hexdigest()!=MUSIQUE_TRAIN_SHA:
+        raise ValueError("Immutable MuSiQue TRAIN source SHA mismatch")
+    meta=json.loads(manifest.read_text(encoding="utf8"))
+    if (meta.get("train_sha256")!=TRAIN_SHA or meta.get("train_parents")!=304
+        or meta.get("train_actions")!=798 or meta.get("no_gaia_training") is not True
+        or sha256(holdout.read_bytes()).hexdigest()!=meta.get("validation_sha256")):
+        raise ValueError("Original v8 training manifest/holdout mismatch")
+    rows=_jsonl(train)
+    held=_jsonl(holdout)
+    if len(rows)!=N_PARENTS or len(held)!=35:
+        raise ValueError("Unexpected SFT TRAIN/holdout parent counts")
+    ids={r["task_id"] for r in held}
+    if len(ids)!=35 or any(r["task_id"] in ids for r in rows):
+        raise ValueError("Parent identity leaked into heldout")
 
-
-def build(train: Path, heldout: Path, manifest: Path) -> tuple[list[dict], dict]:
-    source_sha = sha256(train.read_bytes()).hexdigest()
-    if source_sha != ORIGINAL_TRAIN_SHA:
-        raise ValueError("Frozen original v8 TRAIN SHA mismatch")
-    report = json.loads(manifest.read_text(encoding="utf8"))
-    if (report.get("train_sha256") != ORIGINAL_TRAIN_SHA
-        or report.get("no_gaia_training") is not True
-        or report.get("train_actions") != EXPECTED_ACTIONS
-        or report.get("train_parents") != EXPECTED_PARENTS
-        or sha256(heldout.read_bytes()).hexdigest() != report.get("validation_sha256")):
-        raise ValueError("Original v8 source manifest/holdout mismatch")
-    rows = _serialized_rows(train)
-    hold = _serialized_rows(heldout)
-    if len(rows) != 304 or len(hold) != 35:
-        raise ValueError("Unexpected source parent count")
-    original_ids = [r["task_id"] for r in rows]
-    if len(set(original_ids)) != len(rows) or set(original_ids) & {r["task_id"] for r in hold}:
-        raise ValueError("Original training/validation identity leakage")
-    out = []
-    augmented_source = Counter()
-    rejected = Counter()
+    # Key by original source ID *hash*. Raw MuSiQue human annotations are used
+    # ONLY to replay the existing workspace files, not to decide what to read.
+    frozen={}
+    for raw in _jsonl(musique):
+        rid=str(raw.get("id") or "")
+        if rid:
+            digest=sha256(rid.encode()).hexdigest()
+            if digest in frozen:
+                raise ValueError("Duplicate original MuSiQue source ID")
+            frozen[digest]=raw
+    selected_sources=Counter()
+    skipped=Counter()
+    out=[]
     for row in rows:
-        if "gaia" in str(row.get("source","")).casefold():
-            raise ValueError("GAIA training data is forbidden")
-        result = augment(row)
-        if result is None:
+        if "gaia" in str(row.get("source") or "").casefold():
+            raise ValueError("Forbidden GAIA in original training source")
+        if row.get("source")!="musique-train":
             out.append(row)
-            if row.get("source") in ELIGIBLE:
-                rejected[str(row["source"])+":"+_ineligibility_reason(row)] += 1
+            continue
+        source_id=row.get("source_id_sha256")
+        if not isinstance(source_id,str) or source_id not in frozen:
+            raise ValueError("MuSiQue parent not found in pinned raw TRAIN source")
+        source=frozen[source_id]
+        files=_files_from_source(source)
+        candidate=augment(row,files)
+        if candidate is None:
+            skipped["not_source_visible_selected_link"]+=1
+            out.append(row)
         else:
-            new, source = result
-            out.append(new)
-            augmented_source[source] += 1
-    if [x["task_id"] for x in out] != original_ids:
-        raise ValueError("Changed source training order or parent selection")
-    if sum(len(r["training_action_indices"]) for r in out) != EXPECTED_ACTIONS:
-        raise ValueError("Altered overall number of SFT actions")
-    for old, new in zip(rows, out):
-        if (old.get("expected_answer") != new.get("expected_answer")
-            or old.get("eval_task") != new.get("eval_task")
-            or old.get("tools") != new.get("tools")):
-            raise ValueError("Modified task, final answer or tool schema")
-        old_targets = [old["messages"][i] for i in old["training_action_indices"]]
-        new_targets = [new["messages"][i] for i in new["training_action_indices"]]
-        if old_targets != new_targets:
-            raise ValueError("Changed supervised next-action labels")
-    n = sum(augmented_source.values())
-    if n < 12:
-        raise ValueError(f"Insufficient grounded real-source recovery interventions: {n}; rejection_categories={dict(sorted(rejected.items()))}")
-    return out, {
-        "protocol": "step100-v9-real-source-error-conditioned-matched-action-data-v1",
-        "original_train_sha256": source_sha,
-        "n_parents": len(out), "n_original_supervised_actions": EXPECTED_ACTIONS,
-        "n_candidate_supervised_actions": EXPECTED_ACTIONS,
-        "n_injected_missing_file_observations": n,
-        "injected_real_source_parent_counts": dict(sorted(augmented_source.items())),
-        "eligible_without_grounded_path": dict(sorted(rejected.items())),
-        "source_parent_order_preserved": True,
-        "supervised_action_labels_identical": True,
-        "original_task_answers_unchanged": True,
-        "original_holdout_unmodified_sha256": report["validation_sha256"],
-        "any_gaia_input_or_gold_used": False,
-        "gpu_training_ran": False,
-        "limitations": [
-            "This is a synthetic file-miss injection on genuine training-source tasks, NOT observed model error recovery.",
-            "Creating counterfactual source episodes cannot by itself establish a generalization improvement.",
-            "All source training questions and answer labels are held out of terminal logs; a separate matched training and unseen-source evaluation are required.",
+            selected_sources["musique-train"]+=1
+            out.append(candidate)
+    num=sum(selected_sources.values())
+    if num<32:
+        raise ValueError(f"Too few fully replayable real-source error-context substitutions: {num}; skipped={dict(skipped)}")
+    if [r["task_id"] for r in rows]!=[r["task_id"] for r in out]:
+        raise ValueError("Task sequence identity drift")
+    if sum(len(r["training_action_indices"]) for r in out)!=N_ACTIONS:
+        raise ValueError("Supervised action count drift")
+    for old,new in zip(rows,out):
+        old_actions=[old["messages"][i] for i in old["training_action_indices"]]
+        new_actions=[new["messages"][i] for i in new["training_action_indices"]]
+        if (old_actions!=new_actions or old.get("expected_answer")!=new.get("expected_answer")
+            or old.get("tools")!=new.get("tools")):
+            raise ValueError("Supervised target, answer, or tools were changed")
+    return out,{
+        "protocol":"v9-read-failure-conditioned-source-grounded-qlora-corpus-v1",
+        "original_train_sha256":TRAIN_SHA,"musique_train_sha256":MUSIQUE_TRAIN_SHA,
+        "original_parents":304,"candidate_parents":304,
+        "original_supervised_actions":798,"candidate_supervised_actions":798,
+        "original_task_order_unchanged":True,"original_action_labels_unchanged":True,
+        "original_holdout_sha256":meta["validation_sha256"],
+        "injected_error_context_parents":num,
+        "injected_source_counts":dict(sorted(selected_sources.items())),
+        "excluded_unverifiable":dict(sorted(skipped.items())),
+        "no_training_or_gaia_gold":True,
+        "not_observed_agent_recovery":True,
+        "limitations":[
+            "Injected file typos are synthetic failures on real MuSiQue TRAIN workspaces, not naturally occurring agent errors.",
+            "Only originally source-visible, v8-preselected next read actions are eligible; hidden gold support choices are never added.",
+            "A separate controlled QLoRA run and novel-source task-level evaluation are needed to claim generalization.",
         ],
     }
 
 
 def main():
     p=argparse.ArgumentParser()
-    p.add_argument("--train",type=Path,required=True)
-    p.add_argument("--holdout",type=Path,required=True)
-    p.add_argument("--manifest",type=Path,required=True)
-    p.add_argument("--output",type=Path,required=True)
-    p.add_argument("--report",type=Path,required=True)
+    for arg in ("train","holdout","manifest","musique","output","report"):
+        p.add_argument("--"+arg,type=Path,required=True)
     a=p.parse_args()
     if a.output.exists() or a.report.exists():
-        raise FileExistsError("Refuse to overwrite candidate training artifacts")
-    data, proof=build(a.train,a.holdout,a.manifest)
+        raise FileExistsError("No overwrite of existing SFT material")
+    data,proof=build(a.train,a.holdout,a.manifest,a.musique)
     a.output.parent.mkdir(parents=True,exist_ok=True)
     a.report.parent.mkdir(parents=True,exist_ok=True)
-    a.output.write_text("".join(json.dumps(r,ensure_ascii=False,sort_keys=True)+"\n" for r in data))
+    a.output.write_text("".join(json.dumps(x,ensure_ascii=False,sort_keys=True)+"\n" for x in data))
     proof["candidate_train_sha256"]=sha256(a.output.read_bytes()).hexdigest()
     a.report.write_text(json.dumps(proof,sort_keys=True,indent=2)+"\n")
-    print("V9_REAL_SOURCE_RECOVERY_DATA_PREFLIGHT",json.dumps(proof,sort_keys=True))
+    print("V9_VERIFIED_MUSIQUE_RECOVERY_CORPUS",json.dumps(proof,sort_keys=True))
 
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
