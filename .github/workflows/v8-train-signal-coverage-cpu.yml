@@ -2,7 +2,10 @@ name: QLoRA v8 TRAIN signal coverage root-cause audit (CPU, no GAIA)
 on:
   push:
     branches: [research/v8-train-action-generalization-audit-20261123]
-    paths: [.github/workflows/v8-train-signal-coverage-cpu.yml]
+    paths:
+      - .github/workflows/v8-train-signal-coverage-cpu.yml
+      - scripts/audit_v8_training_signal_coverage.py
+      - tests/test_audit_v8_training_signal_coverage.py
 permissions:
   contents: read
   actions: read
