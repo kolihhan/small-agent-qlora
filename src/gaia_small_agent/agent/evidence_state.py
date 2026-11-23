@@ -90,7 +90,7 @@ class EvidenceState:
                     for i,a in enumerate(self._anchors)
                     for b in self._anchors[i+1:]
                     if a.source != b.source]
-        self.bridge_candidates = len(set.union(*overlaps)) if overlaps else 0
+        self.bridge_candidates = len(set().union(*overlaps)) if overlaps else 0
 
     def summary(self) -> str:
         if not self._anchors:
