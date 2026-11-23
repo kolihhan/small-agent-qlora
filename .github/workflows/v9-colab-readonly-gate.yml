@@ -1,0 +1,84 @@
+name: V9 research Colab quota and ADC preflight (no GPU allocation)
+on:
+  push:
+    branches: [research/v9-real-source-recovery-contrast-20261123]
+    paths: [.github/workflows/v9-colab-readonly-gate.yml]
+permissions:
+  contents: read
+concurrency:
+  group: v9-colab-readonly-gate-20261123
+  cancel-in-progress: false
+jobs:
+  quota:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
+      COLAB_OAUTH_JSON: ${{ secrets.COLAB_OAUTH_JSON }}
+      COLAB_AUTH_JSON: ${{ secrets.COLAB_AUTH_JSON }}
+      COLAB_CREDENTIALS_JSON: ${{ secrets.COLAB_CREDENTIALS_JSON }}
+      GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+      GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+      GOOGLE_COLAB_CREDENTIALS: ${{ secrets.GOOGLE_COLAB_CREDENTIALS }}
+      COLAB_TOKEN: ${{ secrets.COLAB_TOKEN }}
+      COLAB_CLI_TOKEN: ${{ secrets.COLAB_CLI_TOKEN }}
+      GOOGLE_COLAB_TOKEN: ${{ secrets.GOOGLE_COLAB_TOKEN }}
+      COLAB_ACCESS_TOKEN: ${{ secrets.COLAB_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Check Colab ADC, balance, assignments, sessions (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -q 'google-auth>=2.20' 'google-colab-cli==0.8.0'
+          python - <<'PY'
+          import json,os,pathlib,re,subprocess
+          from google.auth.transport.requests import Request
+          from google.oauth2.credentials import Credentials
+          names=["COLAB_ADC_JSON","COLAB_OAUTH_JSON","COLAB_AUTH_JSON","COLAB_CREDENTIALS_JSON","GOOGLE_APPLICATION_CREDENTIALS_JSON","GOOGLE_CREDENTIALS_JSON","GOOGLE_COLAB_CREDENTIALS","COLAB_TOKEN","COLAB_CLI_TOKEN","GOOGLE_COLAB_TOKEN","COLAB_ACCESS_TOKEN"]
+          obj=None
+          for name in names:
+              raw=os.environ.get(name,'').strip()
+              if not raw: continue
+              try: d=json.loads(raw)
+              except (ValueError, TypeError): continue
+              if isinstance(d,dict) and all(d.get(k) for k in ('client_id','client_secret','refresh_token')):
+                  obj={**d,'type':'authorized_user'}
+                  break
+          if obj is None:
+              print('COLAB_GATE=BLOCKED_NO_COMPATIBLE_ADC')
+              raise SystemExit(30)
+          p=pathlib.Path(os.environ['RUNNER_TEMP'])/'colab-v8-readonly-adc.json'
+          p.write_text(json.dumps(obj))
+          p.chmod(0o600)
+          try:
+              auth=Credentials.from_authorized_user_info(obj,scopes=None)
+              auth.refresh(Request())
+              assert auth.valid
+              print('COLAB_GATE_ADC=VALID')
+              env={**os.environ,'GOOGLE_APPLICATION_CREDENTIALS':str(p)}
+              proc=subprocess.run(['colab','--auth=adc','usage'],capture_output=True,text=True,timeout=90,env=env)
+              if proc.returncode!=0:
+                  print('COLAB_GATE=BLOCKED_USAGE_ERROR','exit',proc.returncode)
+                  raise SystemExit(31)
+              usage=proc.stdout
+              balance=re.search(r'Current balance:\s*([0-9]+(?:\.[0-9]+)?)\s*compute units',usage,re.I)
+              assigned=re.search(r'Active assignments:\s*(\d+)',usage,re.I)
+              print('COLAB_GATE_BALANCE_CU='+balance.group(1) if balance else 'COLAB_GATE_BALANCE_CU=UNKNOWN')
+              print('COLAB_GATE_ACTIVE_ASSIGNMENTS='+assigned.group(1) if assigned else 'COLAB_GATE_ACTIVE_ASSIGNMENTS=UNKNOWN')
+              if not assigned or int(assigned.group(1))!=0:
+                  print('COLAB_GATE=BLOCKED_SLOT_BUSY_OR_UNKNOWN')
+                  raise SystemExit(32)
+              if not balance:
+                  print('COLAB_GATE=BLOCKED_BALANCE_UNKNOWN')
+                  raise SystemExit(33)
+              if float(balance.group(1))<=0:
+                  print('COLAB_GATE=BLOCKED_ZERO_COMPUTE_UNITS')
+                  raise SystemExit(34)
+              print('COLAB_GATE=POSITIVE_BALANCE_NO_GPU_ALLOCATED')
+          finally:
+              p.unlink(missing_ok=True)
+          PY
