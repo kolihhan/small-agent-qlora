@@ -1,34 +1,42 @@
 # Architecture
 
-## Runtime
+The agent is intentionally small: one language model selects a tool or writes an answer. The harness handles tool execution and safety checks; there is no planner, router or critic model.
 
-The project keeps a minimal autonomous loop: Qwen3.5-4B chooses a tool call or a final answer; the harness executes tools, returns bounded observations, blocks exact duplicates, and records visible traces. There is no planner/router/critic graph or GAIA-specific routing policy.
+~~~mermaid
+flowchart TD
+    U[Task + optional workspace file] --> L[AgentRuntime]
+    L --> M[Qwen model: Base or LoRA]
+    M --> A{Assistant turn}
+    A -->|Tool call| T[Search / Read / Inspect / Python]
+    T --> V[Argument validation, bounded result]
+    V --> L
+    A -->|Final answer| S[Record output and stop reason]
+    L -->|Step limit or runtime error| F[Record failure]
+~~~
 
-The Transformers diagnostic path performs one real pre-inference smoke of the
-exact default tool surface (`search`, `read`, `inspect`, `python`) and fails
-closed on a missing dependency or broken tool. The local Qwen path uses the
-native default KV cache; no extra planner, parser framework, or compatibility
-layer was added.
+## Inference and tools
 
-## Local evaluation protocol
+- [Agent loop](../src/gaia_small_agent/agent/loop.py) owns the step budget, duplicate-call checks, tool failures, and final-answer handling.
+- [Model backends](../src/gaia_small_agent/model/) include Ollama, direct Transformers and OpenAI-compatible servers. The November GAIA run used llama.cpp behind the OpenAI-compatible interface.
+- [Tools](../src/gaia_small_agent/tools/) are search (live web), read (public URLs or workspace data), inspect (file metadata), and restricted Python. Search results may vary; the file tools intentionally limit remote reads.
+- A tool observation is capped at 2,000 characters. The runner stores trace events and explicit stop reasons such as final, invalid_final, model_error and model_timeout.
+- The Python helper is restricted, import-free, and subprocess bounded. It is **not** a general-purpose untrusted-code sandbox.
 
-The pinned GAIA validation pool is SHA-256 ranked within each level using one fixed local seed. The first 8/13/4 rows form the 25-task diagnostic partition. The next 32/52/16 rows form the 100-task evaluation partition. They are deterministic and disjoint; the remaining 40 tasks are unused by the current protocol.
+The training/evaluation model used for the reported QLoRA experiments is **Qwen3.5-9B**. Some older local diagnostic material in this repository used Qwen3.5-4B; those runs are not the reported 9B comparisons.
 
-Diagnostic tasks may be inspected repeatedly to classify observed failures and decide whether policy adaptation is a sensible intervention. The evaluation partition is frozen from this protocol onward and is used only after the adapter/config is frozen.
+## Evaluation contracts
 
-The runner records known semantic image/audio/video capability gaps separately from supported tasks. Rule-based failure labels are diagnostic proxies, not causal diagnoses.
+Two task families have different interpretations:
 
-## Training boundary
+1. **Controlled policy 200:** frozen synthetic tasks and deterministic tools. Base/v3B/v3D are compared with the same runtime. This measures the targeted behavior of the supervised policy, not unrestricted real-world agent success.
+2. **GAIA100:** 100 fixed GAIA 2023 validation tasks (32 Level 1, 52 Level 2, 16 Level 3). The November 23, 2026 comparison used real search/read/inspect/Python, fixed model and adapter hashes, and a single runner per five-task shard for each compared model.
 
-GAIA is evaluation-only. A local protection artifact stores normalized SHA-256 hashes of GAIA validation questions. Collection/training reject sources containing `gaia` and exact normalized protected-question overlaps. This catches direct copying, not semantic paraphrases.
+GAIA task selection uses SHA-256 ranks and a fixed seed (gaia-local-v2). The Evaluation100 subset is distinct from the Diagnostic25 subset but has been seen by this project already. See [the complete November protocol](gaia-2026-11-23.md).
 
-QLoRA consumes only verified non-GAIA trajectories. LoRA is applied to the language backbone while the same agent loop and tool surface remain unchanged.
+## Data protection
 
-## Controlled comparison
+Training uses verified non-GAIA trajectories. The training collection rejects explicitly GAIA-sourced data and exact normalized GAIA question-hash overlaps. This does not claim to detect semantic paraphrase leakage. Gated GAIA question text and reference answers must stay in the evaluator environment rather than in published artifacts.
 
-The final comparator requires identical task IDs and identical recorded run configuration except for the adapter path. It reports Base/+LoRA accuracy, paired recoveries/regressions, efficiency metrics, and the same transitions restricted to capability-supported tasks.
+## Reading results
 
-The frozen P4 run never reached this comparison. Both tested cache placements
-failed the sealed host-RAM floor on this machine, and the final native-cache
-Diagnostic25 attempt stopped after 13 persisted records. The training-data
-gate was independently false, so no adapter or evaluation100 run was allowed.
+Use [docs/v3d-results.md](v3d-results.md) for the earlier controlled study and [docs/gaia-2026-11-23.md](gaia-2026-11-23.md) for the later matched GAIA100 result. The baseline and runtime revisions differ, so do not combine those two tables into one learning curve.

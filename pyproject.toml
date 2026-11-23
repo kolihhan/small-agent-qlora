@@ -6,8 +6,16 @@ build-backend = "setuptools.build_meta"
 name = "small-agent-qlora"
 version = "0.1.0"
 description = "Qwen3.5-9B tool-agent post-training with controlled QLoRA evaluation and matched GAIA analysis"
+readme = "README.md"
+keywords = ["tool-using-agents", "qlora", "qwen", "gaia", "agent-evaluation"]
 requires-python = ">=3.11"
 dependencies = ["requests>=2.32", "jsonschema>=4.20"]
+
+[project.urls]
+Homepage = "https://github.com/kolihhan/small-agent-qlora"
+Source = "https://github.com/kolihhan/small-agent-qlora"
+Documentation = "https://github.com/kolihhan/small-agent-qlora/tree/main/docs"
+Issues = "https://github.com/kolihhan/small-agent-qlora/issues"
 
 [project.optional-dependencies]
 search = ["mcp>=2,<3", "ddgs>=9.16,<10"]
