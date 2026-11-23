@@ -1,31 +1,29 @@
-# Branch map
+# Research history (single-branch layout)
 
-This is a research repository with many historical experiment branches. A branch name is not a model version or evidence of a better score. Here is the short route to the code worth reading.
+This repository uses **main** for the public project and current documentation. The old development branches were archived on November 23, 2026.
 
-| Purpose | Branch / link | Why it exists |
-| --- | --- | --- |
-| Public project entry point | [main](https://github.com/kolihhan/small-agent-qlora/tree/main) | Stable CLI, tests, core agent, controlled v3D study and curated documentation |
-| Portfolio documentation release | [release/portfolio-gaia-20261123](https://github.com/kolihhan/small-agent-qlora/tree/release/portfolio-gaia-20261123) | Human-readable README and verified result docs; documentation only |
-| Current GAIA100 evidence | [exp/gaia-fourway-20261123](https://github.com/kolihhan/small-agent-qlora/tree/exp/gaia-fourway-20261123) | Actual 300 paired Base/v7/v8 Step70 episodes, source checks, score recovery and repeat workflow |
-| Physically verified v8 Step70 training | [research/v8-stage70-resume-20261121](https://github.com/kolihhan/small-agent-qlora/tree/research/v8-stage70-resume-20261121) | Original QLoRA step35-to-step70 continuation and optimizer-state verification |
-| v8 GGUF conversion evidence | [research/gaia-shadow25-v3b-transfer-proof-20261122](https://github.com/kolihhan/small-agent-qlora/tree/research/gaia-shadow25-v3b-transfer-proof-20261122) | Verified conversion workflow and GAIA tool-agent experiments |
-| Earlier controlled models | [experiment/heldout-next-action-eval](https://github.com/kolihhan/small-agent-qlora/tree/experiment/heldout-next-action-eval) | Historical Base/v3B/v3D matched GAIA evidence and diagnostics |
-| Unpromoted finalization candidate | [exp/gaia-fast-20261123](https://github.com/kolihhan/small-agent-qlora/tree/exp/gaia-fast-20261123) | Proposed terminal nudge; not a verified score improvement |
+The original branch names and exact HEAD commit SHAs are recorded in [the complete inventory](archive/branch-heads-2026-11-23.json). Each original commit is preserved in **main's ancestry** through archive-only merge commits, without applying the old experimental trees on top of the shipped runtime.
 
-## What belongs where
+To view the original source, use the commit permalink or \`git show\` with the archived SHA, for example:
 
-- **main:** reviewed project code, installation instructions, reproducible methods and results with linked evidence.
-- **release/**: short-lived presentation/docs branches to merge into main after CI.
-- **exp/**: active controlled comparisons; never assume one is production-ready.
-- **research/** and **experiment/**: exploratory or historical work, including negative results.
-- **fix/** and **debug/**: point-in-time engineering investigations.
+~~~bash
+git show b63fa3b088ff608458933531387a3be49ba33049:scripts/gaia_same_task.py
+git show a7234b13945efc66ee3b66ce2fccb49997ee09f4:scripts/colab_v8_stage70_remote.py
+~~~
 
-The November comparison is not a direct continuation of the October v3D result. In October, the same-run Base/v3B/v3D scores were 9/18/18 on the historical runtime. In November, the same-run Base/v7/v8 Step70 scores were 18/25/29 on a later runtime. Keep these tables separate.
+For the important November experiment code, copies are also available directly in [archive/2026-11-23/](../archive/2026-11-23/). These are snapshots for audit, **not installed production modules or automatically triggered Actions workflows**.
 
-## Branch cleanup policy
+| Historical work | Archived source |
+| --- | --- |
+| November paired GAIA100 Base/v7/v8 Step70 | [frozen experiment commit](https://github.com/kolihhan/small-agent-qlora/tree/b63fa3b088ff608458933531387a3be49ba33049) |
+| v8 Stage70 training and resume | [training commit](https://github.com/kolihhan/small-agent-qlora/tree/a7234b13945efc66ee3b66ce2fccb49997ee09f4) |
+| v8 Stage35 original training code | [training commit](https://github.com/kolihhan/small-agent-qlora/tree/3eac23cca117a41855f4998399f79a5d9d5f4369) |
+| Base/v3B/v3D historical evaluation | [GAIA experiment documentation](gaia-v3d-results.md) |
+| Earlier controlled study | [v3D report](v3d-results.md) |
+| Portfolio documentation changes | [merged PR #117](https://github.com/kolihhan/small-agent-qlora/pull/117) |
 
-Preserve experimental history until the source checkpoint hashes, matching run logs and negative ablations are inventoried. Deleting or force-rebasing older branches can destroy the only surviving record of a run after GitHub Actions artifacts expire.
+The two GAIA100 score tables use different runtime revisions. The November same-run comparison is Base 18/100, v7 25/100 and v8 Step70 29/100. The older Base/v3B/v3D 9/18/18 comparison is separate. No model scores changed during branch cleanup.
 
-For a clean portfolio link, share **main**, not an individual experimental branch. For an exact result or implementation, follow the branch and run link in [the GAIA report](gaia-2026-11-23.md).
+**Why retain commit ancestry?** GitHub can garbage-collect commits that are no longer reachable after the only branch pointing at them is deleted. An archive merge with the existing main tree and the historical branch heads as parents preserves those commits without merging their experimental code into main.
 
-No experiment branches were deleted as part of the portfolio packaging.
+GitHub Actions logs and artifact URLs remain separate evidence. Artifacts can expire even though commit history is preserved.
