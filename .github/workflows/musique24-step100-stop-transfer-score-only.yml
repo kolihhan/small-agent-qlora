@@ -1,0 +1,49 @@
+name: REPAIR score-only Step100 MuSiQue24 frozen transfer
+on:
+  push:
+    branches: [research/gaia-stop-transfer-musique24-prereg-20261123]
+    paths: [.github/workflows/musique24-step100-stop-transfer-score-only.yml]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: step100-musique24-frozen-score-only-20261123
+  cancel-in-progress: true
+
+jobs:
+  aggregate_frozen_pairs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - name: Install exactly required scorer dependencies; do not re-run expensive model inference
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev]'
+          python -m pytest -q tests/test_stop_transfer_musique24_prereg.py
+      - name: Download FOUR original completed model-evaluation shard artifacts from immutable run 45056027100
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 45056027100
+          pattern: MU24-ST100-STOP-TRANSFER-SAFE-SHARD-*
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          path: safe
+      - name: Enforce exactly 24 frozen matched pairs and previously frozen gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find safe -maxdepth 1 -type f -name 'shard-*.json' | wc -l)" -eq 8
+          python -m scripts.score_step100_stop_transfer_musique24 \
+            --evidence-dir safe \
+            --output MU24-ST100-STOP-TRANSFER-PREREG-SCORE.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: MU24-ST100-STOP-TRANSFER-PREREG-SCORE-RECOVERED
+          path: MU24-ST100-STOP-TRANSFER-PREREG-SCORE.json
+          if-no-files-found: error
+          retention-days: 30
