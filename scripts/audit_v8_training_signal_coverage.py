@@ -104,6 +104,16 @@ def audit_rows(path: Path, *, expected_parents: int, expected_actions: int,
             c = grouped[_source_group(source)]
             c["parents"] += 1
             source_counts[source] += 1
+            capability = str(row.get("capability") or "unspecified")
+            # Only count metadata categories; no question, answer or observed text in report.
+            c["capability::" + capability] += 1
+            verification = row.get("verification") or {}
+            metrics = row.get("metrics") or {}
+            if (verification.get("expected_tool_failures_only") is True
+                or int(metrics.get("tool_errors") or 0) > 0):
+                c["parents_with_declared_tool_errors"] += 1
+            if verification.get("zero_tool_errors") is True:
+                c["parents_verified_zero_tool_errors"] += 1
             tool_steps = sum(m.get("role") == "tool" for m in messages)
             if tool_steps >= 2:
                 c["parents_with_2plus_tool_observations"] += 1
@@ -111,6 +121,7 @@ def audit_rows(path: Path, *, expected_parents: int, expected_actions: int,
                 c["parents_with_4plus_tool_observations"] += 1
             if any(_has_tool_error(m) for m in messages if m.get("role") == "tool"):
                 c["parents_with_any_tool_error"] += 1
+                c["error_marked_observations"] += sum(_has_tool_error(m) for m in messages if m.get("role") == "tool")
             if row.get("derived_from_annotation_not_observed_model") is True:
                 c["annotation_not_replayed_model_trajectories"] += 1
 
