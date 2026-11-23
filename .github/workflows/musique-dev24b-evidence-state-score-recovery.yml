@@ -1,0 +1,58 @@
+name: CPU score original plus recovered MuSiQue DEV24B Evidence State pairs
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: evidence-state-dev24b-complete-shards-official-score-recovery
+  cancel-in-progress: true
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - name: Validate pinned scorer with synthetic negative and positive gates
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev]'
+          python -m pytest -q tests/test_evidence_state_dev24b_prereg.py
+      - name: Original 18 matched tasks from run 45104088600 (shards 0,1,3 only)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 45104088600
+          pattern: MUDEV24B-STEP100-EVIDENCE-STATE-SAFE-SHARD-*
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          path: evidence
+      - name: Exact original 6 matched tasks re-run without model change (shard 2)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 45104501119
+          name: MUDEV24B-STEP100-EVIDENCE-STATE-SAFE-SHARD-2-DOWNLOAD-RECOVERED
+          github-token: ${{ github.token }}
+          path: evidence
+      - name: Enforce 8 safe shard arm artifacts and full 24 frozen pairs before any claim
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find evidence -maxdepth 1 -type f -name 'shard-*-*.json' | wc -l)" -eq 8
+          for shard in 0 1 2 3; do
+            for arm in control state; do
+              test -s "evidence/shard-$shard-$arm.json"
+            done
+          done
+          python -m scripts.eval_evidence_state_dev24b \
+            --evidence-dir evidence \
+            --output safe/MUDEV24B-EVIDENCE-STATE-STEP100-PREREG-SCORE.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: MUDEV24B-EVIDENCE-STATE-STEP100-PAIRED-SCORE-RECOVERED
+          path: safe/MUDEV24B-EVIDENCE-STATE-STEP100-PREREG-SCORE.json
+          if-no-files-found: error
+          retention-days: 30
