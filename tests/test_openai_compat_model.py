@@ -103,6 +103,26 @@ def test_openai_compat_model_rejects_bad_tool_arguments(monkeypatch):
             "function": {"name": "search", "arguments": "not-json"},
         }]}}]
     }))
-    with pytest.raises(ModelRuntimeError) as exc:
-        OpenAICompatModel(model="qwen3.5-9b").complete([{"role": "user", "content": "x"}], [])
-    assert exc.value.stop_reason == "model_error"
+    turn = OpenAICompatModel(model="qwen3.5-9b").complete([{"role": "user", "content": "x"}], [])
+    assert turn.tool_calls[0].arguments == {"__invalid_json_arguments__": True}
+
+
+def test_malformed_tool_arguments_do_not_abort_agent(monkeypatch, tmp_path):
+    from gaia_small_agent.agent.loop import AgentRuntime
+    from gaia_small_agent.model.openai_compat import OpenAICompatModel
+    from gaia_small_agent.tools.search import SearchTool
+
+    replies = iter([
+        _response({"choices": [{"message": {"content": "", "tool_calls": [{
+            "id": "bad-call",
+            "function": {"name": "search", "arguments": '{"query":"truncated'},
+        }]}}]}),
+        _response({"choices": [{"message": {"content": "Cannot verify from available evidence."}}]}),
+    ])
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: next(replies))
+    result = AgentRuntime(OpenAICompatModel(model="qwen3.5-9b"), [SearchTool()], max_steps=3).run(
+        "Find an answer", tmp_path
+    )
+    assert result.completed is True
+    assert result.metrics.invalid_tool_calls == 1
+    assert any(e.kind == "tool_result" and e.data["error_code"] == "BAD_ARGUMENTS" for e in result.trace)
