@@ -6,14 +6,18 @@ from .inspect import InspectTool
 from .python_tool import PythonTool
 from .read import ReadTool
 from .search import SearchTool
+from .workspace_find import WorkspaceFindTool
 
 
 _DEFAULT_TOOL_NAMES = ["search", "read", "inspect", "python"]
 _DEPENDENCIES = ("requests", "mcp", "ddgs", "pypdf", "openpyxl")
 
 
-def default_tools():
-    return [SearchTool(), ReadTool(), InspectTool(), PythonTool()]
+def default_tools(*, workspace_find_enabled: bool = False):
+    tools = [SearchTool(), ReadTool(), InspectTool(), PythonTool()]
+    if workspace_find_enabled:
+        tools.append(WorkspaceFindTool())
+    return tools
 
 
 def check_default_tools(workspace: str | Path, *, live_search: bool = False) -> dict:
@@ -120,6 +124,7 @@ def preflight_default_tools(workspace: str | Path) -> dict:
 
 __all__ = [
     "SearchTool",
+    "WorkspaceFindTool",
     "ReadTool",
     "InspectTool",
     "PythonTool",
