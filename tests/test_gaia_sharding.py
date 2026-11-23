@@ -32,3 +32,11 @@ def test_shard_selection_validates_bounds():
         shard_selected_rows(selected, shard_index=0, shard_count=0)
     with pytest.raises(ValueError, match="shard_index"):
         shard_selected_rows(selected, shard_index=5, shard_count=5)
+
+
+def test_eval_shard_partition_option_default_and_shadow():
+    from scripts.run_gaia_eval_shard import build_parser
+
+    base = ["--hf-token", "token", "--shard-index", "0", "--work-root", "runs", "--output", "out.json"]
+    assert build_parser().parse_args(base).partition == "evaluation"
+    assert build_parser().parse_args(base + ["--partition", "shadow"]).partition == "shadow"
