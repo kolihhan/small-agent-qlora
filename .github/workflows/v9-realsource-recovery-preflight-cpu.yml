@@ -2,7 +2,10 @@ name: V9 error-conditioned real-source TRAIN data preflight (CPU only)
 on:
   push:
     branches: [research/v9-real-source-recovery-contrast-20261123]
-    paths: [.github/workflows/v9-realsource-recovery-preflight-cpu.yml]
+    paths:
+      - .github/workflows/v9-realsource-recovery-preflight-cpu.yml
+      - scripts/prepare_v9_real_source_recovery.py
+      - tests/test_prepare_v9_real_source_recovery.py
 permissions:
   contents: read
   actions: read
