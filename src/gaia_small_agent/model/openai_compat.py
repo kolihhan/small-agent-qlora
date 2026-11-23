@@ -82,8 +82,10 @@ class OpenAICompatModel:
             if isinstance(args, str):
                 try:
                     args = json.loads(args)
-                except json.JSONDecodeError as exc:
-                    raise ModelRuntimeError("model_error", f"Invalid tool arguments JSON: {exc}") from None
+                except json.JSONDecodeError:
+                    # Malformed model output is a tool-argument failure, not a fatal agent error.
+                    # The tool schema rejects this sentinel and the model can correct its call.
+                    args = {"__invalid_json_arguments__": True}
             if not isinstance(args, dict):
                 raise ModelRuntimeError("model_error", "Model tool arguments must decode to an object")
             calls.append(
