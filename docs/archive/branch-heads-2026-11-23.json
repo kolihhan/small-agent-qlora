@@ -1,0 +1,580 @@
+{
+  "schema": "small-agent-branch-inventory/v1",
+  "captured_at": "2026-11-23",
+  "scope": "143 pre-cleanup non-main branches",
+  "note": "Each original commit SHA is preserved via main's archive ancestry, even after deleting the branch ref.",
+  "branches": [
+    {
+      "name": "debug/qlora-clean-eval",
+      "sha": "39e6af3ef4d9e4f40ab874328991989dffa0be6f"
+    },
+    {
+      "name": "debug/qlora-clean-eval-red",
+      "sha": "b5e514f365b56bb6dd521b3314f9314a2f9ebc34"
+    },
+    {
+      "name": "debug/qlora-clean-eval-red2",
+      "sha": "b5e514f365b56bb6dd521b3314f9314a2f9ebc34"
+    },
+    {
+      "name": "debug/qlora-clean-eval-red3",
+      "sha": "b5e514f365b56bb6dd521b3314f9314a2f9ebc34"
+    },
+    {
+      "name": "exp/gaia-fast-20261123",
+      "sha": "c5dcd50edab45e3a319240c3a58a1bd71c105207"
+    },
+    {
+      "name": "exp/gaia-fourway-20261123",
+      "sha": "b63fa3b088ff608458933531387a3be49ba33049"
+    },
+    {
+      "name": "experiment/2wiki-nonoracle-search-read-paths-20261115",
+      "sha": "621a1586b7de2a8a2bbaa94390ed17193d346607"
+    },
+    {
+      "name": "experiment/2wiki-source-conditioned-trajectories-20261115",
+      "sha": "73da543fab42dcc6511e28157098a8f3ea27c209"
+    },
+    {
+      "name": "experiment/2wiki-teacher-expansion-20261113",
+      "sha": "bb75bf31665790a9518e23c16ff79a31287f9db0"
+    },
+    {
+      "name": "experiment/2wiki-visible-evidence-readiness-20261115",
+      "sha": "0eb0f86d4d53f20357c511ebd14c72ba86712773"
+    },
+    {
+      "name": "experiment/appworld-closedloop-qwen9b-baseline-20261117",
+      "sha": "bff80c019126e7447b01180feddde33f12375baf"
+    },
+    {
+      "name": "experiment/appworld-dev57-public-supervisor-get-paired-20261117",
+      "sha": "d09616decc9bc226cd7fd569259573494c021c0d"
+    },
+    {
+      "name": "experiment/appworld-qwen9b-error-recovery-shift4-20261117",
+      "sha": "bfc4ad82935440f54e94635191a6dc74f25f5e34"
+    },
+    {
+      "name": "experiment/finqa-real-multitool-expand48-20261114",
+      "sha": "ce1b0d1a864fd87e7c7e61cfd0da30a6b4a0127f"
+    },
+    {
+      "name": "experiment/gaia-protected-v7-factorial-2wiki8-20261117",
+      "sha": "bdb89ee7352965c148c4694153566ee245591c4b"
+    },
+    {
+      "name": "experiment/gaia-terminal-correct-controls2-20261117",
+      "sha": "32f4eb299658aec9019fb5704502641b9ab2d2d7"
+    },
+    {
+      "name": "experiment/gaia-terminal-request-20261114",
+      "sha": "f0d26d2860d7f855b6d90aa3e4494514af749139"
+    },
+    {
+      "name": "experiment/gaia-terminal-suffix-20261114",
+      "sha": "2f069eb2fbfafb6365e73f52ad7588d544f8dd17"
+    },
+    {
+      "name": "experiment/gaia8-fixed-prefix-json-final-20261117",
+      "sha": "97c254dfde2191b438199ec5d95ba59bc88c6414"
+    },
+    {
+      "name": "experiment/generic-final-render-iirc-replay-20261115",
+      "sha": "7e1d46f967c2b776f4d7a3481478f02e485efc4f"
+    },
+    {
+      "name": "experiment/goal-tracking-prompt",
+      "sha": "0981bc38127d5799e91a74380e0e03b9091e4ec8"
+    },
+    {
+      "name": "experiment/heldout-next-action-eval",
+      "sha": "603cd03451e4027050b08791020bb9d49da9e1db"
+    },
+    {
+      "name": "experiment/hotpot8-failure-finalization-v7-20261117",
+      "sha": "0de529d99e528503cb11c8a0e0a692999556e69d"
+    },
+    {
+      "name": "experiment/hotpot8-v7-crossfamily-factorial-20261117",
+      "sha": "e1574c2ace63594e3303cce42ce1632d2cd39a03"
+    },
+    {
+      "name": "experiment/musique-multihop-source-gate-20261114",
+      "sha": "7b6d58d77cfb1e664ba3292cdb0bf120a8435aba"
+    },
+    {
+      "name": "experiment/native-gaia-action-source-gate-20261116",
+      "sha": "52dffc446ef45c529996dd1a18d2eebd17f94d40"
+    },
+    {
+      "name": "experiment/native-thinking-256",
+      "sha": "818c5f91d01a1bbe894d7bccad9e97ab9d70ae4b"
+    },
+    {
+      "name": "experiment/native-thinking-budget",
+      "sha": "d485c9f892962ddfc739e89f7b2c2f0299dbff8f"
+    },
+    {
+      "name": "experiment/native40-trained8-2wiki-val8-pair-20261116",
+      "sha": "6a3c64c4a683fbe5b5b17cad516882cc040d61e6"
+    },
+    {
+      "name": "experiment/nextsearch-colab-real-gpu8-20261115",
+      "sha": "9f2af9769d24b702730774c21a9fe057b0f29131"
+    },
+    {
+      "name": "experiment/nextsearch-gold-grounded-search-traces-20261115",
+      "sha": "6fbcb1a65b9c9558f599534c19b1dc3528bd3742"
+    },
+    {
+      "name": "experiment/nextsearch-gpu8-heldout-abba-val4-20261116",
+      "sha": "bc19d8a9b4cb0013329a4306a62974acc7ba9d4f"
+    },
+    {
+      "name": "experiment/nextsearch-trained8-2wiki-local-val4-20261116",
+      "sha": "5109de4ebb79fc6817b6442c180f97084132a10d"
+    },
+    {
+      "name": "experiment/openhands-executed-long-traces-20261115",
+      "sha": "8b8e33c96b9db1eb3d751f5ba7286690a7f4194f"
+    },
+    {
+      "name": "experiment/qlora-multihop-oracle-supervision-20261115",
+      "sha": "c41fb9ce1e1d774afcc17942ad15526a37391ceb"
+    },
+    {
+      "name": "experiment/qlora-v3b-novel2wiki-val8-20261116",
+      "sha": "8a8fa2c12b5d5442474dee2cb73dd7f84fcc98f8"
+    },
+    {
+      "name": "experiment/qlora-v7-github-cpu-batched-20261113",
+      "sha": "28e1f5fe99cea165582312e97182a7e39a06d6de"
+    },
+    {
+      "name": "experiment/qlora-v7-helout-nextaction-eval-20261113",
+      "sha": "a7bc8304d84d74134a1a6a26ab3bcb04387d6db6"
+    },
+    {
+      "name": "experiment/qlora-v7-hf-batched-20261113",
+      "sha": "0477d2a96a13bd7499f2d5731ca2e0e8b5e20b44"
+    },
+    {
+      "name": "experiment/qlora-v7-kaggle-gpu-20261113",
+      "sha": "8175dbc070913914d79c5046004b1eaf3bb27f4f"
+    },
+    {
+      "name": "experiment/qlora-v7-source-balanced-sft-20261113",
+      "sha": "686e8aca022713d0dbcc4b2b2690251465916c8c"
+    },
+    {
+      "name": "experiment/qlora-v8-durable-stage35-20261115",
+      "sha": "3eac23cca117a41855f4998399f79a5d9d5f4369"
+    },
+    {
+      "name": "experiment/qlora-v8-t4-preserve-frozen-half-20261115",
+      "sha": "f9c91807f1e1e8f7cc92ea58928b458d4f4bd6e3"
+    },
+    {
+      "name": "experiment/qwen-linked-read-val8-20261115",
+      "sha": "ef945963e85bdc57987d982d65c63a146fbf4509"
+    },
+    {
+      "name": "experiment/qwen9b-2wiki-serializer-confirm48-20261117",
+      "sha": "45381a0862ac08f7d2884e8cbcdabca7c8af45a2"
+    },
+    {
+      "name": "experiment/qwen9b-2wiki-serializer-new16-20261117",
+      "sha": "1d0bdbe807b2f1322c5c04606529b577bdf6d8a9"
+    },
+    {
+      "name": "experiment/qwen9b-constrained-final-gaia8-smoke-20261117",
+      "sha": "6d65abb3c400a96ca230f8df37b18765236f7f1e"
+    },
+    {
+      "name": "experiment/qwen9b-evidence-state-action-20261115",
+      "sha": "d4fa246d0245e9d1b7056df6542442c2ee827ff5"
+    },
+    {
+      "name": "experiment/qwen9b-frozen-fourway-dev24-20261123",
+      "sha": "5ee1338a572bf0c86490a469540f7545f7e7705a"
+    },
+    {
+      "name": "experiment/qwen9b-gaia-residual15-serializer-20261117",
+      "sha": "10e58165d752470a93f8dd7020fd2e7a462a73b4"
+    },
+    {
+      "name": "experiment/qwen9b-gaia15-final-json-grammar-20261117",
+      "sha": "3a2fa8a1d93fb8f060b875cc324a37ea5c9fd188"
+    },
+    {
+      "name": "experiment/qwen9b-hotpot-answer-serializer-new16-20261117",
+      "sha": "4b3ac6cce99c79c8257a5514ddf3bec2dcfc6933"
+    },
+    {
+      "name": "experiment/qwen9b-hotpot-source-links-final-contract-20261117",
+      "sha": "b60aa03524fc3d9bcfcbeeafe4d9426e3c9a3627"
+    },
+    {
+      "name": "experiment/qwen9b-musique-last8-final-only-paired-20261115",
+      "sha": "d42493c599e90a1fcde135a6eafec3d222c4a4fe"
+    },
+    {
+      "name": "experiment/qwen9b-musique8-cpu-autonomous-baseline-20261115",
+      "sha": "2e48db87bbe5e617d90027a222e1e8104ef54110"
+    },
+    {
+      "name": "experiment/qwen9b-native-multisource-train-freeze-20261116",
+      "sha": "8db8086d26f58921da315b6bc3e81ac2f672faf0"
+    },
+    {
+      "name": "experiment/replay-successful-duplicates-20261114",
+      "sha": "a091a2353a0b1d0f496d23d7ec0054419d8e56e2"
+    },
+    {
+      "name": "experiment/sft-learning-diagnostic",
+      "sha": "ad3ae924f39608bb3109852ca7ea0216f87ce953"
+    },
+    {
+      "name": "experiment/v3d-terminal-recovery-20261112",
+      "sha": "f3e846239946a1c5c6235a1dfc58bfd5c5b69b69"
+    },
+    {
+      "name": "experiment/v7-closed-loop-20261114",
+      "sha": "8ffc58d4399cfd0ec20ec79892696d35c04e65c2"
+    },
+    {
+      "name": "experiment/v7-finalstep-format-gaia15-20261114",
+      "sha": "f6a0e686ca432d0cbb6a9d12f8e3857fc895b9c1"
+    },
+    {
+      "name": "experiment/v7-finqa-numeric20-20261114",
+      "sha": "6d5c3eca8e73b91a7c861cb3700231362c5274b7"
+    },
+    {
+      "name": "experiment/v7-format-gaia-shadow25-20261114",
+      "sha": "371dd0059879e9fa3f334e3cecbc905320ef4bb8"
+    },
+    {
+      "name": "experiment/v7-format-gaia100-replication-20261116",
+      "sha": "372dee3fa4c903f8e0ffdc3810ef7d5f8232b317"
+    },
+    {
+      "name": "experiment/v7-recovery-observation-20261114",
+      "sha": "6e9f3d3ddc50e5dd229b700f5c56139b4bec62f8"
+    },
+    {
+      "name": "experiment/v7-recovery-trace-20261114",
+      "sha": "d298f007ffcfb39e2ca41ff9601e0574866ecc68"
+    },
+    {
+      "name": "experiment/v7-toolmisuse-transfer24-20261114",
+      "sha": "379c72eb574068d84f071cc5eae3ce556404b712"
+    },
+    {
+      "name": "fix/active-workflow-ci-20261112",
+      "sha": "3795534127f1c54d2595e542e625eb8aa146d8a2"
+    },
+    {
+      "name": "fix/gaia-runtime-comparison-20261123",
+      "sha": "f6e6443cdb7b9c3c775b9d2cc3bdc582b031e16b"
+    },
+    {
+      "name": "fix/gaia-tool-call-loop-control-20261113",
+      "sha": "6bab5ac9f691409ba37aeb24f3469f66054a5c97"
+    },
+    {
+      "name": "fix/honor-curated-training-action-indices-20261114",
+      "sha": "d18e25dd78f00da0127c41c1c241e9d220a2d8a7"
+    },
+    {
+      "name": "fix/qlora-v4-t4-4bit-memory-20261112",
+      "sha": "0ac069b44b3d6e92917152e8d029f4a9a71e2191"
+    },
+    {
+      "name": "fix/recovery-observation-single-prefix-20261114",
+      "sha": "85cde55416e7cea45831445b1be72bc3ecdccfff"
+    },
+    {
+      "name": "release/portfolio-gaia-20261123",
+      "sha": "32a2395dadd01471ae769d71e237d5cbc276da9e"
+    },
+    {
+      "name": "research/adapter-factorial-gate-20261117",
+      "sha": "0b3f225f7e99018fc83bea879e38cb0bfdf3d60b"
+    },
+    {
+      "name": "research/agent-protocol-recovery-v1-20261122",
+      "sha": "4b76d619cacdd06f6c79199f973626783ce9339e"
+    },
+    {
+      "name": "research/appworld-auth-visible-contract-census-20261120",
+      "sha": "8a182e731577a4fb0c548c8bbb6e4b0a7daf6b36"
+    },
+    {
+      "name": "research/appworld-dev57-public-get-complete-evidence-20261119",
+      "sha": "ee051d7e6a8fb45f7c096a68473196c15e43002c"
+    },
+    {
+      "name": "research/appworld-first401-auth-action-trace-20261120",
+      "sha": "fd5db2795aa87ee290147b382ded0d45ee91b17b"
+    },
+    {
+      "name": "research/appworld-gold-api-horizon-source-feasibility-20261117",
+      "sha": "7c24866632f9ebd2081ca572ed19cde33874361b"
+    },
+    {
+      "name": "research/appworld-official-supervisor-parity-cpu-20261120",
+      "sha": "b45f1649109e1cf2210562d8d2b2c3e147177f10"
+    },
+    {
+      "name": "research/appworld-public-tool-source-audit-20261120",
+      "sha": "376e09b9ef7a0dfb9bac41ec5080257806d7bd41"
+    },
+    {
+      "name": "research/appworld-public401-auth-feedback-gate-20261120",
+      "sha": "d410b93d1e30e1fafb0919f2b0b9629014864754"
+    },
+    {
+      "name": "research/appworld-supervisor-credential-capability-gate-20261120",
+      "sha": "f3cff7780c502f378e48025c98e2c6c2bf1d0ce7"
+    },
+    {
+      "name": "research/appworld-supervisor-parity-paired-ab-preregister-20261120",
+      "sha": "c81f78d3ea9b537c33eb50690d9bd543d54326e5"
+    },
+    {
+      "name": "research/appworld-token-provenance-and-recovery-20261120",
+      "sha": "f068de10e051a5143f9792e8ec2ac9e4d27cebeb"
+    },
+    {
+      "name": "research/appworld-train-denied-app-list-prefix-fork-20261120",
+      "sha": "f510f186c6739e12d65608c342bc80c32544db04"
+    },
+    {
+      "name": "research/appworld-train-first-failure-mechanisms-20261120",
+      "sha": "2a384df90adca1aeefa1fc2483d5e4caf74a3d55"
+    },
+    {
+      "name": "research/appworld-train-http-observation-gate-20261119",
+      "sha": "22b59b8e164dfe6b3cd8d473042d714a2f851961"
+    },
+    {
+      "name": "research/appworld-train-public-api-bridge-coverage-20261117",
+      "sha": "b3b412fd717b8c8db60537aad7f27a24492f9f20"
+    },
+    {
+      "name": "research/final-optin-verbatim-answer-20261121",
+      "sha": "1faed58c4d66658f7d5bb308d288cdf377858c25"
+    },
+    {
+      "name": "research/fixed-appworld-dev57-stage-metrics-20261117",
+      "sha": "519d0de697119c31bcf83d93be8a51546ce65d2e"
+    },
+    {
+      "name": "research/gaia-answer-format-confound-audit-20261116",
+      "sha": "792cb747226f79e0519a20814d22abe79769fac2"
+    },
+    {
+      "name": "research/gaia-capability-census-20261123",
+      "sha": "f3d69420ae855a71abc17f36f2d3cf77c885b79e"
+    },
+    {
+      "name": "research/gaia-observation-2k8k-20261123",
+      "sha": "8e8254b8f9c56f61f2b70ea4e8e8e9048aacfef1"
+    },
+    {
+      "name": "research/gaia-residual15-exposure-audit-20261117",
+      "sha": "6b1300b67dd97c3899c41cfb6190b85d8259839b"
+    },
+    {
+      "name": "research/gaia-scorer-parity-20261116",
+      "sha": "01c6d0b1afc18fea606aec17f1f32e529e4fd0c1"
+    },
+    {
+      "name": "research/gaia-search-leakage-gate-20261122",
+      "sha": "b8936901048d4aa629f43c0fc85661ae915cbcdb"
+    },
+    {
+      "name": "research/gaia-shadow25-v3b-transfer-proof-20261122",
+      "sha": "933f022d6b9e6ec893997b3872bc5faa1b2c6ee3"
+    },
+    {
+      "name": "research/gaia-step100-dev48-failure-census-20261123",
+      "sha": "acb2f66b929982c9bd72f496972b2380091d7da6"
+    },
+    {
+      "name": "research/gaia-step100-evidence-state-prereg-20261123",
+      "sha": "8be2fcccbb8989f53b6f13670bedfa0f9761191c"
+    },
+    {
+      "name": "research/gaia-step100-final-retry-2wiki-20261123",
+      "sha": "5307847196c7ee17e68c4d6d125d987d0dc8cd76"
+    },
+    {
+      "name": "research/gaia-step100-headtail-2k-shadow25-20261123",
+      "sha": "f7d18cafa5ea332e5e583c609c6e9e9d1a3e6bcf"
+    },
+    {
+      "name": "research/gaia-step100-image-ocr-20261123",
+      "sha": "b15d9804c682235c55a6c2935eb8a3a81b075a9a"
+    },
+    {
+      "name": "research/gaia-step100-optin-vision-tool-preflight-20261123",
+      "sha": "2da0a0aa3d687af64f9ea3aefb382571b9afa490"
+    },
+    {
+      "name": "research/gaia-step100-workspace-find-prereg-20261123",
+      "sha": "5ee1338a572bf0c86490a469540f7545f7e7705a"
+    },
+    {
+      "name": "research/gaia-stop-evidence-contract20-20261123",
+      "sha": "735aa1fe0b69b29aeb683bc43bb7a1ea5257072d"
+    },
+    {
+      "name": "research/gaia-stop-evidence-step100-20261123",
+      "sha": "2ee340654943661759226962936665278bdb3d41"
+    },
+    {
+      "name": "research/gaia-stop-transfer-musique24-prereg-20261123",
+      "sha": "5921241481ff8972fc60eec9201b595f5520f76b"
+    },
+    {
+      "name": "research/gaia100-rootcause-buckets-20261117",
+      "sha": "b36b93217e6a63f5bb8b72459aa84df080f864d7"
+    },
+    {
+      "name": "research/metrics-protocol-20261116",
+      "sha": "7b89ababff4a8af531af07bd626e3bcd6719ac41"
+    },
+    {
+      "name": "research/musique-unseen8-support-path-audit-20261115",
+      "sha": "5f9502866220f05d0d968f90a2e389bfb5f1a358"
+    },
+    {
+      "name": "research/nextsearch-full-cross-contamination-audit-20261116",
+      "sha": "d03ba9a8d220864371ce0e4946ab8ed7a552eab8"
+    },
+    {
+      "name": "research/official-prefix-stop-label-gate-20261122",
+      "sha": "f1fac6d48fef8d9ae4f407a1f8f2717ce1d26545"
+    },
+    {
+      "name": "research/offline-login-status-identifiability-20261120",
+      "sha": "6f0b880152688deec0d180345a6c30e62f19b7ba"
+    },
+    {
+      "name": "research/owner-appworld-train-feedback-fork-20261119",
+      "sha": "8a4901d8c6b06980cc17b04d24e32b6dd5d257d3"
+    },
+    {
+      "name": "research/pro-target-tool-schema-audit-20261116",
+      "sha": "3dd9215ecb6a846f400903ee74a0ee1f33ea4817"
+    },
+    {
+      "name": "research/qwen9b-evidence-access-20261115",
+      "sha": "e8c8054864da618534c4c05f002e18667dc7f81f"
+    },
+    {
+      "name": "research/qwen9b-musique-unseen-readpath-diagnostic-20261115",
+      "sha": "23aa14a697362158bf78b13fdbac5600be5cb6cb"
+    },
+    {
+      "name": "research/record-2wiki16-cross-benchmark-positive-20261117",
+      "sha": "ce74a3bd7581c5493c42bb13196117aba95659ab"
+    },
+    {
+      "name": "research/record-2wiki48-confirmed-qa-only-positive-20261117",
+      "sha": "a26b915afc2dd8ac488e80c6437cdae0ed6f7d03"
+    },
+    {
+      "name": "research/record-gaia-fixed-terminal-negative-20261117",
+      "sha": "ae53e3966792f58621e67d4fdbbe01a44b61a2a3"
+    },
+    {
+      "name": "research/record-gaia-terminal-safety-controls2-20261117",
+      "sha": "4dac60331141253349a8851fcec26e41ba15daea"
+    },
+    {
+      "name": "research/record-gaia15-grammar-complete-negative-20261117",
+      "sha": "184f69635618f4c8805eb3099bed3c67013b09c5"
+    },
+    {
+      "name": "research/record-gaia15-serializer-strict-negative-20261117",
+      "sha": "e9dae548ceb1a6985058da8782480637a08ccc4f"
+    },
+    {
+      "name": "research/record-hotpot-source-shift-negative-20261117",
+      "sha": "fcb68acb576da667cedfdf8e98079e893c8ba037"
+    },
+    {
+      "name": "research/record-hotpot16-serializer-positive-screen-20261117",
+      "sha": "fae279012ff1e139d2c80b81c6631d5da415b6b9"
+    },
+    {
+      "name": "research/record-v7-format-gaia100-final-20261116",
+      "sha": "9a34e6fcf45469d143b8ead94ef0267cf6c2f319"
+    },
+    {
+      "name": "research/source-verified-qlora-data-gate-20261119",
+      "sha": "82136760f9fdca992e1014b5a4a8b6f9a9c98e32"
+    },
+    {
+      "name": "research/supervisor-doc-discovery-activation-gate-20261118",
+      "sha": "2bf3ba055d238a3667964dc4ef75676918f61c6f"
+    },
+    {
+      "name": "research/termination-shift-diagnostic-20261112",
+      "sha": "eff2a2ebd6175c47ac5c4324033c5ee63c2a4cff"
+    },
+    {
+      "name": "research/v8-full-multihop-holdout-gate-20261115",
+      "sha": "00b4d72848513442039a4c4d0eb481811b48fe9a"
+    },
+    {
+      "name": "research/v8-gaia100-regression-audit-20261122",
+      "sha": "57bcfc7db391ea48cdac99a729cd1f423ff06744"
+    },
+    {
+      "name": "research/v8-long-horizon-label-coverage-audit-20261117",
+      "sha": "e9d6918056208c04929e04efbaf34405f1a332b8"
+    },
+    {
+      "name": "research/v8-stage100-resume-20261121",
+      "sha": "15f98113cae87ec0038375cec7ddfad3f3eae8cc"
+    },
+    {
+      "name": "research/v8-stage70-resume-20261121",
+      "sha": "a7234b13945efc66ee3b66ce2fccb49997ee09f4"
+    },
+    {
+      "name": "research/v8-train-action-generalization-audit-20261123",
+      "sha": "e8ce83797dc80c35e55de32649fd9f0106df49fc"
+    },
+    {
+      "name": "research/v9-real-source-recovery-contrast-20261123",
+      "sha": "f74e36a17fc175848202e8360f384e2cb008ec0a"
+    },
+    {
+      "name": "research/verified-prefix-fork-20261119",
+      "sha": "e0b886e3a56e2996493f5d76c84ba55f37d46d94"
+    },
+    {
+      "name": "research/verified-teacher-trajectory-v0-20261112",
+      "sha": "efd519230f4aef23eda467466d05b85e428eaacc"
+    },
+    {
+      "name": "showcase/sft-evidence",
+      "sha": "01d521486be5116b157e7cc33bef43c38edcae8e"
+    },
+    {
+      "name": "tool-runtime-v2/minimal",
+      "sha": "39e6af3ef4d9e4f40ab874328991989dffa0be6f"
+    },
+    {
+      "name": "tool-runtime-v2/red-tests",
+      "sha": "28ce3fd57ba3ee56dd0948e11dbc7ed14076f8b1"
+    }
+  ]
+}
