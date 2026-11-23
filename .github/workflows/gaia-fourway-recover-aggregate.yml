@@ -1,0 +1,90 @@
+name: Recover existing GAIA same-task scores (aggregate only)
+
+on:
+  push:
+    branches: [exp/gaia-fourway-20261123]
+    paths:
+      - .github/workflows/gaia-fourway-recover-aggregate.yml
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Completed GAIA shard workflow run (no model inference in this workflow)"
+        required: true
+        default: "45144537782"
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  recover_existing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout current aggregation code (not GAIA scoring modifications)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - name: Install Python project (fix missing gaia_small_agent import)
+        run: |
+          set -euo pipefail
+          python -m pip install -e .
+          python -c 'import gaia_small_agent; from scripts.gaia_same_task import aggregate; print("AGGREGATOR_IMPORT_OK")'
+      - name: Download original saved 20 shard artifacts; DO NOT rerun inference
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id || '45144537782' }}
+          pattern: gaia-fourway-shard-*
+          merge-multiple: true
+          path: shards
+      - name: Require precisely 60 original five-case arm outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+          files = list(Path("shards").glob("*.json"))
+          assert len(files) == 60, f"expected 60 original results, got {len(files)}"
+          source = [json.loads(p.read_text()) for p in files]
+          assert Counter(x["arm"] for x in source) == {"base":20, "v7":20, "v8step70":20}
+          assert all(len(x["cases"]) == 5 for x in source)
+          print("RECOVERED_ORIGINAL_300_SCORED_EPISODES_WITHOUT_NEW_INFERENCE")
+          PY
+      - name: Compute original 100-task matched scores, failures and wins/losses
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.gaia_same_task \
+            --inputs shards/*.json \
+            --output gaia-same-task-summary.json \
+            --markdown gaia-same-task-report.md
+          test -s gaia-same-task-summary.json
+          test -s gaia-same-task-report.md
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path("gaia-same-task-summary.json").read_text())
+          assert r["status"]=="COMPLETE_AVAILABLE_ARMS_ONLY"
+          assert r["missing_versions"]==["v3d"]
+          assert len(r["per_task"])==100
+          print("VERIFIED_SAME_TASK_SCORES",json.dumps({
+              k:{"correct":m["correct"],"completed":m["completed"],
+                 "invalid_final":m["invalid_final"],"tool_errors":m["tool_errors"]}
+              for k,m in r["arm_metrics"].items()
+          },sort_keys=True))
+          PY
+      - name: Upload recovered scorecard and full hashed case table
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gaia-same-task-original-300-recovered-results
+          path: |
+            gaia-same-task-summary.json
+            gaia-same-task-report.md
+          if-no-files-found: error
+          retention-days: 30
