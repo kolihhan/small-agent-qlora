@@ -1,0 +1,156 @@
+name: FROZEN Step100 workspace-find MuSiQue DEV24 A/B
+on:
+  push:
+    branches: [research/gaia-step100-workspace-find-prereg-20261123]
+    paths: [.github/workflows/musique-dev24-workspace-find-prereg.yml]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: step100-fresh-mu-dev24-workspace-find-frozen-v1
+  cancel-in-progress: true
+env:
+  BASE_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  BASE_SHA: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLM_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLM_SHA: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  DEV_URL: https://huggingface.co/datasets/bdsaglam/musique/resolve/667064b514d22deecae00a3dccbd92bccf88869e/musique_ans_v1.0_dev.jsonl?download=true
+  DEV_SHA: 15fa63794d18a94ce12411aca6e2327e65b6e83b0b1490efab3f1962e48abf3b
+
+jobs:
+  paired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - name: Test opt-in tool, source-split selection, path traversal and unmodified default
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev,search,files,eval]'
+          python -m pytest -q tests/test_workspace_find_dev24.py tests/test_gaia_evidence_stop_contract20.py
+      - name: Download immutable MuSiQue DEV split and validate pinned content SHA before inference
+        run: |
+          set -euo pipefail
+          mkdir -p frozen
+          curl -fL --retry 5 --retry-delay 3 "$DEV_URL" -o frozen/musique_ans_v1.0_dev.jsonl
+          echo "$DEV_SHA  frozen/musique_ans_v1.0_dev.jsonl" | sha256sum -c -
+          python - <<'PY'
+          from pathlib import Path
+          from scripts.eval_workspace_find_dev24 import load_frozen_selection
+          rows, digest=load_frozen_selection(Path("frozen/musique_ans_v1.0_dev.jsonl"))
+          assert len(rows)==24
+          print("MU_DEV24_NONTRAIN_SELECTION_FROZEN count=24 manifest_sha256="+digest)
+          PY
+      - name: Download pinned Qwen base and exact llama.cpp build
+        run: |
+          set -euo pipefail
+          mkdir -p model /tmp/llama-bin adapter
+          curl -fL --retry 5 --retry-delay 3 "$BASE_URL" -o model/base.gguf
+          echo "$BASE_SHA  model/base.gguf" | sha256sum -c -
+          curl -fL --retry 5 --retry-delay 3 "$LLM_URL" -o /tmp/llama.tar.gz
+          echo "$LLM_SHA  /tmp/llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin
+          SERVER=$(find /tmp/llama-bin -type f -name llama-server -perm -111 | head -n1)
+          test -x "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+      - name: Download physically audited BF16-continuous Step100 GGUF, no Step70
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 44980055775
+          repository: kolihhan/small-agent-qlora
+          name: gaia-v8-audited-gguf
+          github-token: ${{ github.token }}
+          path: adapter
+      - name: Check frozen adapter source, steps and checksum
+        run: |
+          set -euo pipefail
+          GGUF=$(find adapter -name 'v8-qlora-adapter.gguf' -type f -print -quit)
+          MANIFEST=$(find adapter -name gguf-conversion-manifest.json -type f -print -quit)
+          test -s "$GGUF" && test -s "$MANIFEST"
+          checksum=$(python -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["training_run_id"]==44925307580 and m["training_steps"]==100 and m["model"]=="Qwen/Qwen3.5-9B"; print(m["gguf_adapter_sha256"])' "$MANIFEST")
+          test "$checksum" = "$(sha256sum "$GGUF" | cut -d' ' -f1)"
+          test "$(head -c 4 "$GGUF")" = GGUF
+          echo "V8_GGUF=$GGUF" >> "$GITHUB_ENV"
+      - name: Evaluate all 6 frozen DEV tasks per shard per arm with identical model/seed and 12-step budget
+        shell: bash
+        run: |
+          set -euo pipefail
+          shard=${{ matrix.shard }}
+          arms=(control find)
+          if (( shard % 2 == 1 )); then arms=(find control); fi
+          for arm in "${arms[@]}"; do
+            mkdir -p "runs/$arm/shard-$shard" safe
+            "$LLAMA_SERVER" -m model/base.gguf --lora "$V8_GGUF" \
+              --alias qwen3.5-9b --host 127.0.0.1 --port 8080 \
+              --ctx-size 16384 --threads 4 --parallel 1 --jinja \
+              --reasoning-budget 0 --temperature 0 \
+              > "/tmp/mu-dev24-$arm-llama-private.log" 2>&1 &
+            pid=$!
+            trap 'kill "$pid" 2>/dev/null || true' EXIT
+            for i in {1..180}; do
+              if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then break; fi
+              sleep 2
+            done
+            curl -fsS http://127.0.0.1:8080/health >/dev/null
+            python -m scripts.eval_workspace_find_dev24 \
+              --source frozen/musique_ans_v1.0_dev.jsonl \
+              --shard "$shard" --arm "$arm" \
+              --base-url http://127.0.0.1:8080 \
+              --work-root "runs/$arm/shard-$shard" \
+              --output "safe/shard-$shard-$arm.json" \
+              > "/tmp/mu-dev24-$arm-private-episodes.log" 2>&1 || {
+                echo "MU_DEV24_AGENT_EVAL_FAILED_PRIVATE_CONTENT_RETAINED_LOCALLY"; exit 1;
+              }
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            trap - EXIT
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          shard=${{ matrix.shard }}
+          data={a:json.loads(Path(f"safe/shard-{shard}-{a}.json").read_text()) for a in ("control","find")}
+          assert set(x["id_sha256"] for x in data["control"]["cases"])==set(x["id_sha256"] for x in data["find"]["cases"])
+          print("MU_DEV24_FROZEN_PAIRED_SHARD",shard,
+                "BASE",sum(x["correct"] for x in data["control"]["cases"]),
+                "FIND",sum(x["correct"] for x in data["find"]["cases"]))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: MUDEV24-STEP100-WORKSPACE-FIND-SAFE-SHARD-${{ matrix.shard }}
+          path: safe/shard-${{ matrix.shard }}-*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  official_paired_score:
+    needs: paired
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - run: python -m pip install -e .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: MUDEV24-STEP100-WORKSPACE-FIND-SAFE-SHARD-*
+          merge-multiple: true
+          path: evidence
+      - name: Enforce all 24 paired tasks and prereg criteria, no prompt/threshold tuning
+        run: |
+          python -m scripts.eval_workspace_find_dev24 \
+            --evidence-dir evidence \
+            --output MUDEV24-FIND-STEP100-PREREG-SCORE.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: MUDEV24-FIND-STEP100-PREREG-SCORE
+          path: MUDEV24-FIND-STEP100-PREREG-SCORE.json
+          if-no-files-found: error
+          retention-days: 30
