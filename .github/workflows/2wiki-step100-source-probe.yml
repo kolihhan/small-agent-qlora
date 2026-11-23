@@ -1,0 +1,45 @@
+name: PROBE independent 2WikiMultiHopQA DEV source layout - CPU only
+on:
+  push:
+    branches: [research/gaia-step100-final-retry-2wiki-20261123]
+    paths: [.github/workflows/2wiki-step100-source-probe.yml]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - name: Download version-pinned source and inspect schema without printing task content
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --http1.1 -fL --retry 12 --retry-all-errors --retry-delay 4 \
+            'https://huggingface.co/datasets/voidful/2WikiMultihopQA/resolve/16852fde9d85cba158cf7e6517e7a3f9415a28c0/dev.json?download=true' \
+            -o /tmp/2wiki-dev.json
+          python - <<'PY'
+          import hashlib,json,collections
+          from pathlib import Path
+          data=Path("/tmp/2wiki-dev.json").read_bytes()
+          rows=json.loads(data)
+          assert isinstance(rows,list) and len(rows)>100
+          first=rows[0]
+          assert isinstance(first,dict) and all(k in first for k in ("question","answer","context"))
+          context=first["context"]
+          print("2WIKI_SOURCE_PROBE",json.dumps({
+            "bytes":len(data),
+            "sha256":hashlib.sha256(data).hexdigest(),
+            "rows":len(rows),
+            "keys":sorted(first),
+            "context_type":type(context).__name__,
+            "context_element_type":type(context[0]).__name__ if context else None,
+            "sample_context_len":len(context),
+            "sample_supporting_facts_type":type(first.get("supporting_facts")).__name__,
+            "sample_question_type":type(first["question"]).__name__,
+            "sample_answer_type":type(first["answer"]).__name__,
+            "task_content_or_answers_exported":False
+          },sort_keys=True))
+          PY
