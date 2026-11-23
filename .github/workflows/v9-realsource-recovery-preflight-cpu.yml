@@ -30,6 +30,13 @@ jobs:
           name: qlora-v8-protected-source-balanced-token-checked
           github-token: ${{ github.token }}
           path: input
+      - name: Download original human-annotated MuSiQue TRAIN for physical workspace replay; no DEV or GAIA
+        run: |
+          set -euo pipefail
+          curl --http1.1 --fail --location --retry 12 --retry-all-errors --retry-delay 4 \
+            'https://huggingface.co/datasets/bdsaglam/musique/resolve/667064b514d22deecae00a3dccbd92bccf88869e/musique_ans_v1.0_train.jsonl?download=true' \
+            -o input/musique_ans_v1.0_train.jsonl
+          echo '83a75b1e11e4e9bb8f8308e72ac40ca617ae4431b3a0d955b61cab259248490a  input/musique_ans_v1.0_train.jsonl' | sha256sum -c -
       - name: Prepare exact same 304 parents, 798 selected action labels with error-conditioned contexts
         run: |
           set -euo pipefail
@@ -37,6 +44,7 @@ jobs:
             --train input/qlora-v8-train.jsonl \
             --holdout input/qlora-v8-holdout.jsonl \
             --manifest input/qlora-v8-audit.json \
+            --musique input/musique_ans_v1.0_train.jsonl \
             --output safe/qlora-v9-error-context-train.jsonl \
             --report safe/qlora-v9-recovery-context-audit.json
       - name: Validate with the original v8 QLoRA verified-row loader (no GPU)
