@@ -1,0 +1,59 @@
+name: V9 error-conditioned real-source TRAIN data preflight (CPU only)
+on:
+  push:
+    branches: [research/v9-real-source-recovery-contrast-20261123]
+    paths: [.github/workflows/v9-realsource-recovery-preflight-cpu.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - name: Check native read-tool failure and unchanged action labels
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev,files]'
+          python -m pytest -q tests/test_prepare_v9_real_source_recovery.py
+      - name: Download original v8 TRAIN with 304 parent tasks and independent HOLDOUT
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 43619541894
+          name: qlora-v8-protected-source-balanced-token-checked
+          github-token: ${{ github.token }}
+          path: input
+      - name: Prepare exact same 304 parents, 798 selected action labels with error-conditioned contexts
+        run: |
+          set -euo pipefail
+          python -m scripts.prepare_v9_real_source_recovery \
+            --train input/qlora-v8-train.jsonl \
+            --holdout input/qlora-v8-holdout.jsonl \
+            --manifest input/qlora-v8-audit.json \
+            --output safe/qlora-v9-error-context-train.jsonl \
+            --report safe/qlora-v9-recovery-context-audit.json
+      - name: Validate with the original v8 QLoRA verified-row loader (no GPU)
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from gaia_small_agent.training.qlora import load_verified_rows
+          original=load_verified_rows('input/qlora-v8-train.jsonl')
+          candidate=load_verified_rows('safe/qlora-v9-error-context-train.jsonl')
+          assert len(original)==len(candidate)==304
+          assert [r['task_id'] for r in original]==[r['task_id'] for r in candidate]
+          assert [len(r['training_action_indices']) for r in original] == [len(r['training_action_indices']) for r in candidate]
+          print("V9_NATIVE_TRAINER_LOADER_PASS 304 parents 798 preserved labels")
+          PY
+      - name: Archive experimental TRAIN privately and aggregate-only audit
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: V9-REAL-SOURCE-RECOVERY-TRAIN-CANDIDATE-IF-VERIFIED
+          path: |
+            safe/qlora-v9-error-context-train.jsonl
+            safe/qlora-v9-recovery-context-audit.json
+          if-no-files-found: error
+          retention-days: 21
