@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/kolihhan/small-agent-qlora/actions/workflows/ci.yml/badge.svg)](https://github.com/kolihhan/small-agent-qlora/actions/workflows/ci.yml)
 
-**Can QLoRA teach a 9B model to use tools and finish real tasks more reliably?**
+**QLoRA fine-tuning for a Qwen3.5-9B tool-using agent, tested on controlled tasks and real-tool GAIA100.**
 
 I trained Qwen3.5-9B adapters on tool-use trajectories, then tested them with an autonomous agent: search the web, read documents, inspect files, run limited Python, and decide when to answer. The interesting part was not the training loss. It was what happened when the model had to work through an unfamiliar task without a teacher telling it the next action.
 
