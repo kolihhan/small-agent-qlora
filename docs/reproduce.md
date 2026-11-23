@@ -34,7 +34,7 @@ The CLI defaults to Ollama. The reported GAIA100 evaluation did **not** use that
 
 ## 3. Frozen GAIA100 experiment
 
-Use the [frozen experiment branch](https://github.com/kolihhan/small-agent-qlora/tree/exp/gaia-fourway-20261123) to inspect the actual workflow and scorer contract.
+Use the [frozen experiment branch](https://github.com/kolihhan/small-agent-qlora/tree/b63fa3b088ff608458933531387a3be49ba33049) to inspect the actual workflow and scorer contract.
 
 The workflow performs:
 
