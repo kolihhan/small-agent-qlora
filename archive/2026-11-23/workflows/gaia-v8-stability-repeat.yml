@@ -1,0 +1,175 @@
+name: GAIA v8 Step70 stability repeats on original 100 tasks
+
+on:
+  push:
+    branches: [exp/gaia-fourway-20261123]
+    paths: [.github/workflows/gaia-v8-stability-repeat.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_SHA: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+
+jobs:
+  health:
+    name: Verify runner, real tools, GAIA selection; no model calls
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: "3.11"}
+      - name: Install unchanged runtime
+        run: python -m pip install -e '.[eval,search,files]'
+      - name: Real tool smoke and exact frozen Evaluation100 cohort
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo HF_TOKEN_MISSING; exit 42; }
+          python - <<'PY'
+          import tempfile, json
+          from gaia_small_agent.tools import check_default_tools
+          from gaia_small_agent.benchmark.gaia100 import load_validation
+          from scripts.gaia_same_task import fixed_rows
+          with tempfile.TemporaryDirectory() as root:
+              state=check_default_tools(root,live_search=True)
+          print("REAL_TOOLS",json.dumps({k:v["ok"] for k,v in state["checks"].items()}))
+          assert state["ready"]
+          assert len(fixed_rows(load_validation(token=None))) == 100
+          print("PRE_REPEAT_GATE_SUCCESS")
+          PY
+
+  repeat:
+    name: Paired frozen GAIA100 repeat ${{ matrix.repeat }} shard ${{ matrix.shard }}
+    needs: health
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        repeat: [2, 3]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: "3.11"}
+      - name: Install exact same evaluator and tools
+        run: python -m pip install -e '.[eval,search,files]'
+      - name: Retrieve ORIGINAL verified v8 Step70 adapter (not step100)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          run-id: 45037819202
+          name: qwen35-9b-v8-stage70-verified-lora-gguf
+          path: adapter
+      - name: Verify original v8 GGUF and Base + pinned server
+        shell: bash
+        run: |
+          set -euo pipefail
+          adapter="$(find adapter -name v8-stage70-adapter-f16.gguf -type f -print -quit)"
+          checksum="$(find adapter -name v8-stage70-adapter.sha256 -type f -print -quit)"
+          test -n "$adapter" && test -s "$adapter"
+          test -n "$checksum" && test -s "$checksum"
+          got="$(sha256sum "$adapter" | cut -d' ' -f1)"
+          expected="$(cut -d' ' -f1 "$checksum")"
+          test "$got" = "$expected" || { echo "V8_ADAPTER_SHA_MISMATCH"; exit 43; }
+          echo "V8_ADAPTER=$adapter" >> "$GITHUB_ENV"
+          mkdir -p model /tmp/gaia-llama
+          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/base.gguf
+          echo "$MODEL_SHA  model/base.gguf" | sha256sum -c -
+          curl -fL --retry 5 --retry-delay 3 "$LLAMA_URL" -o /tmp/gaia-llama.tar.gz
+          echo "$LLAMA_SHA  /tmp/gaia-llama.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gaia-llama.tar.gz -C /tmp/gaia-llama
+          server="$(find /tmp/gaia-llama -type f -name llama-server -perm -111 | head -n 1)"
+          test -n "$server" && test -x "$server"
+          echo "LLAMA_SERVER=$server" >> "$GITHUB_ENV"
+      - name: Execute Base and v8 Step70 sequentially on same 5 tasks
+        env:
+          SHARD: ${{ matrix.shard }}
+          REPEAT: ${{ matrix.repeat }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p safe
+          for arm in base v8step70; do
+            extra=()
+            if [ "$arm" = v8step70 ]; then extra=(--lora "$V8_ADAPTER"); fi
+            "$LLAMA_SERVER" -m model/base.gguf "${extra[@]}" \
+              --alias qwen3.5-9b --host 127.0.0.1 --port 8080 \
+              --ctx-size 16384 --threads 4 --parallel 1 --jinja \
+              --reasoning-budget 0 --temperature 0 \
+              > "$RUNNER_TEMP/server-$arm.log" 2>&1 &
+            pid=$!
+            trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true' EXIT
+            for attempt in {1..180}; do
+              if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then break; fi
+              sleep 2
+            done
+            curl -fsS http://127.0.0.1:8080/health >/dev/null
+            python scripts/gaia_same_task.py --shard "$SHARD" --arm "$arm" \
+              --output "safe/repeat-$REPEAT-$arm-$SHARD.json"
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            trap - EXIT
+          done
+      - name: Save only scored task hashes; no raw GAIA questions or answers
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gaia-stage2-repeat-${{ matrix.repeat }}-shard-${{ matrix.shard }}
+          path: safe/*.json
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    name: Compare the first run and both new repeats; zero inference here
+    needs: repeat
+    if: ${{ needs.repeat.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: "3.11"}
+      - name: Install project
+        run: python -m pip install -e .
+      - name: Fetch first-run exact 300 episode summary (read only)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          run-id: 45173486537
+          name: gaia-same-task-original-300-recovered-results
+          path: original
+      - name: Fetch all 40 physical repeat shard outputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: gaia-stage2-repeat-*
+          merge-multiple: true
+          path: repeats
+      - name: Require 80 exact paired arm files and compute 3-run stability
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find repeats -maxdepth 1 -type f -name '*.json' | wc -l)" = "80"
+          python -m scripts.gaia_v8_stability
+          test -s gaia-v8-stability-3runs.json
+          test -s gaia-v8-stability-3runs.md
+      - name: Upload complete verified stability report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gaia-stage2-v8step70-stability-3runs
+          path: |
+            gaia-v8-stability-3runs.json
+            gaia-v8-stability-3runs.md
+          if-no-files-found: error
+          retention-days: 30
