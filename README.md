@@ -1,42 +1,40 @@
 # Small Agent QLoRA
 
-**Training a 9B language model to use tools — and measuring whether it actually solves more tasks.**
+**Fine-tuning Qwen3.5-9B to make better decisions with tools.**
 
 [![CI](https://github.com/kolihhan/small-agent-qlora/actions/workflows/ci.yml/badge.svg)](https://github.com/kolihhan/small-agent-qlora/actions/workflows/ci.yml)
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
-![Model](https://img.shields.io/badge/Model-Qwen3.5--9B-334155)
-![Training](https://img.shields.io/badge/Training-QLoRA-334155)
+![Qwen3.5-9B](https://img.shields.io/badge/Model-Qwen3.5--9B-334155)
+![QLoRA](https://img.shields.io/badge/Training-QLoRA-334155)
 
-Small Agent QLoRA is an end-to-end research project built around **Qwen3.5-9B**: curate tool-use trajectories, fine-tune lightweight adapters, run an autonomous tool-using agent, and evaluate **complete task outcomes**, not just training loss or next-action accuracy.
+I built this project to answer a simple question: **can fine-tuning a small language model actually help it finish more tasks?**
 
-One model. Four tools. A bounded agent loop. Reproducible comparisons — including the failures.
+I trained Qwen3.5-9B with QLoRA and tested the adapters in an agent that can search the web, read documents, inspect files, and run Python. The biggest lesson was that choosing a tool is only half the problem. Knowing when to stop matters just as much.
 
-[**Results**](#results) · [**Architecture**](#how-it-works) · [**Quickstart**](#quickstart) · [**Reproduce the experiments**](docs/reproduce.md)
-
----
+[Results](#results) · [How it works](#how-it-works) · [Quickstart](#quickstart) · [Reproduce](docs/reproduce.md)
 
 ## Results
 
-### Real-tool evaluation · GAIA100
+### GAIA100: real tools, same tasks
 
-In one matched run on **100 fixed GAIA validation tasks**, all available models used the same base model, runtime, tool set, evaluator, task IDs and 12-step budget.
+I compared three models on the same 100 GAIA validation tasks, using the same agent runtime, tools, prompt, and evaluation settings.
 
-| | Base | v7 | **v8 · Step 70** |
+| | Base | v7 | **v8 Step70** |
 | :-- | --: | --: | --: |
 | **Correct answers** | 18 / 100 | 25 / 100 | **29 / 100** |
-| Final answers produced | 47 | 37 | **56** |
+| Tasks finished with an answer | 47 | 37 | **56** |
 | Tool calls | 724 | 764 | **546** |
 | Invalid final outputs | 38 | 50 | **29** |
 
-**18 → 29 correct tasks** · **14 Base errors fixed, 3 Base successes lost** · **178 fewer tool calls than Base**
+**18 → 29 correct answers, with 178 fewer tool calls.**
 
-This is a **single matched comparison**, not a claim that the improvement is stable across repeated runs. The GAIA100 subset was previously examined during development; these numbers are **not an untouched held-out result or an official leaderboard score**.
+Looking at individual tasks, v8 fixed **14** Base mistakes and lost **3** previously correct answers. That gives a net gain of **11 tasks** in this matched run.
 
-[Full GAIA protocol, error analysis and paired evidence](docs/gaia-2026-11-23.md) · [Original inference run](https://github.com/kolihhan/small-agent-qlora/actions/runs/45144537782) · [Verified scorecard](https://github.com/kolihhan/small-agent-qlora/actions/runs/45173486537)
+[Experiment details and failure analysis](docs/gaia-2026-11-23.md) · [Original run](https://github.com/kolihhan/small-agent-qlora/actions/runs/45144537782) · [Verified results](https://github.com/kolihhan/small-agent-qlora/actions/runs/45173486537)
 
-### Controlled agent-policy evaluation · 200 tasks
+### Controlled tool-use tasks
 
-An **earlier, separate** experiment evaluated Base, v3B and v3D on the same frozen synthetic tasks with deterministic tools.
+An earlier experiment tested Base, v3B, and v3D on 200 frozen tasks with deterministic tools.
 
 | Model | Exact task success |
 | :-- | --: |
@@ -44,54 +42,46 @@ An **earlier, separate** experiment evaluated Base, v3B and v3D on the same froz
 | v3B | 105 / 200 · 52.5% |
 | **v3D** | **124 / 200 · 62.0%** |
 
-**34.5% → 62.0%** in the controlled setting. Most of v3D's additional gains came from learning when **not** to call a tool. But v3D did **not** outperform v3B on the older, real-tool GAIA comparison.
+**34.5% → 62.0%** on the controlled test.
 
-These studies use **different runtimes and evaluation conditions**. Their scores should never be combined into one performance curve.
+Most of v3D's improvement came from learning to answer directly when a tool wasn't needed. That worked well here, but the same adapter struggled to stop searching on real-tool GAIA tasks. It's what led me to pay more attention to how agents finish tasks, rather than only whether they choose the next action correctly.
 
-[Controlled-study report and negative ablations](docs/v3d-results.md) · [Original evaluation run](https://github.com/kolihhan/small-agent-qlora/actions/runs/38752732871)
-
----
-
-## The idea
-
-A tool-using agent needs more than the ability to produce a valid function call. It must decide **which tool to use, whether the evidence is sufficient, and when to stop**.
-
-This project investigates that behavior through three connected pieces:
-
-1. **Training:** prepare verified, non-GAIA tool-use examples and fine-tune Qwen3.5-9B with parameter-efficient LoRA/QLoRA.
-2. **Execution:** give the model a small real tool environment, enforce a step budget, and record every decision and failure.
-3. **Evaluation:** compare models on identical tasks; distinguish *correct*, *answered but wrong*, *invalid final*, and *tool/runtime failure*.
-
-The result is deliberately a **single-agent system**, not a planner–critic ensemble.
+[Controlled experiment and ablations](docs/v3d-results.md) · [Original evaluation](https://github.com/kolihhan/small-agent-qlora/actions/runs/38752732871)
 
 ## How it works
 
+The setup is intentionally simple: one Qwen model, one agent loop, four tools, and a fixed step budget.
+
 ```mermaid
-flowchart TD
-    Q["User task"] --> M["Qwen3.5-9B<br/>Base or LoRA adapter"]
-    M --> D{"Next action?"}
-    D -->|"Use a tool"| T["Search · Read · Inspect · Python"]
-    T --> G["Validate arguments<br/>Limit observation · Log trace"]
-    G --> M
-    D -->|"Answer"| F["Final answer"]
-    M -->|"Budget / runtime failure"| X["Recorded failure"]
-    F --> E["Task-level evaluation"]
-    X --> E
+flowchart LR
+    Q["Task"] --> M["Qwen3.5-9B<br/>Base / QLoRA"]
+    M --> A{"Next action"}
+    A -->|"Call tool"| T["Search · Read<br/>Inspect · Python"]
+    T --> O["Validate and log<br/>tool result"]
+    O --> M
+    A -->|"Finish"| F["Final answer"]
+    F --> S["Score task"]
+    M -->|"Error / step limit"| E["Record failure"]
 ```
 
-The runtime validates arguments, blocks exact duplicate tool calls, caps observations at **2,000 characters**, and records stop reasons and tool errors. It can search the web, read documents, inspect files and run restricted Python. It does **not** support image/audio/video understanding.
+The runtime checks tool arguments, blocks repeated calls, limits tool observations to 2,000 characters, and saves each step of the run. This makes it possible to inspect what the agent did, where it got stuck, and why a final answer was wrong.
 
-| Component | Source |
-| :-- | :-- |
-| Agent loop and stop logic | [`src/gaia_small_agent/agent/`](src/gaia_small_agent/agent/) |
-| Model backends | [`src/gaia_small_agent/model/`](src/gaia_small_agent/model/) |
-| Tool implementations | [`src/gaia_small_agent/tools/`](src/gaia_small_agent/tools/) |
-| QLoRA and policy evaluation | [`src/gaia_small_agent/training/`](src/gaia_small_agent/training/) |
-| Reproduction and architecture | [`docs/reproduce.md`](docs/reproduce.md) · [`docs/architecture.md`](docs/architecture.md) |
+I kept the agent architecture small so I could study the effect of the model and training data without adding a separate planner or critic.
+
+## Training and evaluation
+
+The workflow connects training to actual agent behavior:
+
+1. Prepare and verify tool-use trajectories.
+2. Fine-tune Qwen3.5-9B adapters with LoRA/QLoRA.
+3. Run the base model and adapters through the same agent tasks.
+4. Compare task correctness, completion, tool usage, and failure traces.
+
+The experiments also include unsuccessful training variants. Those runs helped identify a recurring issue: a model can improve at tool use while getting worse at deciding when to finish.
 
 ## Quickstart
 
-**Requirements:** Python 3.11+, Ollama and an available local Qwen3.5-9B model. This is a local demonstration, **not** the pinned GGUF/llama.cpp setup used to produce the published GAIA scores.
+You need **Python 3.11+** and **Ollama** to try the agent locally.
 
 ```bash
 git clone https://github.com/kolihhan/small-agent-qlora.git
@@ -106,27 +96,33 @@ small-agent run "Find the original Transformer paper and give its title." \
   --workspace runs/demo --output runs/demo/result.json
 ```
 
-The CLI writes a JSON execution trace. To check the repository **without model inference or a GPU**:
+The command saves a JSON trace at `runs/demo/result.json`. You can also check the code without running a model:
 
 ```bash
 python -m pytest -q
 ```
 
-For pinned model hashes, adapter provenance, training/evaluation settings and benchmark access, use the [reproduction guide](docs/reproduce.md).
+The published GAIA evaluation used a pinned llama.cpp/GGUF setup. The [reproduction guide](docs/reproduce.md) has the exact configuration.
 
-## What the experiments taught me
+## Project structure
 
-- **Better training scores do not guarantee better agents.** v3D reached 62% on the controlled policy test but failed to gain over v3B on the earlier real-tool GAIA100 run.
-- **Stopping is part of the policy.** More tool calls can mean more wasted steps, not more useful evidence.
-- **A final answer is not necessarily a correct answer.** In the later matched run, v8 Step70 produced 56 final answers but only 29 correct ones.
-- **Paired task outcomes beat headline metrics.** Each claimed gain is accompanied by newly-correct tasks, regressions and runtime conditions.
+| Path | What you'll find |
+| :-- | :-- |
+| [`src/gaia_small_agent/agent/`](src/gaia_small_agent/agent/) | Agent loop and stopping logic |
+| [`src/gaia_small_agent/tools/`](src/gaia_small_agent/tools/) | Search, read, inspect, and Python tools |
+| [`src/gaia_small_agent/model/`](src/gaia_small_agent/model/) | Model backends |
+| [`src/gaia_small_agent/training/`](src/gaia_small_agent/training/) | QLoRA and policy evaluation |
+| [`tests/`](tests/) | Runtime and evaluation checks |
+| [`docs/`](docs/) | Architecture, experiments, and reproduction |
 
-The next unresolved problem is **evidence sufficiency**: helping a small agent recognize when it knows enough to answer, without stopping prematurely.
+## What I'm working on next
 
-## Reproducibility & limits
+The question I'm most interested in now is **evidence sufficiency**: how can a small agent tell when it has enough information to answer?
 
-This is a research prototype, **not** a secure sandbox or a production multi-tenant agent. Live search results can change; some GAIA tasks require unsupported modalities. The local Python tool is restricted, but must not be treated as a security boundary for untrusted code.
+Searching longer doesn't always help. Sometimes the agent already has the right evidence and keeps going. Sometimes it stops with an answer that sounds reasonable but is wrong. I want to make that decision more reliable.
 
-The 200-task policy benchmark is synthetic. The GAIA100 cohort has been inspected during development. Model weights and gated benchmark data are **not included** in the repository; some older Actions artifacts have expired. The newer GAIA comparison excludes v3D because its exact GGUF artifact was unavailable.
+## Evaluation notes
 
-**Start with the evidence:** [GAIA100 matched study](docs/gaia-2026-11-23.md) · [Controlled policy study](docs/v3d-results.md) · [Reproduction guide](docs/reproduce.md) · [Experiment branches](docs/branches.md)
+The GAIA100 results come from a previously studied validation subset and one matched run. The 200-task test uses synthetic, deterministic tasks. These experiments used different runtime versions, so their scores are reported separately.
+
+For the precise settings, model hashes, adapter history, and known failure cases, see the [GAIA report](docs/gaia-2026-11-23.md), [controlled study](docs/v3d-results.md), and [reproduction guide](docs/reproduce.md). The restricted Python tool is for local research, rather than running untrusted code.
