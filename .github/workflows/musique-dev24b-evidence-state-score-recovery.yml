@@ -1,6 +1,8 @@
 name: CPU score original plus recovered MuSiQue DEV24B Evidence State pairs
 on:
-  workflow_dispatch:
+  push:
+    branches: [research/gaia-step100-evidence-state-prereg-20261123]
+    paths: [.github/workflows/musique-dev24b-evidence-state-score-recovery.yml]
 permissions:
   contents: read
   actions: read
