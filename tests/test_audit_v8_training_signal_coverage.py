@@ -11,7 +11,7 @@ def _row(ident, *, error=False):
         {"role":"system","content":"Static instruction"},
         {"role":"user","content":"Fictional task "+ident},
         {"role":"assistant","tool_calls":[{"id":"a","type":"function","function":{"name":"read","arguments":{"source":"fake.txt"}}}]},
-        {"role":"tool","tool_call_id":"a","content":"ToolError[READ_ERROR]: fake source temporarily missing" if error else "Fictional evidence number 4"},
+        {"role":"tool","tool_call_id":"a","content":"ERROR[SEARCH_FIXTURE_MISS]: fake source unavailable" if error else "Fictional evidence number 4"},
         {"role":"assistant","tool_calls":[{"id":"b","type":"function","function":{"name":"read","arguments":{"source":"fake2.txt"}}}]},
         {"role":"tool","tool_call_id":"b","content":"Fictional evidence number 9"},
         {"role":"assistant","content":"Fictional answer"},
