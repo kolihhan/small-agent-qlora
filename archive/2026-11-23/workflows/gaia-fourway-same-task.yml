@@ -1,0 +1,205 @@
+name: GAIA same-task Base v3D v7 v8step70
+
+on:
+  push:
+    branches: [exp/gaia-fourway-20261123]
+    paths: [.github/workflows/gaia-fourway-same-task.yml]
+  workflow_dispatch:
+    inputs:
+      v3d_adapter_url:
+        description: "Optional original v3D GGUF direct HTTPS URL, SHA256-checked; historical artifact expired"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  MODEL_URL: https://huggingface.co/twoody/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true
+  MODEL_SHA: 8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54
+  LLAMA_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11541/llama-b11541-bin-ubuntu-x64.tar.gz
+  LLAMA_SHA: 36ca310be4405acb7ba59b32dbdce32bb9cd7b1ef95358997b7eaed2c6f0188b
+  V7_SHA: 475f5fb59a553390a0dde9425d36b42ff85a0345bdd31b8465c22fd4d2bc02e2
+  V3D_SHA: 9bb1ae55d20c7ddeed737ec682e7ad9dc73844b59c0e8fd35685a4a6b57c23ca
+
+jobs:
+  tool_environment_gate:
+    name: First prove real search/read/inspect/python and frozen GAIA selection
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: "3.11"}
+      - name: Install the same locked repository runtime
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev,eval,search,files]'
+          python -m pytest -q tests/test_agent_loop.py tests/test_tool_preflight.py tests/test_gaia100.py tests/test_gaia_sharding.py
+      - name: Execute all four tools, including real live web search
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import tempfile
+          from gaia_small_agent.tools import check_default_tools
+          with tempfile.TemporaryDirectory() as root:
+              r = check_default_tools(root, live_search=True)
+          status = {name: {"ok": bool(value["ok"]), "error_code": value.get("error_code")}
+                    for name, value in r["checks"].items()}
+          print("ACTUAL_TOOLS_PREFLIGHT", json.dumps(status, sort_keys=True), flush=True)
+          assert r["tool_names"] == ["search", "read", "inspect", "python"]
+          assert r["ready"], "a real agent tool failed; do not start GAIA"
+          PY
+      - name: Verify benchmark token and exact 100 original GAIA tasks
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN_MISSING"; exit 42; }
+          python - <<'PY'
+          from scripts.gaia_same_task import fixed_rows
+          from gaia_small_agent.benchmark.gaia100 import load_validation
+          rows = fixed_rows(load_validation())
+          assert len(rows) == 100
+          print("FROZEN_GAIA100_SOURCE_READY")
+          PY
+
+  paired:
+    name: Same physical runner each five-case shard, sequential arms
+    needs: tool_environment_gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: "3.11"}
+      - name: Install identical evaluator and tools
+        run: python -m pip install -e '.[eval,search,files]'
+      - name: Download original v7 GGUF adapter
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          run-id: 43434228699
+          name: qlora-v7-converted-f16-gguf
+          path: adapter/v7-src
+      - name: Download physically verified original v8 Step70 GGUF
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          github-token: ${{ github.token }}
+          run-id: 45037819202
+          name: qwen35-9b-v8-stage70-verified-lora-gguf
+          path: adapter/v8-src
+      - name: Verify fixed adapters; never substitute a different v3D
+        env:
+          V3D_URL: ${{ inputs.v3d_adapter_url || secrets.V3D_ADAPTER_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p adapter
+          V7_ORIGINAL="$(find adapter/v7-src -type f -name qlora-v7-adapter-f16.gguf -print -quit)"
+          V8_ORIGINAL="$(find adapter/v8-src -type f -name v8-stage70-adapter-f16.gguf -print -quit)"
+          V8_CHECKSUM="$(find adapter/v8-src -type f -name v8-stage70-adapter.sha256 -print -quit)"
+          test -n "$V7_ORIGINAL" && test -s "$V7_ORIGINAL"
+          test -n "$V8_ORIGINAL" && test -s "$V8_ORIGINAL"
+          test -n "$V8_CHECKSUM" && test -s "$V8_CHECKSUM"
+          echo "$V7_SHA  $V7_ORIGINAL" | sha256sum -c -
+          V8_SHA="$(cut -d' ' -f1 "$V8_CHECKSUM")"
+          test "$V8_SHA" = "$(sha256sum "$V8_ORIGINAL" | cut -d' ' -f1)"
+          cp "$V7_ORIGINAL" adapter/v7.gguf
+          cp "$V8_ORIGINAL" adapter/v8step70.gguf
+          echo "V7_V8_WEIGHTS_VERIFIED"
+          if [ -n "$V3D_URL" ]; then
+            curl -fL --retry 4 "$V3D_URL" -o adapter/v3d.gguf
+            echo "$V3D_SHA  adapter/v3d.gguf" | sha256sum -c -
+            echo "V3D_ORIGINAL_SHA_VERIFIED"
+          else
+            echo "V3D_MISSING_ORIGINAL_ARTIFACT_EXPIRED; partial comparison will be labeled explicitly"
+          fi
+      - name: Download pinned original Base and llama.cpp
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p model /tmp/llama-same-task
+          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o model/base.gguf
+          echo "$MODEL_SHA  model/base.gguf" | sha256sum -c -
+          curl -fL --retry 5 --retry-delay 3 "$LLAMA_URL" -o /tmp/llama-same-task.tar.gz
+          echo "$LLAMA_SHA  /tmp/llama-same-task.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/llama-same-task.tar.gz -C /tmp/llama-same-task
+          SERVER="$(find /tmp/llama-same-task -type f -name llama-server -perm -111 | head -n 1)"
+          test -n "$SERVER" && test -x "$SERVER"
+          echo "LLAMA_SERVER=$SERVER" >> "$GITHUB_ENV"
+      - name: Physical same-task GAIA runs; no weight or prompt changes
+        env:
+          SHARD: ${{ matrix.shard }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p safe
+          arms=(base v7 v8step70)
+          if [ -s adapter/v3d.gguf ]; then arms=(base v3d v7 v8step70); fi
+          for arm in ${arms[@]}; do
+            extra=()
+            if [ "$arm" != base ]; then extra=(--lora "adapter/$arm.gguf"); fi
+            "$LLAMA_SERVER" -m model/base.gguf "${extra[@]}" \
+              --alias qwen3.5-9b --host 127.0.0.1 --port 8080 \
+              --ctx-size 16384 --threads 4 --parallel 1 --jinja \
+              --reasoning-budget 0 --temperature 0 \
+              > "$RUNNER_TEMP/llama-$arm.log" 2>&1 &
+            server_pid=$!
+            trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+            for i in {1..180}; do
+              if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then break; fi
+              sleep 2
+            done
+            curl -fsS http://127.0.0.1:8080/health >/dev/null
+            python scripts/gaia_same_task.py --shard "$SHARD" --arm "$arm" \
+              --output "safe/$arm-$SHARD.json"
+            kill "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+            trap - EXIT
+          done
+      - name: Upload only hashed per-task metadata, never GAIA text or traces
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gaia-fourway-shard-${{ matrix.shard }}
+          path: safe/*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    needs: paired
+    if: ${{ needs.paired.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: gaia-fourway-shard-*
+          merge-multiple: true
+          path: shards
+      - name: Strict complete-only aggregation and win/loss comparison
+        run: |
+          set -euo pipefail
+          python scripts/gaia_same_task.py \
+            --inputs shards/*.json \
+            --output gaia-same-task-summary.json \
+            --markdown gaia-same-task-report.md
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gaia-same-task-final-report
+          path: |
+            gaia-same-task-summary.json
+            gaia-same-task-report.md
+          if-no-files-found: error
+          retention-days: 30
