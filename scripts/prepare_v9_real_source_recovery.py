@@ -139,6 +139,25 @@ def augment(row: dict) -> tuple[dict, str] | None:
     return None
 
 
+def _ineligibility_reason(row: dict) -> str:
+    task=row.get("eval_task") or {}
+    files=task.get("files") or {}
+    if not isinstance(files,dict) or not files:
+        return "no_materialized_files"
+    msgs=row.get("messages") or []
+    selected=row.get("training_action_indices") or []
+    targets=[(i,_read_action(msgs[i])) for i in selected]
+    targets=[(i,t) for i,t in targets if t is not None]
+    if not targets:
+        return "no_selected_read_actions"
+    exists=[(i,t) for i,t in targets if t in files]
+    if not exists:
+        return "selected_read_sources_not_in_eval_files"
+    if not any(_visible_before(msgs,i,t) for i,t in exists):
+        return "read_paths_not_visible_prior_to_action"
+    return "source_replay_failed_before_selection"
+
+
 def build(train: Path, heldout: Path, manifest: Path) -> tuple[list[dict], dict]:
     source_sha = sha256(train.read_bytes()).hexdigest()
     if source_sha != ORIGINAL_TRAIN_SHA:
@@ -167,7 +186,7 @@ def build(train: Path, heldout: Path, manifest: Path) -> tuple[list[dict], dict]
         if result is None:
             out.append(row)
             if row.get("source") in ELIGIBLE:
-                rejected[str(row["source"])] += 1
+                rejected[str(row["source"])+":"+_ineligibility_reason(row)] += 1
         else:
             new, source = result
             out.append(new)
@@ -187,7 +206,7 @@ def build(train: Path, heldout: Path, manifest: Path) -> tuple[list[dict], dict]
             raise ValueError("Changed supervised next-action labels")
     n = sum(augmented_source.values())
     if n < 12:
-        raise ValueError(f"Insufficient grounded real-source recovery interventions: {n}")
+        raise ValueError(f"Insufficient grounded real-source recovery interventions: {n}; rejection_categories={dict(sorted(rejected.items()))}")
     return out, {
         "protocol": "step100-v9-real-source-error-conditioned-matched-action-data-v1",
         "original_train_sha256": source_sha,
