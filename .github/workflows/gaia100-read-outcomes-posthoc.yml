@@ -1,0 +1,42 @@
+name: GAIA100 read access vs correctness - posthoc aggregate CPU only
+on:
+  push:
+    branches: [research/gaia-step100-evidence-state-prereg-20261123]
+    paths: [.github/workflows/gaia100-read-outcomes-posthoc.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  posthoc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.11'}
+      - name: Validate source-anchored evidence isolation and posthoc groups
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev]'
+          python -m pytest -q tests/test_evidence_state_prereg.py tests/test_multihop_trace_access_labelblind.py tests/test_gaia100_read_outcomes_posthoc.py tests/test_evidence_state_dev24b_prereg.py
+      - name: Read original frozen private GAIA100 trajectories locally
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: kolihhan/small-agent-qlora
+          run-id: 44980055775
+          pattern: gaia-v8-paired-shard-*
+          github-token: ${{ github.token }}
+          path: private-traces
+      - name: Produce coarse result counts only, no answer or task export
+        run: |
+          set -euo pipefail
+          python -m scripts.diagnose_gaia100_read_outcomes_posthoc \
+            --root private-traces \
+            --output safe/gaia100-posthoc-read-vs-correct.json
+          test -s safe/gaia100-posthoc-read-vs-correct.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: GAIA100-READ-OUTCOME-POSTHOC-AGGREGATE-ONLY
+          path: safe/gaia100-posthoc-read-vs-correct.json
+          if-no-files-found: error
+          retention-days: 21
