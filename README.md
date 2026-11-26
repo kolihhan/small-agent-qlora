@@ -1,6 +1,6 @@
 # Small Agent QLoRA
 
-QLoRA fine-tuning for a Qwen3.5-9B tool-using agent, with controlled policy evaluation and real-tool GAIA100 testing.
+A Qwen3.5-9B tool-using agent built with QLoRA adaptation, a bounded execution loop, and paired evaluation. It combines web search, document reading, file inspection, and restricted Python, with measured results on controlled tasks and real-tool GAIA100.
 
 [![CI](https://github.com/kolihhan/small-agent-qlora/actions/workflows/ci.yml/badge.svg)](https://github.com/kolihhan/small-agent-qlora/actions/workflows/ci.yml)
 
